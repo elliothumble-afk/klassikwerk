@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -106,13 +107,86 @@ function formatPrice(cents: number) {
   return `+$${(cents / 100).toLocaleString()}`
 }
 
+// Convert CatalogOptionForm dollars → DB cents payload
+function optionFormToDb(data: CatalogOptionForm) {
+  return {
+    slug: data.slug,
+    name: data.name,
+    code: data.code ?? null,
+    price_cents: Math.round(data.price * 100),
+    included_in_tier_ids: data.included_in_tier_ids,
+    sort: data.sort,
+    active: data.active,
+  }
+}
+
+// ─── Swatch thumbnail + lightbox ─────────────────────────────────────────────
+
+interface SwatchThumbnailProps {
+  url: string
+  name: string
+}
+
+function SwatchThumbnail({ url, name }: SwatchThumbnailProps) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="block w-10 h-10 rounded-md overflow-hidden border border-[var(--color-border)] hover:ring-2 hover:ring-[var(--color-accent)] transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
+        title="View full image"
+        aria-label={`View swatch for ${name}`}
+      >
+        <img src={url} alt={name} className="w-full h-full object-cover" />
+      </button>
+
+      {open && createPortal(
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+          onClick={() => setOpen(false)}
+          role="dialog"
+          aria-modal
+          aria-label={`Swatch: ${name}`}
+        >
+          <div className="relative max-w-lg max-h-[80vh] p-2" onClick={e => e.stopPropagation()}>
+            <img
+              src={url}
+              alt={name}
+              className="max-w-full max-h-[75vh] rounded-lg shadow-2xl object-contain"
+            />
+            <p className="mt-2 text-center text-sm text-white/80">{name}</p>
+            <button
+              onClick={() => setOpen(false)}
+              className="absolute -top-3 -right-3 w-7 h-7 rounded-full bg-white text-black flex items-center justify-center shadow hover:bg-gray-100 transition"
+              aria-label="Close"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>,
+        document.body
+      )}
+    </>
+  )
+}
+
+function SwatchPlaceholder() {
+  return (
+    <div className="w-10 h-10 rounded-md bg-[var(--color-surface-raised)] border border-[var(--color-border)] flex items-center justify-center">
+      <Image size={15} className="text-[var(--color-muted)]" strokeWidth={1.5} />
+    </div>
+  )
+}
+
 interface SwatchUploadProps {
   optionId: string
+  optionName: string
   currentUrl: string | null
   onUpload: (url: string) => void
 }
 
-function SwatchUpload({ optionId, currentUrl, onUpload }: SwatchUploadProps) {
+function SwatchUpload({ optionId, optionName, currentUrl, onUpload }: SwatchUploadProps) {
   const [uploading, setUploading] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -131,6 +205,7 @@ function SwatchUpload({ optionId, currentUrl, onUpload }: SwatchUploadProps) {
       return
     }
 
+    // getPublicUrl returns the canonical public URL for this bucket path
     const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(path)
 
     const { error: dbErr } = await supabase
@@ -144,17 +219,10 @@ function SwatchUpload({ optionId, currentUrl, onUpload }: SwatchUploadProps) {
 
   return (
     <div className="flex items-center gap-2">
-      {currentUrl ? (
-        <img
-          src={currentUrl}
-          alt="Swatch"
-          className="w-8 h-8 rounded object-cover border border-[var(--color-border)]"
-        />
-      ) : (
-        <div className="w-8 h-8 rounded bg-[var(--color-surface-raised)] border border-[var(--color-border)] flex items-center justify-center">
-          <Image size={14} className="text-[var(--color-muted)]" />
-        </div>
-      )}
+      {currentUrl
+        ? <SwatchThumbnail url={currentUrl} name={optionName} />
+        : <SwatchPlaceholder />
+      }
       <button
         onClick={() => inputRef.current?.click()}
         disabled={uploading}
@@ -178,6 +246,8 @@ function SwatchUpload({ optionId, currentUrl, onUpload }: SwatchUploadProps) {
     </div>
   )
 }
+
+// ─── Option row ───────────────────────────────────────────────────────────────
 
 interface OptionRowProps {
   option: OptionWithPlatforms
@@ -209,10 +279,10 @@ function OptionRow({ option, tiers, platforms, onEdit, onToggleActive, onSwatchU
         </button>
       </td>
 
-      {/* Swatch */}
-      <td className="py-3 pr-3 w-12">
+      <td className="py-3 pr-3 w-14">
         <SwatchUpload
           optionId={option.id}
+          optionName={option.name}
           currentUrl={option.swatch_image_url}
           onUpload={url => onSwatchUpload(option.id, url)}
         />
@@ -222,7 +292,6 @@ function OptionRow({ option, tiers, platforms, onEdit, onToggleActive, onSwatchU
       <td className="py-3 pr-3 text-sm text-[var(--color-muted)] font-mono text-xs">{option.code ?? '—'}</td>
       <td className="py-3 pr-3 text-sm text-[var(--color-muted)]">{formatPrice(option.price_cents)}</td>
 
-      {/* Included-in tier checkboxes (read-only display) */}
       <td className="py-3 pr-3">
         <div className="flex gap-1.5 flex-wrap">
           {tiers.map(tier => {
@@ -243,7 +312,6 @@ function OptionRow({ option, tiers, platforms, onEdit, onToggleActive, onSwatchU
         </div>
       </td>
 
-      {/* Platform restriction chips */}
       <td className="py-3 pr-3">
         {option.platform_ids.length === 0 ? (
           <span className="text-xs text-[var(--color-muted)]">All</span>
@@ -286,6 +354,8 @@ function OptionRow({ option, tiers, platforms, onEdit, onToggleActive, onSwatchU
   )
 }
 
+// ─── Edit form ────────────────────────────────────────────────────────────────
+
 interface EditFormProps {
   option?: OptionWithPlatforms
   groupId: string
@@ -310,12 +380,12 @@ function OptionEditForm({ option, tiers, platforms, onSave, onCancel, saving }: 
           slug: option.slug,
           name: option.name,
           code: option.code ?? '',
-          price_cents: option.price_cents,
+          price: option.price_cents / 100,
           included_in_tier_ids: option.included_in_tier_ids,
           sort: option.sort,
           active: option.active,
         }
-      : { price_cents: 0, included_in_tier_ids: [], sort: 0, active: true },
+      : { price: 0, included_in_tier_ids: [], sort: 0, active: true },
   })
 
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(
@@ -369,9 +439,21 @@ function OptionEditForm({ option, tiers, platforms, onSave, onCancel, saving }: 
               <input {...register('code')} className={inputClass} placeholder="MB-359" />
             </div>
             <div>
-              <label className="text-xs text-[var(--color-muted)] mb-1 block">Price (cents)</label>
-              <input {...register('price_cents')} type="number" className={inputClass} />
-              {errors.price_cents && <p className="text-xs text-[var(--color-danger)] mt-1">{errors.price_cents.message}</p>}
+              <label className="text-xs text-[var(--color-muted)] mb-1 block">Price</label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-[var(--color-muted)] pointer-events-none select-none">
+                  $
+                </span>
+                <input
+                  {...register('price')}
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  className={`${inputClass} pl-7`}
+                  placeholder="0"
+                />
+              </div>
+              {errors.price && <p className="text-xs text-[var(--color-danger)] mt-1">{errors.price.message}</p>}
             </div>
           </div>
 
@@ -450,6 +532,8 @@ function OptionEditForm({ option, tiers, platforms, onSave, onCancel, saving }: 
   )
 }
 
+// ─── Group section ────────────────────────────────────────────────────────────
+
 interface GroupSectionProps {
   group: OptionGroup
   options: OptionWithPlatforms[]
@@ -499,7 +583,7 @@ function GroupSection({
             <thead>
               <tr className="border-b border-[var(--color-border)]">
                 <th className="text-left py-2 pr-2 pl-4 w-8" />
-                <th className="text-left py-2 pr-2 w-12 text-xs font-medium text-[var(--color-muted)]">Swatch</th>
+                <th className="text-left py-2 pr-2 w-14 text-xs font-medium text-[var(--color-muted)]">Swatch</th>
                 <th className="text-left py-2 pr-3 text-xs font-medium text-[var(--color-muted)]">Name</th>
                 <th className="text-left py-2 pr-3 text-xs font-medium text-[var(--color-muted)]">Code</th>
                 <th className="text-left py-2 pr-3 text-xs font-medium text-[var(--color-muted)]">Price</th>
@@ -563,6 +647,8 @@ function GroupSection({
   )
 }
 
+// ─── Tab root ─────────────────────────────────────────────────────────────────
+
 export function OptionsTab() {
   const qc = useQueryClient()
   const { data: options, isLoading: loadingOptions, error: optionsError, refetch } = useOptions()
@@ -587,8 +673,9 @@ export function OptionsTab() {
       id?: string
       groupId?: string
     }) => {
+      const payload = optionFormToDb(data)
       if (id) {
-        const { error } = await supabase.from('catalog_options').update(data).eq('id', id)
+        const { error } = await supabase.from('catalog_options').update(payload).eq('id', id)
         if (error) throw error
 
         await supabase.from('catalog_option_platforms').delete().eq('option_id', id)
@@ -602,7 +689,7 @@ export function OptionsTab() {
         if (!groupId) throw new Error('groupId required for new options')
         const { data: inserted, error } = await supabase
           .from('catalog_options')
-          .insert({ ...data, group_id: groupId })
+          .insert({ ...payload, group_id: groupId })
           .select()
           .single()
         if (error) throw error

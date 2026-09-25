@@ -46,6 +46,19 @@ function formatPrice(cents: number | null) {
   return `$${(cents / 100).toLocaleString()}`
 }
 
+// Convert TierForm dollars → DB cents payload
+function tierFormToDb(data: TierForm) {
+  return {
+    slug: data.slug,
+    name: data.name,
+    base_price_cents: data.base_price != null ? Math.round(data.base_price * 100) : null,
+    lead_time_weeks: data.lead_time_weeks ?? null,
+    description: data.description ?? null,
+    quote_only: data.quote_only,
+    sort: data.sort,
+  }
+}
+
 interface RowProps {
   tier: Tier
   onEdit: (t: Tier) => void
@@ -114,7 +127,7 @@ function TierEditForm({ tier, onSave, onCancel, saving }: EditFormProps) {
       ? {
           slug: tier.slug,
           name: tier.name,
-          base_price_cents: tier.base_price_cents ?? undefined,
+          base_price: tier.base_price_cents != null ? tier.base_price_cents / 100 : undefined,
           lead_time_weeks: tier.lead_time_weeks ?? undefined,
           description: tier.description ?? '',
           quote_only: tier.quote_only,
@@ -149,14 +162,22 @@ function TierEditForm({ tier, onSave, onCancel, saving }: EditFormProps) {
               {errors.slug && <p className="text-xs text-[var(--color-danger)] mt-1">{errors.slug.message}</p>}
             </div>
             <div>
-              <label className="text-xs text-[var(--color-muted)] mb-1 block">Base price (cents)</label>
-              <input
-                {...register('base_price_cents')}
-                type="number"
-                className={inputClass}
-                disabled={quoteOnly}
-                placeholder="7000000"
-              />
+              <label className="text-xs text-[var(--color-muted)] mb-1 block">Base price</label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-[var(--color-muted)] pointer-events-none select-none">
+                  $
+                </span>
+                <input
+                  {...register('base_price')}
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  className={`${inputClass} pl-7`}
+                  disabled={quoteOnly}
+                  placeholder="70,000"
+                />
+              </div>
+              {errors.base_price && <p className="text-xs text-[var(--color-danger)] mt-1">{errors.base_price.message}</p>}
             </div>
             <div>
               <label className="text-xs text-[var(--color-muted)] mb-1 block">Lead time (weeks)</label>
@@ -220,21 +241,23 @@ export function TiersTab() {
 
   const saveMutation = useMutation({
     mutationFn: async ({ data, id }: { data: TierForm; id?: string }) => {
+      const payload = tierFormToDb(data)
       if (id) {
-        const { error } = await supabase.from('catalog_tiers').update(data).eq('id', id)
+        const { error } = await supabase.from('catalog_tiers').update(payload).eq('id', id)
         if (error) throw error
       } else {
-        const { error } = await supabase.from('catalog_tiers').insert({ ...data })
+        const { error } = await supabase.from('catalog_tiers').insert(payload)
         if (error) throw error
       }
     },
     onMutate: async ({ data, id }) => {
       await qc.cancelQueries({ queryKey: QUERY_KEY })
       const prev = qc.getQueryData<Tier[]>(QUERY_KEY)
+      const payload = tierFormToDb(data)
       qc.setQueryData<Tier[]>(QUERY_KEY, old => {
         if (!old) return old
-        if (id) return old.map(t => t.id === id ? { ...t, ...data } : t)
-        return [...old, { ...data, id: crypto.randomUUID(), created_at: '', updated_at: '', description: data.description ?? null, base_price_cents: data.base_price_cents ?? null, lead_time_weeks: data.lead_time_weeks ?? null }]
+        if (id) return old.map(t => t.id === id ? { ...t, ...payload } : t)
+        return [...old, { ...payload, id: crypto.randomUUID(), created_at: '', updated_at: '' }]
       })
       return { prev }
     },

@@ -13,7 +13,8 @@ export const platformSchema = z.object({
 export const tierSchema = z.object({
   slug: z.string().min(1).regex(/^[a-z0-9-]+$/),
   name: z.string().min(1),
-  base_price_cents: z.coerce.number().int().min(0).nullable(),
+  // Form holds dollars; save layer converts to cents
+  base_price: z.coerce.number().min(0).nullable(),
   lead_time_weeks: z.coerce.number().int().min(1).nullable(),
   description: z.string().nullable().or(z.literal('')).transform(v => v || null),
   quote_only: z.boolean(),
@@ -24,7 +25,8 @@ export const catalogOptionSchema = z.object({
   slug: z.string().min(1).regex(/^[a-z0-9-]+$/),
   name: z.string().min(1),
   code: z.string().nullable().or(z.literal('')).transform(v => v || null),
-  price_cents: z.coerce.number().int().min(0),
+  // Form holds dollars; save layer converts to cents
+  price: z.coerce.number().min(0),
   included_in_tier_ids: z.array(z.string().uuid()),
   sort: z.coerce.number().int().min(0),
   active: z.boolean(),

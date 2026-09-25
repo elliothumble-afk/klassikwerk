@@ -4,6 +4,7 @@ import { RoleGuard } from '@/components/auth/RoleGuard'
 import { HomePage } from '@/pages/public/HomePage'
 import { LoginPage } from '@/pages/auth/LoginPage'
 import { CallbackPage } from '@/pages/auth/CallbackPage'
+import { ForgotPasswordPage } from '@/pages/auth/ForgotPasswordPage'
 import { PortalShell } from '@/pages/portal/PortalShell'
 import { OpsShell } from '@/pages/ops/OpsShell'
 import { CatalogPage } from '@/pages/ops/catalog/CatalogPage'
@@ -20,6 +21,10 @@ const router = createBrowserRouter([
   {
     path: '/auth/callback',
     element: <CallbackPage />,
+  },
+  {
+    path: '/auth/forgot-password',
+    element: <ForgotPasswordPage />,
   },
   {
     element: <AuthGuard />,

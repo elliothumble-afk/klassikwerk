@@ -6,6 +6,15 @@ export function CallbackPage() {
   const navigate = useNavigate()
 
   useEffect(() => {
+    // Recovery links land here when redirectTo is /auth/callback.
+    // Preserve the full hash so Supabase can exchange the token.
+    const hash = window.location.hash
+    const params = new URLSearchParams(hash.slice(1))
+    if (params.get('type') === 'recovery') {
+      window.location.replace('/auth/reset-password' + hash)
+      return
+    }
+
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (!session) {
         navigate('/auth/login', { replace: true })

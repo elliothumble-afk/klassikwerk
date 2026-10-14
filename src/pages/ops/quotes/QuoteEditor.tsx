@@ -444,6 +444,7 @@ export function QuoteEditor() {
                       {opts.map(opt => {
                         const included = opt.included_in_tier_ids.includes(tier.id)
                         const active = chosen.has(opt.id)
+                        const priceMissing = !included && opt.price_cents === 0
                         return (
                           <button
                             key={opt.id}
@@ -454,6 +455,7 @@ export function QuoteEditor() {
                                 ? 'border-[var(--color-accent)] bg-[var(--color-accent-light)]'
                                 : 'border-[var(--color-border)] hover:border-[var(--color-accent)]'
                             } disabled:opacity-50`}
+                            title={priceMissing ? `Set a price on ${opt.name} in Catalog → Options` : undefined}
                           >
                             <div className="flex items-center gap-3">
                               {opt.swatch_image_url ? (
@@ -466,8 +468,21 @@ export function QuoteEditor() {
                                 {opt.code && <div className="text-xs text-[var(--color-muted)]">{opt.code}</div>}
                               </div>
                             </div>
-                            <div className="text-xs text-[var(--color-muted)] shrink-0">
-                              {included ? 'Included' : opt.price_cents > 0 ? `+$${(opt.price_cents / 100).toLocaleString()}` : 'Included'}
+                            <div className="text-xs shrink-0 text-right">
+                              {included ? (
+                                <span className="text-[var(--color-muted)]">Included</span>
+                              ) : (
+                                <>
+                                  <span className={priceMissing ? 'text-[var(--color-danger)]' : 'text-[var(--color-muted)]'}>
+                                    +${(opt.price_cents / 100).toLocaleString()}
+                                  </span>
+                                  {priceMissing && (
+                                    <div className="text-[10px] text-[var(--color-danger)] mt-0.5">
+                                      Set a price
+                                    </div>
+                                  )}
+                                </>
+                              )}
                             </div>
                           </button>
                         )

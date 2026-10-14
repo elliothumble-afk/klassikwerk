@@ -1,4 +1,4 @@
-import { Outlet, NavLink, Link, useLocation, useParams } from 'react-router'
+import { Outlet, Link, useLocation, useParams } from 'react-router'
 import { BuilderProvider, useBuilder } from '@/lib/builderContext'
 import { Spinner } from '@/components/ui/Spinner'
 
@@ -49,9 +49,6 @@ function BuilderShellInner() {
         <p className="text-sm text-[var(--color-muted)] mb-6">
           No active builder matches this URL.
         </p>
-        <Link to="/" className="text-sm text-[var(--color-accent)] underline">
-          Back to operator landing
-        </Link>
       </div>
     )
   }
@@ -85,9 +82,6 @@ function BuilderShellInner() {
           </Link>
 
           <nav className="flex items-center gap-6 text-sm">
-            <NavItem to={`${prefix}/platforms`}>Platforms</NavItem>
-            <NavItem to={`${prefix}/process`}>Process</NavItem>
-            <NavItem to={`${prefix}/configure`}>Configure</NavItem>
             <Link
               to="/auth/login"
               className="text-[var(--color-muted)] hover:text-[var(--color-foreground)] transition"
@@ -101,30 +95,10 @@ function BuilderShellInner() {
       <Outlet />
 
       <footer className="border-t border-[var(--color-border)] mt-16">
-        <div className="max-w-5xl mx-auto px-6 py-6 text-xs text-[var(--color-muted)] flex items-center justify-between">
-          <span>© {new Date().getFullYear()} {bundle.builder.legal_name ?? bundle.builder.name}</span>
-          {!inPath ? null : (
-            <Link to="/" className="hover:text-[var(--color-foreground)] transition">
-              All builders
-            </Link>
-          )}
+        <div className="max-w-5xl mx-auto px-6 py-6 text-xs text-[var(--color-muted)]">
+          © {new Date().getFullYear()} {bundle.builder.legal_name ?? bundle.builder.name}
         </div>
       </footer>
     </main>
-  )
-}
-
-function NavItem({ to, children }: { to: string; children: React.ReactNode }) {
-  return (
-    <NavLink
-      to={to}
-      className={({ isActive }) =>
-        isActive
-          ? 'text-[var(--color-foreground)] font-medium'
-          : 'text-[var(--color-muted)] hover:text-[var(--color-foreground)] transition'
-      }
-    >
-      {children}
-    </NavLink>
   )
 }

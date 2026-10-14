@@ -1,7 +1,7 @@
 import { Outlet, NavLink, useNavigate } from 'react-router'
 import { useAuth } from '@/hooks/useAuth'
 import { supabase } from '@/lib/supabase'
-import { LayoutGrid, LogOut, Building2, Wrench, FileText } from 'lucide-react'
+import { LayoutGrid, LogOut, Building2, Wrench, FileText, Users, Receipt, Home, Link as LinkIcon } from 'lucide-react'
 import { OpsBuilderSelectionProvider, useOpsBuilderSelection } from '@/lib/opsBuilderSelection'
 
 export function OpsShell() {
@@ -57,12 +57,16 @@ function OpsShellInner() {
         </div>
 
         <div className="flex-1 py-4 px-3 space-y-0.5">
-          <NavItem to="/ops/catalog" icon={<LayoutGrid size={15} />}>Catalog</NavItem>
+          <NavItem to="/ops" icon={<Home size={15} />}>Dashboard</NavItem>
+          <NavItem to="/ops/leads" icon={<Users size={15} />}>Leads</NavItem>
+          <NavItem to="/ops/quotes" icon={<Receipt size={15} />}>Quotes</NavItem>
           <NavItem to="/ops/builds" icon={<Wrench size={15} />}>Builds</NavItem>
+          <NavItem to="/ops/catalog" icon={<LayoutGrid size={15} />}>Catalog</NavItem>
           {isOperator && (
             <>
               <div className="mt-4 mb-1 px-3 text-[10px] uppercase tracking-wide text-[var(--color-muted)]">Operator</div>
               <NavItem to="/ops/builders" icon={<Building2 size={15} />}>Builders</NavItem>
+              <NavItem to="/ops/settings/zoho" icon={<LinkIcon size={15} />}>Zoho sync</NavItem>
             </>
           )}
           {selected && (

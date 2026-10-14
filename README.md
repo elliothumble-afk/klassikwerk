@@ -94,28 +94,141 @@ To put a builder on their own domain:
 
 ## Edge functions
 
-Two functions live in `supabase/functions/`:
+Live in `supabase/functions/`:
 
+- `submit-inquiry` — public: creates a `leads` row + `customers` row from the
+  landing page's inquiry form and emails Humble House via Resend.
+- `render-quote` — PDF of a quote with cover, configuration table, totals,
+  payment schedule, validity date, warranty, intro copy, HH signature.
+  Uploads to `media` and writes back `quotes.pdf_url`.
+- `send-quote` — emails the customer the quote PDF and a tracked link to
+  `/q/:token` via Resend; logs `quote_events.sent`; moves lead to `quoted`;
+  fires `zoho-push`. Degrades to a sent-locally flow when `RESEND_API_KEY`
+  is unset so previews still progress.
+- `get-quote` — public: looks up a quote by its random token so `/q/:token`
+  can render a branded read-only view (no login).
+- `approve-quote` — public: flips the quote to `approved`, logs the event,
+  fires `zoho-push`.
 - `render-contract` — merges a build's data into the builder's current
-  contract template, renders a PDF with `pdf-lib`, uploads it to the `media`
-  bucket, and records a `media` row. Returns `{ url, path }`.
-- `create-reservation-checkout` — creates a Stripe Checkout Session for the
-  builder's reservation deposit. Stripe metadata carries `builder_id` so a
-  future Connect split can route to each builder's `stripe_account_id`. If
-  `STRIPE_SECRET_KEY` isn't set the function returns `{ url: null }` and the
-  frontend falls back to a demo success page.
+  contract template, renders a PDF, uploads to `media`, records a `media` row.
+- `zoho-lead-webhook` — public (shared-secret): Zoho Workflow Rule POSTs here
+  when a lead becomes Warm; upserts the customer, upserts a `leads` row at
+  stage `warm`, logs to `zoho_sync_log`. Idempotent.
+- `zoho-push` — called from send-quote / approve-quote / stage changes to
+  update the Zoho lead status and append a note. Refreshes the access token
+  from the `zoho_tokens` cache. Writes an error to `zoho_sync_log` when the
+  Zoho secrets are absent, so `/ops/settings/zoho` surfaces it clearly.
 
-Deploy both:
+Deploy:
 
 ```bash
+supabase functions deploy submit-inquiry --no-verify-jwt
+supabase functions deploy render-quote
+supabase functions deploy send-quote
+supabase functions deploy get-quote --no-verify-jwt
+supabase functions deploy approve-quote --no-verify-jwt
 supabase functions deploy render-contract
-supabase functions deploy create-reservation-checkout
-# Set the Stripe secret in test mode:
-supabase secrets set STRIPE_SECRET_KEY=sk_test_...
+supabase functions deploy zoho-lead-webhook --no-verify-jwt
+supabase functions deploy zoho-push
+```
+
+Secrets:
+
+```bash
+supabase secrets set RESEND_API_KEY=re_...
+supabase secrets set RESEND_FROM=quotes@yourdomain
+supabase secrets set HH_INBOX_EMAIL=elliot.humble@gmail.com
+supabase secrets set PUBLIC_SITE_URL=https://klassikwerk.netlify.app
+supabase secrets set ZOHO_CLIENT_ID=... ZOHO_CLIENT_SECRET=... ZOHO_REFRESH_TOKEN=...
+supabase secrets set ZOHO_DC=us ZOHO_WEBHOOK_SECRET=...
 ```
 
 The Supabase service role is read from `SUPABASE_SERVICE_ROLE_KEY` and is set
 by Supabase automatically for deployed functions.
+
+## The quote flow
+
+1. Public landing (`/b/:slug`) captures an inquiry → `leads.stage = 'inquiry'`.
+2. Zoho CRM Workflow Rule fires `zoho-lead-webhook` once the lead is warm →
+   `leads.stage = 'warm'` with `zoho_lead_id` set.
+3. From **Ops → Leads → :id**, click **Start quote** → **Ops → Quotes → new**
+   with the lead pre-filled. Pick platform, tier, options; **Save draft**
+   creates `quotes` v1 and moves the lead to `quoting`.
+4. **Generate PDF** calls `render-quote`. **Send** calls `send-quote`, which
+   emails the customer the PDF + the `/q/:token` link; lead moves to
+   `quoted`.
+5. The customer opens `/q/:token`, reviews the quote, clicks **Approve**.
+   `approve-quote` flips the quote to `approved` and logs the event.
+6. In Ops, **Create contract** on the approved quote creates a `builds` row
+   (stage `contract`, copying `quote_options` → `build_options`) and the
+   lead moves to `contract_sent`. The build page's **Generate contract**
+   produces the signed PDF via `render-contract` as before.
+7. **Revise** on any quote marks it `superseded`, clones a new version `n+1`
+   as a fresh draft, and sets the lead to `revising`.
+
+## Zoho setup for Tom
+
+Exact clicks. "Zoho" below means Zoho CRM in the `us` data centre.
+
+### A. Create a Self Client (OAuth app)
+
+1. Open `https://api-console.zoho.com` and sign in with your CRM account.
+2. Click **Add Client** → **Self Client** → **Create**.
+3. Click the new row → **Client Secret** tab. Copy the **Client ID** and
+   **Client Secret**. Paste them into a secure note.
+
+### B. Generate a refresh token
+
+1. Still on the Self Client page, open the **Generate Code** tab.
+2. In **Scope** paste exactly:
+   `ZohoCRM.modules.leads.ALL,ZohoCRM.modules.notes.CREATE,ZohoCRM.settings.fields.READ`
+3. **Time Duration**: 10 minutes. **Scope Description**: `KlassikWerk`.
+4. Click **Create**. Copy the **Grant Token** that appears.
+5. In a terminal, exchange it for a refresh token:
+   ```bash
+   curl -X POST "https://accounts.zoho.com/oauth/v2/token" \
+     -d "grant_type=authorization_code" \
+     -d "client_id=<CLIENT_ID>" \
+     -d "client_secret=<CLIENT_SECRET>" \
+     -d "code=<GRANT_TOKEN>"
+   ```
+6. The response has `refresh_token` — keep it; grant tokens are single-use.
+7. Set the secrets in Supabase:
+   ```bash
+   supabase secrets set ZOHO_CLIENT_ID=<CLIENT_ID> \
+     ZOHO_CLIENT_SECRET=<CLIENT_SECRET> \
+     ZOHO_REFRESH_TOKEN=<REFRESH_TOKEN> \
+     ZOHO_DC=us \
+     ZOHO_WEBHOOK_SECRET="$(openssl rand -hex 24)"
+   ```
+   Note the webhook secret — you'll paste it into the Zoho workflow below.
+
+### C. Workflow Rule: Warm → webhook
+
+1. In Zoho CRM, go to **Setup → Automation → Workflow Rules → Create Rule**.
+2. **Module**: Leads. **Rule name**: `KlassikWerk — warm`. Click **Next**.
+3. **When**: On a record action → **Edit**. Click **Next**.
+4. **Condition**: `Lead Status is Warm`. Click **Next**.
+5. **Instant Actions** → **Webhooks** → **New Webhook**.
+6. **Name**: `KlassikWerk warm webhook`. **URL**: paste the URL from
+   **Ops → Zoho sync** (the `/functions/v1/zoho-lead-webhook` endpoint).
+   Append `?secret=<the ZOHO_WEBHOOK_SECRET you set above>`.
+7. **Method**: POST. **URL Format**: JSON.
+8. **Body** — click **Custom Parameters** and add these keys (left) mapped
+   to lead fields (right):
+   - `lead_id` → `${Leads.Lead Id}`
+   - `email` → `${Leads.Email}`
+   - `first_name` → `${Leads.First Name}`
+   - `last_name` → `${Leads.Last Name}`
+   - `phone` → `${Leads.Phone}`
+   - `lead_source` → `${Leads.Lead Source}`
+   - `builder` → `${Leads.<builder picklist>}` (whichever field you keep the
+     builder choice in)
+   - `message` → `${Leads.Description}`
+9. **Save** the webhook, **Associate** it to the rule, then **Save** the
+   rule.
+10. Flip a test Lead to **Warm**. Watch `/ops/settings/zoho` — a green
+    `inbound · lead · success` row should appear within a few seconds.
 
 ## Roles
 

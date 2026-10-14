@@ -94,6 +94,7 @@ export type Database = {
           active: boolean
           sort: number
           stripe_account_id: string | null
+          zoho_product_id: string | null
           created_at: string
           updated_at: string
         }
@@ -106,6 +107,7 @@ export type Database = {
           active?: boolean
           sort?: number
           stripe_account_id?: string | null
+          zoho_product_id?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -117,6 +119,7 @@ export type Database = {
           active?: boolean
           sort?: number
           stripe_account_id?: string | null
+          zoho_product_id?: string | null
           updated_at?: string
         }
         Relationships: []
@@ -180,6 +183,9 @@ export type Database = {
           lead_time_copy: string | null
           currency: string
           payment_mode: 'none' | 'stripe'
+          quote_validity_days: number
+          quote_intro_copy: string | null
+          brochure_url: string | null
           created_at: string
           updated_at: string
         }
@@ -192,6 +198,9 @@ export type Database = {
           lead_time_copy?: string | null
           currency?: string
           payment_mode?: 'none' | 'stripe'
+          quote_validity_days?: number
+          quote_intro_copy?: string | null
+          brochure_url?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -203,6 +212,9 @@ export type Database = {
           lead_time_copy?: string | null
           currency?: string
           payment_mode?: 'none' | 'stripe'
+          quote_validity_days?: number
+          quote_intro_copy?: string | null
+          brochure_url?: string | null
           updated_at?: string
         }
         Relationships: []
@@ -249,6 +261,7 @@ export type Database = {
           source: 'web' | 'humble_house' | 'referral' | null
           email: string | null
           full_name: string | null
+          zoho_contact_id: string | null
           created_at: string
           updated_at: string
         }
@@ -259,6 +272,7 @@ export type Database = {
           source?: 'web' | 'humble_house' | 'referral' | null
           email?: string | null
           full_name?: string | null
+          zoho_contact_id?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -268,7 +282,357 @@ export type Database = {
           source?: 'web' | 'humble_house' | 'referral' | null
           email?: string | null
           full_name?: string | null
+          zoho_contact_id?: string | null
           updated_at?: string
+        }
+        Relationships: []
+      }
+      leads: {
+        Row: {
+          id: string
+          builder_id: string
+          customer_id: string | null
+          zoho_lead_id: string | null
+          source: 'zoho' | 'site' | 'design_centre' | 'referral'
+          stage: 'inquiry' | 'warm' | 'quoting' | 'quoted' | 'revising' | 'contract_sent' | 'won' | 'lost'
+          owner_profile_id: string | null
+          platform_interest_id: string | null
+          notes: string | null
+          lost_reason: string | null
+          message: string | null
+          phone: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          builder_id: string
+          customer_id?: string | null
+          zoho_lead_id?: string | null
+          source?: 'zoho' | 'site' | 'design_centre' | 'referral'
+          stage?: 'inquiry' | 'warm' | 'quoting' | 'quoted' | 'revising' | 'contract_sent' | 'won' | 'lost'
+          owner_profile_id?: string | null
+          platform_interest_id?: string | null
+          notes?: string | null
+          lost_reason?: string | null
+          message?: string | null
+          phone?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          builder_id?: string
+          customer_id?: string | null
+          zoho_lead_id?: string | null
+          source?: 'zoho' | 'site' | 'design_centre' | 'referral'
+          stage?: 'inquiry' | 'warm' | 'quoting' | 'quoted' | 'revising' | 'contract_sent' | 'won' | 'lost'
+          owner_profile_id?: string | null
+          platform_interest_id?: string | null
+          notes?: string | null
+          lost_reason?: string | null
+          message?: string | null
+          phone?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      quotes: {
+        Row: {
+          id: string
+          lead_id: string
+          builder_id: string
+          version: number
+          platform_id: string
+          tier_id: string
+          price_cents: number
+          status: 'draft' | 'sent' | 'approved' | 'superseded'
+          pdf_url: string | null
+          sent_at: string | null
+          approved_at: string | null
+          notes: string | null
+          token: string
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          lead_id: string
+          builder_id: string
+          version: number
+          platform_id: string
+          tier_id: string
+          price_cents?: number
+          status?: 'draft' | 'sent' | 'approved' | 'superseded'
+          pdf_url?: string | null
+          sent_at?: string | null
+          approved_at?: string | null
+          notes?: string | null
+          token?: string
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          lead_id?: string
+          builder_id?: string
+          version?: number
+          platform_id?: string
+          tier_id?: string
+          price_cents?: number
+          status?: 'draft' | 'sent' | 'approved' | 'superseded'
+          pdf_url?: string | null
+          sent_at?: string | null
+          approved_at?: string | null
+          notes?: string | null
+          token?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      quote_options: {
+        Row: {
+          id: string
+          quote_id: string
+          option_id: string
+          price_cents_at_selection: number
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          quote_id: string
+          option_id: string
+          price_cents_at_selection: number
+          created_at?: string
+        }
+        Update: {
+          quote_id?: string
+          option_id?: string
+          price_cents_at_selection?: number
+        }
+        Relationships: []
+      }
+      quote_events: {
+        Row: {
+          id: string
+          quote_id: string
+          kind: 'created' | 'sent' | 'viewed' | 'revised' | 'approved'
+          by_profile_id: string | null
+          note: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          quote_id: string
+          kind: 'created' | 'sent' | 'viewed' | 'revised' | 'approved'
+          by_profile_id?: string | null
+          note?: string | null
+          created_at?: string
+        }
+        Update: {
+          quote_id?: string
+          kind?: 'created' | 'sent' | 'viewed' | 'revised' | 'approved'
+          by_profile_id?: string | null
+          note?: string | null
+        }
+        Relationships: []
+      }
+      vehicles: {
+        Row: {
+          id: string
+          customer_id: string
+          platform_id: string
+          vin: string | null
+          year: number | null
+          mileage: number | null
+          colour_original: string | null
+          notes: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          customer_id: string
+          platform_id: string
+          vin?: string | null
+          year?: number | null
+          mileage?: number | null
+          colour_original?: string | null
+          notes?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          customer_id?: string
+          platform_id?: string
+          vin?: string | null
+          year?: number | null
+          mileage?: number | null
+          colour_original?: string | null
+          notes?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      builds: {
+        Row: {
+          id: string
+          builder_id: string
+          customer_id: string
+          vehicle_id: string | null
+          platform_id: string
+          tier_id: string
+          stage: string
+          slot_year: number | null
+          slot_number: number | null
+          price_cents: number | null
+          notes: string | null
+          payment_status: 'unpaid' | 'pending' | 'paid' | 'failed'
+          quote_id: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          builder_id: string
+          customer_id: string
+          vehicle_id?: string | null
+          platform_id: string
+          tier_id: string
+          stage?: string
+          slot_year?: number | null
+          slot_number?: number | null
+          price_cents?: number | null
+          notes?: string | null
+          payment_status?: 'unpaid' | 'pending' | 'paid' | 'failed'
+          quote_id?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          builder_id?: string
+          customer_id?: string
+          vehicle_id?: string | null
+          platform_id?: string
+          tier_id?: string
+          stage?: string
+          slot_year?: number | null
+          slot_number?: number | null
+          price_cents?: number | null
+          notes?: string | null
+          payment_status?: 'unpaid' | 'pending' | 'paid' | 'failed'
+          quote_id?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      build_options: {
+        Row: {
+          id: string
+          build_id: string
+          option_id: string
+          price_cents_at_selection: number
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          build_id: string
+          option_id: string
+          price_cents_at_selection: number
+          created_at?: string
+        }
+        Update: {
+          build_id?: string
+          option_id?: string
+          price_cents_at_selection?: number
+        }
+        Relationships: []
+      }
+      build_stage_events: {
+        Row: {
+          id: string
+          build_id: string
+          from_stage: string | null
+          to_stage: string
+          by_profile_id: string | null
+          note: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          build_id: string
+          from_stage?: string | null
+          to_stage: string
+          by_profile_id?: string | null
+          note?: string | null
+          created_at?: string
+        }
+        Update: {
+          build_id?: string
+          from_stage?: string | null
+          to_stage?: string
+          by_profile_id?: string | null
+          note?: string | null
+        }
+        Relationships: []
+      }
+      media: {
+        Row: {
+          id: string
+          build_id: string | null
+          option_id: string | null
+          storage_path: string
+          kind: 'swatch' | 'hero' | 'build_photo' | 'document'
+          caption: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          build_id?: string | null
+          option_id?: string | null
+          storage_path: string
+          kind: 'swatch' | 'hero' | 'build_photo' | 'document'
+          caption?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          build_id?: string | null
+          option_id?: string | null
+          storage_path?: string
+          kind?: 'swatch' | 'hero' | 'build_photo' | 'document'
+          caption?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      zoho_sync_log: {
+        Row: {
+          id: string
+          direction: 'inbound' | 'outbound'
+          object: string
+          object_id: string | null
+          payload: Json
+          status: 'success' | 'error' | 'pending'
+          error: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          direction: 'inbound' | 'outbound'
+          object: string
+          object_id?: string | null
+          payload?: Json
+          status: 'success' | 'error' | 'pending'
+          error?: string | null
+          created_at?: string
+        }
+        Update: {
+          direction?: 'inbound' | 'outbound'
+          object?: string
+          object_id?: string | null
+          payload?: Json
+          status?: 'success' | 'error' | 'pending'
+          error?: string | null
         }
         Relationships: []
       }
@@ -516,3 +880,15 @@ export type Builder = Database['public']['Tables']['builders']['Row']
 export type BuilderBrand = Database['public']['Tables']['builder_brand']['Row']
 export type BuilderTerms = Database['public']['Tables']['builder_terms']['Row']
 export type ContractTemplate = Database['public']['Tables']['contract_templates']['Row']
+export type Customer = Database['public']['Tables']['customers']['Row']
+export type Lead = Database['public']['Tables']['leads']['Row']
+export type Quote = Database['public']['Tables']['quotes']['Row']
+export type QuoteOption = Database['public']['Tables']['quote_options']['Row']
+export type QuoteEvent = Database['public']['Tables']['quote_events']['Row']
+export type ZohoSyncLog = Database['public']['Tables']['zoho_sync_log']['Row']
+
+export const LEAD_STAGES = [
+  'inquiry', 'warm', 'quoting', 'quoted', 'revising',
+  'contract_sent', 'won', 'lost',
+] as const
+export type LeadStage = typeof LEAD_STAGES[number]

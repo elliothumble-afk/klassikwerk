@@ -24,16 +24,21 @@ import { tierSchema, type TierForm } from '@/schemas/catalog'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorState } from '@/components/ui/ErrorState'
 import { Spinner } from '@/components/ui/Spinner'
+import { useOpsBuilderSelection } from '@/lib/opsBuilderSelection'
 
-const QUERY_KEY = ['catalog', 'tiers']
+function tiersQueryKey(builderId: string | undefined) {
+  return ['catalog', 'tiers', builderId ?? 'none']
+}
 
-function useTiers() {
+function useTiers(builderId: string | undefined) {
   return useQuery({
-    queryKey: QUERY_KEY,
+    queryKey: tiersQueryKey(builderId),
+    enabled: Boolean(builderId),
     queryFn: async () => {
       const { data, error } = await supabase
         .from('catalog_tiers')
         .select('*')
+        .eq('builder_id', builderId!)
         .order('sort')
       if (error) throw error
       return data as Tier[]
@@ -47,8 +52,9 @@ function formatPrice(cents: number | null) {
 }
 
 // Convert TierForm dollars → DB cents payload
-function tierFormToDb(data: TierForm) {
+function tierFormToDb(data: TierForm, builderId: string) {
   return {
+    builder_id: builderId,
     slug: data.slug,
     name: data.name,
     base_price_cents: data.base_price != null ? Math.round(data.base_price * 100) : null,
@@ -153,12 +159,12 @@ function TierEditForm({ tier, onSave, onCancel, saving }: EditFormProps) {
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <div>
               <label className="text-xs text-[var(--color-muted)] mb-1 block">Name *</label>
-              <input {...register('name')} className={inputClass} placeholder="Klassik" />
+              <input {...register('name')} className={inputClass} placeholder="Tier name" />
               {errors.name && <p className="text-xs text-[var(--color-danger)] mt-1">{errors.name.message}</p>}
             </div>
             <div>
               <label className="text-xs text-[var(--color-muted)] mb-1 block">Slug *</label>
-              <input {...register('slug')} className={inputClass} placeholder="klassik" />
+              <input {...register('slug')} className={inputClass} placeholder="tier-slug" />
               {errors.slug && <p className="text-xs text-[var(--color-danger)] mt-1">{errors.slug.message}</p>}
             </div>
             <div>
@@ -234,16 +240,20 @@ function TierEditForm({ tier, onSave, onCancel, saving }: EditFormProps) {
 
 export function TiersTab() {
   const qc = useQueryClient()
-  const { data: tiers, isLoading, error, refetch } = useTiers()
+  const { selected } = useOpsBuilderSelection()
+  const QUERY_KEY = tiersQueryKey(selected?.id)
+  const { data: tiers, isLoading, error, refetch } = useTiers(selected?.id)
   const [editingId, setEditingId] = useState<string | 'new' | null>(null)
   const [saving, setSaving] = useState(false)
   const sensors = useSensors(useSensor(PointerSensor))
 
   const saveMutation = useMutation({
     mutationFn: async ({ data, id }: { data: TierForm; id?: string }) => {
-      const payload = tierFormToDb(data)
+      if (!selected) throw new Error('No builder selected')
+      const payload = tierFormToDb(data, selected.id)
       if (id) {
-        const { error } = await supabase.from('catalog_tiers').update(payload).eq('id', id)
+        const { builder_id: _bid, ...update } = payload
+        const { error } = await supabase.from('catalog_tiers').update(update).eq('id', id)
         if (error) throw error
       } else {
         const { error } = await supabase.from('catalog_tiers').insert(payload)
@@ -251,9 +261,10 @@ export function TiersTab() {
       }
     },
     onMutate: async ({ data, id }) => {
+      if (!selected) return { prev: undefined }
       await qc.cancelQueries({ queryKey: QUERY_KEY })
       const prev = qc.getQueryData<Tier[]>(QUERY_KEY)
-      const payload = tierFormToDb(data)
+      const payload = tierFormToDb(data, selected.id)
       qc.setQueryData<Tier[]>(QUERY_KEY, old => {
         if (!old) return old
         if (id) return old.map(t => t.id === id ? { ...t, ...payload } : t)

@@ -24,16 +24,22 @@ import { platformSchema, type PlatformForm } from '@/schemas/catalog'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorState } from '@/components/ui/ErrorState'
 import { Spinner } from '@/components/ui/Spinner'
+import { useOpsBuilderSelection } from '@/lib/opsBuilderSelection'
+import { PlatformCloneDialog } from './PlatformCloneDialog'
 
-const QUERY_KEY = ['catalog', 'platforms']
+function platformsQueryKey(builderId: string | undefined) {
+  return ['catalog', 'platforms', builderId ?? 'none']
+}
 
-function usePlatforms() {
+function usePlatforms(builderId: string | undefined) {
   return useQuery({
-    queryKey: QUERY_KEY,
+    queryKey: platformsQueryKey(builderId),
+    enabled: Boolean(builderId),
     queryFn: async () => {
       const { data, error } = await supabase
         .from('catalog_platforms')
         .select('*')
+        .eq('builder_id', builderId!)
         .order('sort')
       if (error) throw error
       return data as Platform[]
@@ -137,17 +143,17 @@ function PlatformForm({ platform, onSave, onCancel, saving }: EditFormProps) {
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <div>
               <label className="text-xs text-[var(--color-muted)] mb-1 block">Name *</label>
-              <input {...register('name')} className={inputClass} placeholder="G-Class W463" />
+              <input {...register('name')} className={inputClass} placeholder="Platform name" />
               {errors.name && <p className="text-xs text-[var(--color-danger)] mt-1">{errors.name.message}</p>}
             </div>
             <div>
               <label className="text-xs text-[var(--color-muted)] mb-1 block">Slug *</label>
-              <input {...register('slug')} className={inputClass} placeholder="w463" />
+              <input {...register('slug')} className={inputClass} placeholder="platform-slug" />
               {errors.slug && <p className="text-xs text-[var(--color-danger)] mt-1">{errors.slug.message}</p>}
             </div>
             <div>
               <label className="text-xs text-[var(--color-muted)] mb-1 block">Chassis *</label>
-              <input {...register('chassis')} className={inputClass} placeholder="W463" />
+              <input {...register('chassis')} className={inputClass} placeholder="Chassis code" />
               {errors.chassis && <p className="text-xs text-[var(--color-danger)] mt-1">{errors.chassis.message}</p>}
             </div>
             <div>
@@ -198,30 +204,35 @@ function PlatformForm({ platform, onSave, onCancel, saving }: EditFormProps) {
 
 export function PlatformsTab() {
   const qc = useQueryClient()
-  const { data: platforms, isLoading, error, refetch } = usePlatforms()
+  const { selected } = useOpsBuilderSelection()
+  const QUERY_KEY = platformsQueryKey(selected?.id)
+  const { data: platforms, isLoading, error, refetch } = usePlatforms(selected?.id)
   const [editingId, setEditingId] = useState<string | 'new' | null>(null)
   const [saving, setSaving] = useState(false)
+  const [showClone, setShowClone] = useState(false)
 
   const sensors = useSensors(useSensor(PointerSensor))
 
   const saveMutation = useMutation({
     mutationFn: async ({ data, id }: { data: PlatformForm; id?: string }) => {
+      if (!selected) throw new Error('No builder selected')
       if (id) {
         const { error } = await supabase.from('catalog_platforms').update(data).eq('id', id)
         if (error) throw error
       } else {
-        const { error } = await supabase.from('catalog_platforms').insert({ ...data })
+        const { error } = await supabase.from('catalog_platforms').insert({ ...data, builder_id: selected.id })
         if (error) throw error
       }
     },
     onMutate: async ({ data, id }) => {
+      if (!selected) return { prev: undefined }
       await qc.cancelQueries({ queryKey: QUERY_KEY })
       const prev = qc.getQueryData<Platform[]>(QUERY_KEY)
       if (prev) {
         qc.setQueryData<Platform[]>(QUERY_KEY, old => {
           if (!old) return old
           if (id) return old.map(p => p.id === id ? { ...p, ...data } : p)
-          return [...old, { ...data, id: crypto.randomUUID(), created_at: '', updated_at: '' }]
+          return [...old, { ...data, builder_id: selected.id, id: crypto.randomUUID(), created_at: '', updated_at: '' }]
         })
       }
       return { prev }
@@ -299,13 +310,31 @@ export function PlatformsTab() {
     <div className="bg-[var(--color-surface)] rounded-[var(--radius-lg)] border border-[var(--color-border)]">
       <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--color-border)]">
         <h2 className="text-sm font-medium">Platforms ({platforms?.length ?? 0})</h2>
-        <button
-          onClick={() => setEditingId('new')}
-          className="flex items-center gap-1.5 h-8 px-3 rounded-[var(--radius-sm)] bg-[var(--color-accent)] text-white text-sm hover:bg-[var(--color-accent-hover)] transition"
-        >
-          <Plus size={14} /> Add platform
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowClone(true)}
+            className="flex items-center gap-1.5 h-8 px-3 rounded-[var(--radius-sm)] border border-[var(--color-border)] text-sm hover:bg-[var(--color-surface-raised)] transition"
+          >
+            Copy from builder…
+          </button>
+          <button
+            onClick={() => setEditingId('new')}
+            className="flex items-center gap-1.5 h-8 px-3 rounded-[var(--radius-sm)] bg-[var(--color-accent)] text-white text-sm hover:bg-[var(--color-accent-hover)] transition"
+          >
+            <Plus size={14} /> Add platform
+          </button>
+        </div>
       </div>
+      {showClone && selected && (
+        <PlatformCloneDialog
+          targetBuilder={selected}
+          onClose={() => setShowClone(false)}
+          onCloned={() => {
+            setShowClone(false)
+            qc.invalidateQueries({ queryKey: QUERY_KEY })
+          }}
+        />
+      )}
 
       {(!platforms || platforms.length === 0) && editingId !== 'new' ? (
         <EmptyState

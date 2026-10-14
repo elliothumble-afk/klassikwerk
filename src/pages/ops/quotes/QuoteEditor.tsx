@@ -5,7 +5,7 @@ import { FileText, Send, Save, Copy, Hammer, ExternalLink } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { Spinner } from '@/components/ui/Spinner'
 import type {
-  CatalogOption, OptionGroup, Platform, Tier, Quote, QuoteOption,
+  BuilderTerms, CatalogOption, OptionGroup, Platform, Tier, Quote, QuoteOption,
 } from '@/types/database'
 
 interface Selection { [groupId: string]: string[] }
@@ -64,21 +64,25 @@ export function QuoteEditor() {
     enabled: Boolean(lead?.builder_id),
     queryFn: async () => {
       const builderId = lead!.builder_id
-      const [plat, tie, grp, opt] = await Promise.all([
+      const [plat, tie, grp, opt, terms] = await Promise.all([
         supabase.from('catalog_platforms').select('*').eq('builder_id', builderId).eq('active', true).order('sort'),
-        supabase.from('catalog_tiers').select('*').eq('builder_id', builderId).order('sort'),
+        supabase.from('catalog_tiers').select('*').eq('builder_id', builderId).eq('active', true).order('sort'),
         supabase.from('catalog_option_groups').select('*').eq('builder_id', builderId).order('sort'),
         supabase.from('catalog_options').select('*').eq('builder_id', builderId).eq('active', true).order('sort'),
+        supabase.from('builder_terms').select('option_mode').eq('builder_id', builderId).maybeSingle(),
       ])
       if (plat.error) throw plat.error
       if (tie.error) throw tie.error
       if (grp.error) throw grp.error
       if (opt.error) throw opt.error
+      if (terms.error) throw terms.error
+      const optionMode = ((terms.data as Pick<BuilderTerms, 'option_mode'> | null)?.option_mode) ?? 'priced'
       return {
         platforms: (plat.data ?? []) as Platform[],
         tiers: (tie.data ?? []) as Tier[],
         groups: (grp.data ?? []) as OptionGroup[],
         options: (opt.data ?? []) as CatalogOption[],
+        optionMode: optionMode as 'included_only' | 'priced',
       }
     },
   })
@@ -112,29 +116,42 @@ export function QuoteEditor() {
   const platform = useMemo(() => catalog?.platforms.find(p => p.id === platformId) ?? null, [catalog, platformId])
   const tier = useMemo(() => catalog?.tiers.find(t => t.id === tierId) ?? null, [catalog, tierId])
 
-  const availableGroups = useMemo(
+  const includedOnly = catalog?.optionMode === 'included_only'
+
+  const platformGroups = useMemo(
     () => (catalog?.groups ?? []).filter(g => g.platform_id === null || g.platform_id === platform?.id),
     [catalog, platform]
   )
-  const groupedOptions = useMemo(() => {
+
+  /** All options visible for the current tier, respecting `option_mode`. */
+  const visibleOptionsByGroup = useMemo(() => {
     const by = new Map<string, CatalogOption[]>()
-    for (const o of catalog?.options ?? []) {
+    if (!catalog) return by
+    for (const o of catalog.options) {
+      if (includedOnly && tier && !o.included_in_tier_ids.includes(tier.id)) continue
       if (!by.has(o.group_id)) by.set(o.group_id, [])
       by.get(o.group_id)!.push(o)
     }
     return by
-  }, [catalog])
+  }, [catalog, includedOnly, tier])
+
+  /** Groups with at least one visible option — empties are hidden. */
+  const availableGroups = useMemo(
+    () => platformGroups.filter(g => (visibleOptionsByGroup.get(g.id)?.length ?? 0) > 0),
+    [platformGroups, visibleOptionsByGroup]
+  )
 
   const total = useMemo(() => {
     if (!tier || !catalog) return 0
     const base = tier.base_price_cents ?? 0
+    if (includedOnly) return base
     const addons = Object.values(selection).flat().reduce((sum, optId) => {
       const opt = catalog.options.find(o => o.id === optId)
       if (!opt) return sum
       return opt.included_in_tier_ids.includes(tier.id) ? sum : sum + opt.price_cents
     }, 0)
     return base + addons
-  }, [selection, catalog, tier])
+  }, [selection, catalog, tier, includedOnly])
 
   function toggleOption(group: OptionGroup, optionId: string) {
     setSelection(prev => {
@@ -430,8 +447,7 @@ export function QuoteEditor() {
           <Step label="Options">
             <div className="space-y-5">
               {availableGroups.map(group => {
-                const opts = groupedOptions.get(group.id) ?? []
-                if (opts.length === 0) return null
+                const opts = visibleOptionsByGroup.get(group.id) ?? []
                 const chosen = new Set(selection[group.id] ?? [])
                 return (
                   <div key={group.id}>
@@ -444,7 +460,7 @@ export function QuoteEditor() {
                       {opts.map(opt => {
                         const included = opt.included_in_tier_ids.includes(tier.id)
                         const active = chosen.has(opt.id)
-                        const priceMissing = !included && opt.price_cents === 0
+                        const priceMissing = !includedOnly && !included && opt.price_cents === 0
                         return (
                           <button
                             key={opt.id}
@@ -468,22 +484,24 @@ export function QuoteEditor() {
                                 {opt.code && <div className="text-xs text-[var(--color-muted)]">{opt.code}</div>}
                               </div>
                             </div>
-                            <div className="text-xs shrink-0 text-right">
-                              {included ? (
-                                <span className="text-[var(--color-muted)]">Included</span>
-                              ) : (
-                                <>
-                                  <span className={priceMissing ? 'text-[var(--color-danger)]' : 'text-[var(--color-muted)]'}>
-                                    +${(opt.price_cents / 100).toLocaleString()}
-                                  </span>
-                                  {priceMissing && (
-                                    <div className="text-[10px] text-[var(--color-danger)] mt-0.5">
-                                      Set a price
-                                    </div>
-                                  )}
-                                </>
-                              )}
-                            </div>
+                            {!includedOnly && (
+                              <div className="text-xs shrink-0 text-right">
+                                {included ? (
+                                  <span className="text-[var(--color-muted)]">Included</span>
+                                ) : (
+                                  <>
+                                    <span className={priceMissing ? 'text-[var(--color-danger)]' : 'text-[var(--color-muted)]'}>
+                                      +${(opt.price_cents / 100).toLocaleString()}
+                                    </span>
+                                    {priceMissing && (
+                                      <div className="text-[10px] text-[var(--color-danger)] mt-0.5">
+                                        Set a price
+                                      </div>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            )}
                           </button>
                         )
                       })}

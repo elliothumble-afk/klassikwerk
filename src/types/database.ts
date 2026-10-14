@@ -186,6 +186,7 @@ export type Database = {
           lead_time_copy: string | null
           currency: string
           payment_mode: 'none' | 'stripe'
+          option_mode: 'included_only' | 'priced'
           quote_validity_days: number
           quote_intro_copy: string | null
           brochure_url: string | null
@@ -201,6 +202,7 @@ export type Database = {
           lead_time_copy?: string | null
           currency?: string
           payment_mode?: 'none' | 'stripe'
+          option_mode?: 'included_only' | 'priced'
           quote_validity_days?: number
           quote_intro_copy?: string | null
           brochure_url?: string | null
@@ -215,6 +217,7 @@ export type Database = {
           lead_time_copy?: string | null
           currency?: string
           payment_mode?: 'none' | 'stripe'
+          option_mode?: 'included_only' | 'priced'
           quote_validity_days?: number
           quote_intro_copy?: string | null
           brochure_url?: string | null
@@ -689,6 +692,7 @@ export type Database = {
           lead_time_weeks: number | null
           description: string | null
           quote_only: boolean
+          active: boolean
           sort: number
           created_at: string
           updated_at: string
@@ -702,6 +706,7 @@ export type Database = {
           lead_time_weeks?: number | null
           description?: string | null
           quote_only?: boolean
+          active?: boolean
           sort?: number
           created_at?: string
           updated_at?: string
@@ -714,6 +719,7 @@ export type Database = {
           lead_time_weeks?: number | null
           description?: string | null
           quote_only?: boolean
+          active?: boolean
           sort?: number
           updated_at?: string
         }

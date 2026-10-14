@@ -33,6 +33,7 @@ export function TermsEdit() {
         lead_time_copy: next.lead_time_copy,
         currency: next.currency,
         payment_mode: next.payment_mode,
+        option_mode: next.option_mode,
       })
       if (error) throw error
     },
@@ -82,6 +83,20 @@ export function TermsEdit() {
             </select>
             <p className="text-xs text-[var(--color-muted)] mt-1">
               Stripe mode requires STRIPE_SECRET_KEY on the edge function.
+            </p>
+          </Field>
+          <Field label="Option mode">
+            <select
+              value={draft.option_mode}
+              onChange={e => up('option_mode', e.target.value as 'included_only' | 'priced')}
+              className={`${input} w-64`}
+            >
+              <option value="priced">Priced — show all options with add-on prices</option>
+              <option value="included_only">Included only — hide options not in the tier</option>
+            </select>
+            <p className="text-xs text-[var(--color-muted)] mt-1">
+              In included-only mode the quote editor hides options not covered by the tier
+              and the price equals the tier price.
             </p>
           </Field>
           <Field label="Warranty text"><textarea value={draft.warranty_text ?? ''} onChange={e => up('warranty_text', e.target.value)} className={`${input} w-full h-20 py-2`} /></Field>

@@ -17,7 +17,7 @@ import {
   arrayMove,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { GripVertical, Plus, Pencil, Check, X } from 'lucide-react'
+import { GripVertical, Plus, Pencil, Check, X, ToggleLeft, ToggleRight } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import type { Tier } from '@/types/database'
 import { tierSchema, type TierForm } from '@/schemas/catalog'
@@ -61,6 +61,7 @@ function tierFormToDb(data: TierForm, builderId: string) {
     lead_time_weeks: data.lead_time_weeks ?? null,
     description: data.description ?? null,
     quote_only: data.quote_only,
+    active: data.active,
     sort: data.sort,
   }
 }
@@ -68,9 +69,10 @@ function tierFormToDb(data: TierForm, builderId: string) {
 interface RowProps {
   tier: Tier
   onEdit: (t: Tier) => void
+  onToggleActive: (t: Tier) => void
 }
 
-function TierRow({ tier, onEdit }: RowProps) {
+function TierRow({ tier, onEdit, onToggleActive }: RowProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: tier.id })
 
@@ -100,6 +102,18 @@ function TierRow({ tier, onEdit }: RowProps) {
       </td>
       <td className="py-3 pr-4 text-sm text-[var(--color-muted)]">
         {tier.lead_time_weeks ? `${tier.lead_time_weeks} wk` : '—'}
+      </td>
+      <td className="py-3 pr-4">
+        <button
+          onClick={() => onToggleActive(tier)}
+          className={`flex items-center gap-1.5 text-xs transition ${
+            tier.active ? 'text-[var(--color-success)]' : 'text-[var(--color-muted)]'
+          }`}
+          title={tier.active ? 'Active — click to deactivate' : 'Inactive — click to activate'}
+        >
+          {tier.active ? <ToggleRight size={18} /> : <ToggleLeft size={18} />}
+          {tier.active ? 'Active' : 'Inactive'}
+        </button>
       </td>
       <td className="py-3 pr-5 w-8">
         <button
@@ -137,9 +151,10 @@ function TierEditForm({ tier, onSave, onCancel, saving }: EditFormProps) {
           lead_time_weeks: tier.lead_time_weeks ?? undefined,
           description: tier.description ?? '',
           quote_only: tier.quote_only,
+          active: tier.active,
           sort: tier.sort,
         }
-      : { sort: 0, quote_only: false },
+      : { sort: 0, quote_only: false, active: true },
   })
 
   const quoteOnly = watch('quote_only')
@@ -154,7 +169,7 @@ function TierEditForm({ tier, onSave, onCancel, saving }: EditFormProps) {
 
   return (
     <tr className="border-b border-[var(--color-border)] bg-[var(--color-accent-light)]">
-      <td colSpan={5} className="py-4 px-4">
+      <td colSpan={6} className="py-4 px-4">
         <form onSubmit={handleSubmit(d => onSave(d, tier?.id))} className="space-y-3">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <div>
@@ -206,6 +221,10 @@ function TierEditForm({ tier, onSave, onCancel, saving }: EditFormProps) {
             />
           </div>
           <div className="flex items-center gap-4">
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input {...register('active')} type="checkbox" className="rounded" />
+              Active
+            </label>
             <label className="flex items-center gap-2 text-sm cursor-pointer">
               <input {...register('quote_only')} type="checkbox" className="rounded" />
               Quote only
@@ -278,6 +297,28 @@ export function TiersTab() {
     onSettled: () => qc.invalidateQueries({ queryKey: QUERY_KEY }),
   })
 
+  const toggleActive = useMutation({
+    mutationFn: async (tier: Tier) => {
+      const { error } = await supabase
+        .from('catalog_tiers')
+        .update({ active: !tier.active })
+        .eq('id', tier.id)
+      if (error) throw error
+    },
+    onMutate: async (tier) => {
+      await qc.cancelQueries({ queryKey: QUERY_KEY })
+      const prev = qc.getQueryData<Tier[]>(QUERY_KEY)
+      qc.setQueryData<Tier[]>(QUERY_KEY, old =>
+        old?.map(t => t.id === tier.id ? { ...t, active: !t.active } : t)
+      )
+      return { prev }
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev) qc.setQueryData(QUERY_KEY, ctx.prev)
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: QUERY_KEY }),
+  })
+
   async function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event
     if (!over || active.id === over.id || !tiers) return
@@ -338,6 +379,7 @@ export function TiersTab() {
                 <th className="text-left py-2.5 pr-4 text-xs font-medium text-[var(--color-muted)]">Name</th>
                 <th className="text-left py-2.5 pr-4 text-xs font-medium text-[var(--color-muted)]">Price</th>
                 <th className="text-left py-2.5 pr-4 text-xs font-medium text-[var(--color-muted)]">Lead time</th>
+                <th className="text-left py-2.5 pr-4 text-xs font-medium text-[var(--color-muted)]">Status</th>
                 <th className="text-left py-2.5 pr-5 w-8" />
               </tr>
             </thead>
@@ -354,7 +396,12 @@ export function TiersTab() {
                         saving={saving}
                       />
                     ) : (
-                      <TierRow key={tier.id} tier={tier} onEdit={t => setEditingId(t.id)} />
+                      <TierRow
+                        key={tier.id}
+                        tier={tier}
+                        onEdit={t => setEditingId(t.id)}
+                        onToggleActive={t => toggleActive.mutate(t)}
+                      />
                     )
                   )}
                   {editingId === 'new' && (

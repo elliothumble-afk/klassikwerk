@@ -101,6 +101,7 @@ function defaultTerms(builderId: string): BuilderTerms {
     lead_time_copy: null,
     currency: 'usd',
     payment_mode: 'none',
+    option_mode: 'priced',
     quote_validity_days: 30,
     quote_intro_copy: null,
     brochure_url: null,

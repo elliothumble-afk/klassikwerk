@@ -27,7 +27,7 @@ export function CallbackPage() {
         .eq('user_id', session.user.id)
         .single()
         .then(({ data }) => {
-          if (data?.role === 'ops') {
+          if (data?.role === 'ops' || data?.role === 'operator') {
             navigate('/ops/catalog', { replace: true })
           } else {
             navigate('/portal', { replace: true })

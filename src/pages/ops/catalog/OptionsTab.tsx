@@ -28,21 +28,24 @@ import { catalogOptionSchema, type CatalogOptionForm } from '@/schemas/catalog'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorState } from '@/components/ui/ErrorState'
 import { Spinner } from '@/components/ui/Spinner'
+import { useOpsBuilderSelection } from '@/lib/opsBuilderSelection'
 
-const OPTIONS_KEY = ['catalog', 'options']
-const TIERS_KEY = ['catalog', 'tiers']
-const PLATFORMS_KEY = ['catalog', 'platforms']
-const GROUPS_KEY = ['catalog', 'option-groups']
+const optionsKey = (builderId?: string) => ['catalog', 'options', builderId ?? 'none']
+const tiersKey = (builderId?: string) => ['catalog', 'tiers', builderId ?? 'none']
+const platformsKey = (builderId?: string) => ['catalog', 'platforms', builderId ?? 'none']
+const groupsKey = (builderId?: string) => ['catalog', 'option-groups', builderId ?? 'none']
 
 type OptionWithPlatforms = CatalogOption & { platform_ids: string[] }
 
-function useOptions() {
+function useOptions(builderId?: string) {
   return useQuery({
-    queryKey: OPTIONS_KEY,
+    queryKey: optionsKey(builderId),
+    enabled: Boolean(builderId),
     queryFn: async () => {
       const { data: options, error: optErr } = await supabase
         .from('catalog_options')
         .select('*')
+        .eq('builder_id', builderId!)
         .order('sort')
       if (optErr) throw optErr
 
@@ -66,35 +69,47 @@ function useOptions() {
   })
 }
 
-function useTiers() {
+function useTiers(builderId?: string) {
   return useQuery({
-    queryKey: TIERS_KEY,
+    queryKey: tiersKey(builderId),
+    enabled: Boolean(builderId),
     queryFn: async () => {
-      const { data, error } = await supabase.from('catalog_tiers').select('*').order('sort')
+      const { data, error } = await supabase
+        .from('catalog_tiers')
+        .select('*')
+        .eq('builder_id', builderId!)
+        .order('sort')
       if (error) throw error
       return data as Tier[]
     },
   })
 }
 
-function usePlatforms() {
+function usePlatforms(builderId?: string) {
   return useQuery({
-    queryKey: PLATFORMS_KEY,
+    queryKey: platformsKey(builderId),
+    enabled: Boolean(builderId),
     queryFn: async () => {
-      const { data, error } = await supabase.from('catalog_platforms').select('*').order('sort')
+      const { data, error } = await supabase
+        .from('catalog_platforms')
+        .select('*')
+        .eq('builder_id', builderId!)
+        .order('sort')
       if (error) throw error
       return data as Platform[]
     },
   })
 }
 
-function useOptionGroups() {
+function useOptionGroups(builderId?: string) {
   return useQuery({
-    queryKey: GROUPS_KEY,
+    queryKey: groupsKey(builderId),
+    enabled: Boolean(builderId),
     queryFn: async () => {
       const { data, error } = await supabase
         .from('catalog_option_groups')
         .select('*')
+        .eq('builder_id', builderId!)
         .order('sort')
       if (error) throw error
       return data as OptionGroup[]
@@ -108,8 +123,9 @@ function formatPrice(cents: number) {
 }
 
 // Convert CatalogOptionForm dollars → DB cents payload
-function optionFormToDb(data: CatalogOptionForm) {
+function optionFormToDb(data: CatalogOptionForm, builderId: string) {
   return {
+    builder_id: builderId,
     slug: data.slug,
     name: data.name,
     code: data.code ?? null,
@@ -651,10 +667,12 @@ function GroupSection({
 
 export function OptionsTab() {
   const qc = useQueryClient()
-  const { data: options, isLoading: loadingOptions, error: optionsError, refetch } = useOptions()
-  const { data: tiers = [], isLoading: loadingTiers } = useTiers()
-  const { data: platforms = [], isLoading: loadingPlatforms } = usePlatforms()
-  const { data: groups = [], isLoading: loadingGroups } = useOptionGroups()
+  const { selected } = useOpsBuilderSelection()
+  const OPTIONS_KEY = optionsKey(selected?.id)
+  const { data: options, isLoading: loadingOptions, error: optionsError, refetch } = useOptions(selected?.id)
+  const { data: tiers = [], isLoading: loadingTiers } = useTiers(selected?.id)
+  const { data: platforms = [], isLoading: loadingPlatforms } = usePlatforms(selected?.id)
+  const { data: groups = [], isLoading: loadingGroups } = useOptionGroups(selected?.id)
 
   const [editingId, setEditingId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -673,9 +691,11 @@ export function OptionsTab() {
       id?: string
       groupId?: string
     }) => {
-      const payload = optionFormToDb(data)
+      if (!selected) throw new Error('No builder selected')
+      const payload = optionFormToDb(data, selected.id)
       if (id) {
-        const { error } = await supabase.from('catalog_options').update(payload).eq('id', id)
+        const { builder_id: _bid, ...update } = payload
+        const { error } = await supabase.from('catalog_options').update(update).eq('id', id)
         if (error) throw error
 
         await supabase.from('catalog_option_platforms').delete().eq('option_id', id)

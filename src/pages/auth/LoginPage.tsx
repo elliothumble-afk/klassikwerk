@@ -39,7 +39,8 @@ function PasswordForm() {
     const role = data.user
       ? (await supabase.from('profiles').select('role').eq('user_id', data.user.id).single()).data?.role
       : null
-    navigate(role === 'ops' ? '/ops/catalog' : '/portal', { replace: true })
+    const isOpsLike = role === 'ops' || role === 'operator'
+    navigate(isOpsLike ? '/ops/catalog' : '/portal', { replace: true })
   }
 
   return (

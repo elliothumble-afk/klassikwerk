@@ -3,11 +3,13 @@ import { useAuth } from '@/hooks/useAuth'
 import type { Profile } from '@/types/database'
 
 interface Props {
-  role: Profile['role']
+  role?: Profile['role']
+  roles?: Profile['role'][]
 }
 
-export function RoleGuard({ role }: Props) {
+export function RoleGuard({ role, roles }: Props) {
   const { profile, loading } = useAuth()
+  const allowed = roles ?? (role ? [role] : [])
 
   if (loading) {
     return (
@@ -17,7 +19,7 @@ export function RoleGuard({ role }: Props) {
     )
   }
 
-  if (!profile || profile.role !== role) {
+  if (!profile || !allowed.includes(profile.role)) {
     return <Navigate to="/auth/login" replace />
   }
 

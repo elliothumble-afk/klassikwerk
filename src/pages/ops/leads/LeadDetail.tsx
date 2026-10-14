@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { ExternalLink } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { Spinner } from '@/components/ui/Spinner'
+import { ErrorState } from '@/components/ui/ErrorState'
 import { LEAD_STAGES, type LeadStage } from '@/types/database'
 
 interface LeadDetailData {
@@ -15,7 +16,7 @@ interface LeadDetailData {
   phone: string | null
   platform_interest_id: string | null
   created_at: string
-  customer: { full_name: string | null; email: string | null; phone: string | null; zoho_contact_id: string | null } | null
+  customer: { full_name: string | null; email: string | null; zoho_contact_id: string | null } | null
   platform: { name: string } | null
   quotes: { id: string; version: number; status: string; price_cents: number; created_at: string }[]
 }
@@ -25,7 +26,7 @@ export function LeadDetail() {
   const navigate = useNavigate()
   const qc = useQueryClient()
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['lead', id],
     enabled: Boolean(id),
     queryFn: async () => {
@@ -34,13 +35,14 @@ export function LeadDetail() {
         .select(`
           id, stage, source, zoho_lead_id, notes, message, phone,
           platform_interest_id, created_at,
-          customer:customers(full_name, email, phone, zoho_contact_id),
-          platform:catalog_platforms!leads_platform_interest_id_fkey(name),
+          customer:customers(full_name, email, zoho_contact_id),
+          platform:catalog_platforms(name),
           quotes(id, version, status, price_cents, created_at)
         `)
         .eq('id', id!)
-        .single()
+        .maybeSingle()
       if (error) throw error
+      if (!data) throw new Error('Lead not found')
       return data as unknown as LeadDetailData
     },
   })
@@ -53,8 +55,21 @@ export function LeadDetail() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['lead', id] }),
   })
 
-  if (isLoading || !data) {
+  if (isLoading) {
     return <div className="p-8"><Spinner size={20} className="text-[var(--color-muted)]" /></div>
+  }
+  if (error || !data) {
+    return (
+      <div className="p-8 max-w-4xl mx-auto">
+        <Link to="/ops/leads" className="text-xs text-[var(--color-muted)] hover:underline">← Leads</Link>
+        <div className="mt-6">
+          <ErrorState
+            message={(error as Error | undefined)?.message ?? 'Lead not found'}
+            retry={() => refetch()}
+          />
+        </div>
+      </div>
+    )
   }
 
   return (

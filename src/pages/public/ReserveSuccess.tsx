@@ -1,12 +1,10 @@
-import { Link, useLocation, useSearchParams } from 'react-router'
+import { Link, useLocation } from 'react-router'
 import { useBuilder } from '@/lib/builderContext'
 
 export function ReserveSuccess() {
   const { bundle } = useBuilder()
-  const [params] = useSearchParams()
   const location = useLocation()
   const prefix = location.pathname.startsWith('/b/') ? `/b/${bundle?.builder.slug}` : ''
-  const demo = params.get('demo') === '1'
 
   return (
     <section className="max-w-2xl mx-auto px-6 py-20 text-center">
@@ -17,9 +15,7 @@ export function ReserveSuccess() {
         Reservation received
       </h1>
       <p className="text-[var(--color-muted)] mb-6">
-        {demo
-          ? 'Stripe is not configured in this environment, so no payment was taken. In production, a confirmation email branded for this builder will go out.'
-          : `A confirmation email branded for ${bundle?.builder.name ?? 'this builder'} is on its way.`}
+        We'll be in touch to confirm your slot.
       </p>
       <Link
         to={`${prefix}/`}

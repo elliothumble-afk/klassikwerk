@@ -99,6 +99,7 @@ function defaultTerms(builderId: string): BuilderTerms {
     governing_law: null,
     lead_time_copy: null,
     currency: 'usd',
+    payment_mode: 'none',
     created_at: '',
     updated_at: '',
   }

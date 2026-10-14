@@ -49,6 +49,9 @@ export function ConfigurePage() {
   const platformSlug = params.get('platform')
   const tierSlug = params.get('tier')
   const [selection, setSelection] = useState<Selection>({})
+  const [reserveOpen, setReserveOpen] = useState(false)
+  const [email, setEmail] = useState('')
+  const [fullName, setFullName] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [checkoutError, setCheckoutError] = useState<string | null>(null)
 
@@ -138,19 +141,23 @@ export function ConfigurePage() {
     })
   }
 
-  async function startReservation() {
+  async function submitReservation() {
     if (!platform || !tier || tier.quote_only) return
+    if (!email.trim()) {
+      setCheckoutError('Email is required')
+      return
+    }
     setSubmitting(true)
     setCheckoutError(null)
     try {
-      // Call reservation edge function. Falls back to in-app success page
-      // when the Stripe key is not configured (useful for previews).
       const { data: fn, error } = await supabase.functions.invoke('create-reservation-checkout', {
         body: {
           builder_id: bundle!.builder.id,
           platform_id: platform.id,
           tier_id: tier.id,
           selection: Object.values(selection).flat(),
+          email: email.trim(),
+          full_name: fullName.trim(),
           origin: window.location.origin,
           builder_slug: bundle!.builder.slug,
         },
@@ -160,7 +167,7 @@ export function ConfigurePage() {
         window.location.href = fn.url as string
         return
       }
-      navigate(`${prefix}/reserve/success?demo=1`)
+      navigate(`${prefix}/reserve/success`)
     } catch (e) {
       setCheckoutError((e as Error).message)
     } finally {
@@ -312,20 +319,56 @@ export function ConfigurePage() {
               <p className="text-sm text-[var(--color-muted)]">
                 This tier is quote-only. Sign in and we will reach out to begin a conversation.
               </p>
+            ) : !reserveOpen ? (
+              <button
+                onClick={() => { setReserveOpen(true); setCheckoutError(null) }}
+                className="inline-flex items-center h-10 px-5 rounded-[var(--radius-sm)] bg-[var(--color-accent)] text-white text-sm hover:opacity-90 transition"
+              >
+                Reserve this build
+              </button>
             ) : (
-              <>
+              <div className="space-y-3">
+                <p className="text-sm text-[var(--color-muted)]">
+                  Tell us how to reach you. We'll be in touch to confirm your slot.
+                </p>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <input
+                    type="email"
+                    required
+                    autoFocus
+                    value={email}
+                    onChange={e => setEmail(e.target.value)}
+                    placeholder="you@example.com"
+                    className="h-10 px-3 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-background)] text-sm"
+                  />
+                  <input
+                    value={fullName}
+                    onChange={e => setFullName(e.target.value)}
+                    placeholder="Full name"
+                    className="h-10 px-3 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-background)] text-sm"
+                  />
+                </div>
                 {checkoutError && (
-                  <p className="text-xs text-[var(--color-danger)] mb-2">{checkoutError}</p>
+                  <p className="text-xs text-[var(--color-danger)]">{checkoutError}</p>
                 )}
-                <button
-                  onClick={startReservation}
-                  disabled={submitting}
-                  className="inline-flex items-center h-10 px-5 rounded-[var(--radius-sm)] bg-[var(--color-accent)] text-white text-sm hover:opacity-90 disabled:opacity-50 transition"
-                >
-                  {submitting ? <Spinner size={14} className="mr-2" /> : null}
-                  Reserve this build
-                </button>
-              </>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={submitReservation}
+                    disabled={submitting || !email.trim()}
+                    className="inline-flex items-center h-10 px-5 rounded-[var(--radius-sm)] bg-[var(--color-accent)] text-white text-sm hover:opacity-90 disabled:opacity-50 transition"
+                  >
+                    {submitting ? <Spinner size={14} className="mr-2" /> : null}
+                    Confirm reservation
+                  </button>
+                  <button
+                    onClick={() => setReserveOpen(false)}
+                    disabled={submitting}
+                    className="inline-flex items-center h-10 px-5 rounded-[var(--radius-sm)] text-sm text-[var(--color-muted)] hover:text-[var(--color-foreground)] transition"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
             )}
           </div>
         </Step>

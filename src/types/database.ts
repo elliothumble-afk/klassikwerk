@@ -138,6 +138,7 @@ export type Database = {
           hero_copy: string | null
           process_copy: ProcessStage[]
           custom_domain: string | null
+          enquire_url: string
           created_at: string
           updated_at: string
         }
@@ -154,6 +155,7 @@ export type Database = {
           hero_copy?: string | null
           process_copy?: ProcessStage[]
           custom_domain?: string | null
+          enquire_url?: string
           created_at?: string
           updated_at?: string
         }
@@ -169,6 +171,7 @@ export type Database = {
           hero_copy?: string | null
           process_copy?: ProcessStage[]
           custom_domain?: string | null
+          enquire_url?: string
           updated_at?: string
         }
         Relationships: []

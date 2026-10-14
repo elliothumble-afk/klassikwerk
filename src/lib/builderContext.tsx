@@ -85,6 +85,7 @@ function defaultBrand(builderId: string): BuilderBrand {
     hero_copy: null,
     process_copy: [],
     custom_domain: null,
+    enquire_url: 'https://humblehouseauto.com',
     created_at: '',
     updated_at: '',
   }

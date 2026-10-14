@@ -1,12 +1,14 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router'
+import { Plus } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useOpsBuilderSelection } from '@/lib/opsBuilderSelection'
 import { useAuth } from '@/hooks/useAuth'
 import { Spinner } from '@/components/ui/Spinner'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { LEAD_STAGES, type Lead, type LeadStage, type Customer, type Profile } from '@/types/database'
+import { NewLeadDialog } from './NewLeadDialog'
 
 const STAGE_LABEL: Record<LeadStage, string> = {
   inquiry: 'Inquiry',
@@ -28,8 +30,9 @@ export function LeadsBoard() {
   const { selected } = useOpsBuilderSelection()
   const { profile } = useAuth()
   const [ownerFilter, setOwnerFilter] = useState<'all' | 'mine' | 'unassigned'>('all')
+  const [newLeadOpen, setNewLeadOpen] = useState(false)
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, refetch } = useQuery({
     queryKey: ['leads', selected?.id, ownerFilter, profile?.id],
     enabled: Boolean(selected?.id),
     queryFn: async () => {
@@ -58,16 +61,32 @@ export function LeadsBoard() {
       <div className="max-w-7xl mx-auto">
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-2xl" style={{ fontFamily: 'var(--font-display)' }}>Leads</h1>
-          <select
-            value={ownerFilter}
-            onChange={e => setOwnerFilter(e.target.value as typeof ownerFilter)}
-            className="h-8 px-2 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] text-sm"
-          >
-            <option value="all">All owners</option>
-            <option value="mine">Owned by me</option>
-            <option value="unassigned">Unassigned</option>
-          </select>
+          <div className="flex items-center gap-2">
+            <select
+              value={ownerFilter}
+              onChange={e => setOwnerFilter(e.target.value as typeof ownerFilter)}
+              className="h-9 px-2 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] text-sm"
+            >
+              <option value="all">All owners</option>
+              <option value="mine">Owned by me</option>
+              <option value="unassigned">Unassigned</option>
+            </select>
+            <button
+              onClick={() => setNewLeadOpen(true)}
+              className="flex items-center gap-1.5 h-9 px-3 rounded-[var(--radius-sm)] bg-[var(--color-accent)] text-white text-sm hover:opacity-90"
+            >
+              <Plus size={14} /> New lead
+            </button>
+          </div>
         </div>
+
+        {newLeadOpen && (
+          <NewLeadDialog
+            defaultBuilderId={selected?.id ?? null}
+            onClose={() => setNewLeadOpen(false)}
+            onCreated={() => { setNewLeadOpen(false); refetch() }}
+          />
+        )}
 
         {isLoading ? (
           <Spinner size={20} className="text-[var(--color-muted)]" />

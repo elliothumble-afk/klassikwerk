@@ -2,8 +2,16 @@ import { useQuery } from '@tanstack/react-query'
 import { useBuilder } from '@/lib/builderContext'
 import { supabase } from '@/lib/supabase'
 import { Spinner } from '@/components/ui/Spinner'
-import { InquiryForm } from '@/pages/public/InquiryForm'
 import type { Platform } from '@/types/database'
+
+interface GalleryItem {
+  id: string
+  platform_id: string
+  image_url: string
+  caption: string | null
+}
+
+const DEFAULT_ENQUIRE_URL = 'https://humblehouseauto.com'
 
 export function BuilderHome() {
   const { bundle } = useBuilder()
@@ -23,8 +31,23 @@ export function BuilderHome() {
     },
   })
 
+  const { data: gallery } = useQuery({
+    queryKey: ['public-gallery', bundle?.builder.id],
+    enabled: Boolean(bundle?.builder.id),
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('catalog_platform_gallery')
+        .select('id, platform_id, image_url, caption')
+        .eq('builder_id', bundle!.builder.id)
+        .order('sort')
+      if (error) throw error
+      return (data ?? []) as GalleryItem[]
+    },
+  })
+
   if (!bundle) return null
   const { brand } = bundle
+  const enquireUrl = brand.enquire_url || DEFAULT_ENQUIRE_URL
 
   return (
     <>
@@ -36,10 +59,18 @@ export function BuilderHome() {
           {brand.tagline ?? bundle.builder.name}
         </h1>
         {brand.hero_copy && (
-          <p className="text-lg text-[var(--color-muted)] max-w-2xl">
+          <p className="text-lg text-[var(--color-muted)] max-w-2xl mb-8">
             {brand.hero_copy}
           </p>
         )}
+        <a
+          href={enquireUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center h-10 px-5 rounded-[var(--radius-sm)] bg-[var(--color-accent)] text-white text-sm hover:opacity-90 transition"
+        >
+          Enquire
+        </a>
       </section>
 
       <section className="max-w-5xl mx-auto px-6 py-10">
@@ -84,6 +115,33 @@ export function BuilderHome() {
         )}
       </section>
 
+      {(gallery?.length ?? 0) > 0 && (
+        <section className="max-w-5xl mx-auto px-6 py-10">
+          <h2
+            className="text-2xl text-[var(--color-foreground)] mb-6"
+            style={{ fontFamily: 'var(--font-display)' }}
+          >
+            Gallery
+          </h2>
+          <ul className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4">
+            {gallery!.map(item => (
+              <li
+                key={item.id}
+                className="aspect-[4/3] overflow-hidden rounded-[var(--radius-md)] bg-[var(--color-surface-raised)]"
+                title={item.caption ?? undefined}
+              >
+                <img
+                  src={item.image_url}
+                  alt={item.caption ?? ''}
+                  className="h-full w-full object-cover"
+                  loading="lazy"
+                />
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <section className="max-w-5xl mx-auto px-6 py-10">
         <h2
           className="text-2xl text-[var(--color-foreground)] mb-6"
@@ -107,17 +165,15 @@ export function BuilderHome() {
         </ol>
       </section>
 
-      <section className="max-w-xl mx-auto px-6 py-16" id="inquire">
-        <h2
-          className="text-2xl text-[var(--color-foreground)] mb-2"
-          style={{ fontFamily: 'var(--font-display)' }}
+      <section className="max-w-5xl mx-auto px-6 py-16 text-center">
+        <a
+          href={enquireUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center h-11 px-6 rounded-[var(--radius-sm)] bg-[var(--color-accent)] text-white text-sm hover:opacity-90 transition"
         >
-          Start the conversation
-        </h2>
-        <p className="text-sm text-[var(--color-muted)] mb-6">
-          Tell us what you're thinking. We'll come back to you by email.
-        </p>
-        <InquiryForm platforms={platforms ?? []} />
+          Enquire
+        </a>
       </section>
     </>
   )

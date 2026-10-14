@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router'
-import { supabase } from '@/lib/supabase'
+import { invokeFn } from '@/lib/fnInvoke'
 import { Spinner } from '@/components/ui/Spinner'
 
 interface QuoteData {
@@ -60,11 +60,9 @@ export function QuoteView() {
 
   async function load() {
     try {
-      const { data, error } = await supabase.functions.invoke('get-quote', { body: { token } })
-      if (error) throw error
-      if ((data as { error?: string })?.error) throw new Error((data as { error: string }).error)
-      setData(data as QuoteData)
-      setApproved((data as QuoteData).quote.status === 'approved')
+      const result = await invokeFn<QuoteData>('get-quote', { token })
+      setData(result)
+      setApproved(result.quote.status === 'approved')
     } catch (e) {
       setErr((e as Error).message)
     }
@@ -91,9 +89,7 @@ export function QuoteView() {
     setApproving(true)
     setErr(null)
     try {
-      const { data: res, error } = await supabase.functions.invoke('approve-quote', { body: { token } })
-      if (error) throw error
-      if ((res as { error?: string })?.error) throw new Error((res as { error: string }).error)
+      await invokeFn('approve-quote', { token })
       setApproved(true)
     } catch (e) {
       setErr((e as Error).message)

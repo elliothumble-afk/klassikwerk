@@ -33,7 +33,7 @@ Deno.serve(async (req) => {
 
     const quoteRes = await admin
       .from('quotes')
-      .select('*, lead:leads(customer:customers(full_name, email, phone))')
+      .select('*, lead:leads(phone, customer:customers(full_name, email))')
       .eq('id', quote_id)
       .single()
     if (quoteRes.error) throw quoteRes.error
@@ -89,6 +89,7 @@ Deno.serve(async (req) => {
       .toISOString().slice(0, 10)
 
     const customer = quote.lead?.customer
+    const leadPhone = quote.lead?.phone ?? null
 
     const body = `
 ${brand?.wordmark_text ? `**${brand.wordmark_text}**` : `**${builder.name}**`}
@@ -98,7 +99,7 @@ ${brand?.tagline ? brand.tagline : ''}
 
 **Prepared for:** ${customer?.full_name ?? customer?.email ?? '[customer]'}
 ${customer?.email ? `**Email:** ${customer.email}` : ''}
-${customer?.phone ? `**Phone:** ${customer.phone}` : ''}
+${leadPhone ? `**Phone:** ${leadPhone}` : ''}
 
 **Valid until:** ${validUntil}
 

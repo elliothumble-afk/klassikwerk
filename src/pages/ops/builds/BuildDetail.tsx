@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams, Link } from 'react-router'
 import { FileText } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
+import { invokeFn } from '@/lib/fnInvoke'
 import { Spinner } from '@/components/ui/Spinner'
 
 interface BuildDoc {
@@ -62,11 +63,7 @@ export function BuildDetail() {
   const generate = useMutation({
     mutationFn: async () => {
       setErr(null)
-      const { data, error } = await supabase.functions.invoke('render-contract', {
-        body: { build_id: id },
-      })
-      if (error) throw error
-      return data as { url?: string; path?: string }
+      return await invokeFn<{ url?: string; path?: string }>('render-contract', { build_id: id })
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['build-docs', id] })

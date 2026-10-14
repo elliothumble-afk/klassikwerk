@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams, useSearchParams, Link } from 'react-router'
 import { FileText, Send, Save, Copy, Hammer, ExternalLink } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
+import { invokeFn } from '@/lib/fnInvoke'
 import { Spinner } from '@/components/ui/Spinner'
 import type {
   BuilderTerms, CatalogOption, OptionGroup, Platform, Tier, Quote, QuoteOption,
@@ -241,12 +242,7 @@ export function QuoteEditor() {
   const generatePdf = useMutation({
     mutationFn: async () => {
       if (!existing) throw new Error('Save the quote first')
-      const { data, error } = await supabase.functions.invoke('render-quote', {
-        body: { quote_id: existing.id },
-      })
-      if (error) throw error
-      if ((data as { error?: string })?.error) throw new Error((data as { error: string }).error)
-      return data as { url: string }
+      return await invokeFn<{ url: string }>('render-quote', { quote_id: existing.id })
     },
     onSuccess: d => {
       setStatus(`PDF ready: ${d.url}`)
@@ -258,11 +254,7 @@ export function QuoteEditor() {
   const send = useMutation({
     mutationFn: async () => {
       if (!existing) throw new Error('Save the quote first')
-      const { data, error } = await supabase.functions.invoke('send-quote', {
-        body: { quote_id: existing.id },
-      })
-      if (error) throw error
-      if ((data as { error?: string })?.error) throw new Error((data as { error: string }).error)
+      await invokeFn('send-quote', { quote_id: existing.id })
     },
     onSuccess: () => {
       setStatus('Sent')

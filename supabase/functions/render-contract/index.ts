@@ -1,20 +1,25 @@
 // render-contract — Supabase Edge Function (Deno)
 //
-// Loads a build, merges the builder's current contract template with build /
-// customer / vehicle / configuration / terms data, renders a PDF, uploads it
-// to the `media` bucket, and records a `media` row.
+// Builds a branded HTML contract from the builder's current
+// contract_templates row (markdown + merge fields), converts to PDF via
+// Browserless, uploads to the `media` bucket, and records a `media` row.
 
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.50.3'
 import { corsHeaders } from '../_shared/cors.ts'
-import { mergeFields, renderMarkdownPdf } from '../_shared/pdfRender.ts'
+import { htmlToPdf } from '../_shared/htmlToPdf.ts'
+import { markdownToSafeHtml, renderContractHtml, type OperatorContact } from '../_shared/htmlTemplate.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 
-function formatCurrency(cents: number | null | undefined): string {
+function money(cents: number | null | undefined): string {
   if (cents == null) return '$—'
   return `$${(cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+function mergeFields(markdown: string, fields: Record<string, string>): string {
+  return markdown.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => fields[k] ?? `[${k}]`)
 }
 
 Deno.serve(async (req) => {
@@ -34,16 +39,18 @@ Deno.serve(async (req) => {
     if (buildRes.error) throw buildRes.error
     const build = buildRes.data as any
 
-    const [tplRes, termsRes, builderRes, platformRes, tierRes, buildOptsRes] = await Promise.all([
+    const [tplRes, termsRes, builderRes, brandRes, platformRes, tierRes, buildOptsRes] = await Promise.all([
       admin.from('contract_templates').select('*').eq('builder_id', build.builder_id).eq('is_current', true).single(),
       admin.from('builder_terms').select('*').eq('builder_id', build.builder_id).maybeSingle(),
-      admin.from('builders').select('*').eq('id', build.builder_id).single(),
+      admin.from('builders').select('*, operator:operators(contact)').eq('id', build.builder_id).single(),
+      admin.from('builder_brand').select('*').eq('builder_id', build.builder_id).maybeSingle(),
       admin.from('catalog_platforms').select('*').eq('id', build.platform_id).single(),
       admin.from('catalog_tiers').select('*').eq('id', build.tier_id).single(),
       admin.from('build_options').select('option_id, price_cents_at_selection').eq('build_id', build.id),
     ])
     if (tplRes.error) throw tplRes.error
     if (builderRes.error) throw builderRes.error
+    if (brandRes.error) throw brandRes.error
     if (platformRes.error) throw platformRes.error
     if (tierRes.error) throw tierRes.error
     if (buildOptsRes.error) throw buildOptsRes.error
@@ -73,9 +80,11 @@ Deno.serve(async (req) => {
       vehicle = vr.data
     }
 
-    const terms = termsRes.data
-    const builder = builderRes.data as any
+    const terms = termsRes.data as any | null
+    const builderRow = builderRes.data as any
+    const brand = brandRes.data as any
     const platform = platformRes.data as any
+    const operatorContact = (builderRow.operator?.contact ?? {}) as OperatorContact
 
     const configRows = (optionsRes.data ?? []).map((o: any) => {
       const grp = groupName.get(o.group_id) ?? 'Option'
@@ -89,22 +98,33 @@ Deno.serve(async (req) => {
     const paymentScheduleTable = ['| Step | Share | Trigger |', '| --- | --- | --- |', ...scheduleRows].join('\n')
 
     const fields: Record<string, string> = {
-      builder_name: builder.name,
-      builder_legal_name: builder.legal_name ?? builder.name,
+      builder_name: builderRow.name,
+      builder_legal_name: builderRow.legal_name ?? builderRow.name,
       customer_full_name: profile?.full_name ?? customer?.full_name ?? customer?.email ?? '[customer]',
       customer_address: customer?.address ? JSON.stringify(customer.address) : '[address]',
       vehicle_platform: platform.name,
       vehicle_vin: vehicle?.vin ?? '[VIN]',
       vehicle_year: vehicle?.year?.toString() ?? '[year]',
       configuration_table: configurationTable,
-      price_total: formatCurrency(build.price_cents),
+      price_total: money(build.price_cents),
       payment_schedule_table: paymentScheduleTable,
       warranty_text: terms?.warranty_text ?? '',
       governing_law: terms?.governing_law ?? '',
     }
 
-    const merged = mergeFields((tplRes.data as any).body_markdown, fields)
-    const pdfBytes = await renderMarkdownPdf((tplRes.data as any).title, merged)
+    const mergedMd = mergeFields((tplRes.data as any).body_markdown, fields)
+    const bodyHtml = markdownToSafeHtml(mergedMd)
+
+    const html = renderContractHtml({
+      title: (tplRes.data as any).title,
+      version: (tplRes.data as any).version,
+      body_html: bodyHtml,
+      builder: { name: builderRow.name, legal_name: builderRow.legal_name, slug: builderRow.slug },
+      brand,
+      operator_contact: operatorContact,
+    })
+
+    const pdfBytes = await htmlToPdf(html)
 
     const path = `document/contract_${build.id}_v${(tplRes.data as any).version}_${Date.now()}.pdf`
     const upload = await admin.storage.from('media').upload(path, pdfBytes, {

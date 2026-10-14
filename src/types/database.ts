@@ -65,6 +65,7 @@ export type Database = {
           slug: string
           name: string
           brand: Json
+          contact: Json
           created_at: string
           updated_at: string
         }
@@ -73,6 +74,7 @@ export type Database = {
           slug: string
           name: string
           brand?: Json
+          contact?: Json
           created_at?: string
           updated_at?: string
         }
@@ -80,6 +82,7 @@ export type Database = {
           slug?: string
           name?: string
           brand?: Json
+          contact?: Json
           updated_at?: string
         }
         Relationships: []

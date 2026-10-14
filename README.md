@@ -98,9 +98,12 @@ Live in `supabase/functions/`:
 
 - `submit-inquiry` — public: creates a `leads` row + `customers` row from the
   landing page's inquiry form and emails Humble House via Resend.
-- `render-quote` — PDF of a quote with cover, configuration table, totals,
-  payment schedule, validity date, warranty, intro copy, HH signature.
-  Uploads to `media` and writes back `quotes.pdf_url`.
+- `render-quote` — Builds a brand-skinned, brochure-style HTML quote
+  (header with logo or wordmark, platform hero, specification with
+  swatch thumbnails, pricing with payment schedule including the
+  reservation line, process stages, operator contact block) and
+  converts it to PDF via Browserless. Uploads to `media` and writes
+  back `quotes.pdf_url`.
 - `send-quote` — emails the customer the quote PDF and a tracked link to
   `/q/:token` via Resend; logs `quote_events.sent`; moves lead to `quoted`;
   fires `zoho-push`. Degrades to a sent-locally flow when `RESEND_API_KEY`
@@ -110,7 +113,8 @@ Live in `supabase/functions/`:
 - `approve-quote` — public: flips the quote to `approved`, logs the event,
   fires `zoho-push`.
 - `render-contract` — merges a build's data into the builder's current
-  contract template, renders a PDF, uploads to `media`, records a `media` row.
+  contract template, renders the same brand chrome as the quote, and
+  converts to PDF via Browserless. Uploads to `media`, records a `media` row.
 - `zoho-lead-webhook` — public (shared-secret): Zoho Workflow Rule POSTs here
   when a lead becomes Warm; upserts the customer, upserts a `leads` row at
   stage `warm`, logs to `zoho_sync_log`. Idempotent.
@@ -135,6 +139,7 @@ supabase functions deploy zoho-push
 Secrets:
 
 ```bash
+supabase secrets set BROWSERLESS_TOKEN=...        # required for render-quote / render-contract
 supabase secrets set RESEND_API_KEY=re_...
 supabase secrets set RESEND_FROM=quotes@yourdomain
 supabase secrets set HH_INBOX_EMAIL=elliot.humble@gmail.com
@@ -142,6 +147,24 @@ supabase secrets set PUBLIC_SITE_URL=https://klassikwerk.netlify.app
 supabase secrets set ZOHO_CLIENT_ID=... ZOHO_CLIENT_SECRET=... ZOHO_REFRESH_TOKEN=...
 supabase secrets set ZOHO_DC=us ZOHO_WEBHOOK_SECRET=...
 ```
+
+### Why Browserless for HTML→PDF
+
+Supabase Edge Functions run on Deno Deploy. There is no reliable
+headless-Chrome stack we can bundle there (Puppeteer and Playwright both
+need a Chromium binary; the deploy size caps and the lack of libc
+support rule out shipping Chrome inside the function). We therefore
+hand the rendered HTML off to [Browserless](https://www.browserless.io),
+a hosted headless Chrome, via its `/pdf` endpoint. Real Chrome rendering
+gives us Google Fonts, CSS backgrounds, images, and page-break
+semantics — the shared `_shared/htmlTemplate.ts` builds a brochure-style
+HTML document that both `render-quote` and `render-contract` pass to
+`_shared/htmlToPdf.ts`.
+
+To swap in another provider later (Gotenberg hosted somewhere, PDFShift,
+etc.), replace `htmlToPdf` only — the template layer is converter-agnostic.
+Create a Browserless account, grab the API token from the dashboard,
+and set it with `supabase secrets set BROWSERLESS_TOKEN=...`.
 
 The Supabase service role is read from `SUPABASE_SERVICE_ROLE_KEY` and is set
 by Supabase automatically for deployed functions.

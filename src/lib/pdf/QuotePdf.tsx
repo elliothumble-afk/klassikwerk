@@ -68,10 +68,17 @@ export function QuotePdf(input: QuotePdfInput) {
     coverTitle: {
       fontFamily: fontDisplay,
       fontSize: 26,
-      marginBottom: 4,
+      lineHeight: 1.15,
+      marginBottom: 10,
       marginTop: 8,
     },
-    coverSub: { color: brand.color_text + 'AA', fontSize: 10, marginBottom: 14 },
+    coverSub: {
+      color: brand.color_text + 'AA',
+      fontSize: 10,
+      lineHeight: 1.3,
+      marginTop: 0,
+      marginBottom: 14,
+    },
     metaGrid: {
       flexDirection: 'row',
       gap: 20,
@@ -127,6 +134,16 @@ export function QuotePdf(input: QuotePdfInput) {
       flexDirection: 'row',
       paddingVertical: 6,
       borderBottom: `0.5 solid ${brand.color_text}18`,
+    },
+    subtotalRow: {
+      flexDirection: 'row',
+      paddingVertical: 6,
+      borderBottom: `0.5 solid ${brand.color_text}22`,
+      backgroundColor: '#00000008',
+    },
+    subtotalText: {
+      fontWeight: 'medium',
+      color: brand.color_text + 'CC',
     },
     scheduleLabel: { flexGrow: 1, flexShrink: 1, flexBasis: 0, fontSize: 10 },
     scheduleTrigger: { width: 110, color: brand.color_text + '88', fontSize: 9 },
@@ -312,22 +329,33 @@ export function QuotePdf(input: QuotePdfInput) {
           <Text style={styles.scheduleAmount}>{money(terms.reservation_cents, currency)}</Text>
         </View>
 
-        {(terms.payment_schedule ?? []).map((step, i) => {
-          const dollars = Math.round(input.price_cents * (step.percent / 100))
-          return (
-            <View key={i} style={styles.scheduleRow}>
-              <Text style={styles.scheduleLabel}>{step.label}</Text>
-              <Text style={styles.scheduleTrigger}>{step.trigger}</Text>
-              <Text style={styles.scheduleAmount}>{step.percent}% · {money(dollars, currency)}</Text>
-            </View>
-          )
-        })}
+        <View style={styles.subtotalRow}>
+          <Text style={{ ...styles.scheduleLabel, ...styles.subtotalText }}>Balance after reservation</Text>
+          <Text style={styles.scheduleTrigger}></Text>
+          <Text style={{ ...styles.scheduleAmount, ...styles.subtotalText }}>
+            {money(Math.max(0, input.price_cents - terms.reservation_cents), currency)}
+          </Text>
+        </View>
+
+        {(() => {
+          const balance = Math.max(0, input.price_cents - terms.reservation_cents)
+          return (terms.payment_schedule ?? []).map((step, i) => {
+            const dollars = Math.round(balance * (step.percent / 100))
+            return (
+              <View key={i} style={styles.scheduleRow}>
+                <Text style={styles.scheduleLabel}>{step.label}</Text>
+                <Text style={styles.scheduleTrigger}>{step.trigger}</Text>
+                <Text style={styles.scheduleAmount}>{step.percent}% · {money(dollars, currency)}</Text>
+              </View>
+            )
+          })
+        })()}
 
         <View style={styles.totalStrip}>
           <View>
             <Text style={styles.totalLabel}>Build total</Text>
             <Text style={styles.totalCaption}>
-              After the reservation deposit, scheduled payments total 100% of this amount.
+              Scheduled payments total 100% of the balance after the reservation deposit.
             </Text>
           </View>
           <Text style={styles.totalAmount}>{money(input.price_cents, currency)}</Text>

@@ -116,6 +116,8 @@ export function ContractEdit() {
     },
   })
 
+  // Reset editor state on builder change; refill from the loaded row.
+  useEffect(() => { setBody(''); setTitle('Work Authorization') }, [id])
   useEffect(() => {
     if (current) {
       setBody(current.body_markdown)

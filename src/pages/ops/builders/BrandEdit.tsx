@@ -35,7 +35,10 @@ export function BrandEdit() {
   const brand = brandQuery.data ?? null
   const synced = Boolean(brand?.synced)
 
+  // Reset local edit state when the builder id changes (user navigating
+  // between builders should NOT see the previous builder's draft).
   const [draft, setDraft] = useState<BuilderBrand | null>(null)
+  useEffect(() => { setDraft(null) }, [id])
   useEffect(() => { if (brand) setDraft(brand) }, [brand])
 
   const save = useMutation({
@@ -60,6 +63,9 @@ export function BrandEdit() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['builder-brand', id] }),
   })
 
+  // Wait for both queries, then decide between error / empty state / form.
+  // A query that resolves with no row is NOT loading — `maybeSingle()`
+  // returns `{ data: null, error: null }`, which flips isLoading false.
   if (builderQuery.isLoading || brandQuery.isLoading) {
     return <div className="p-8"><Spinner size={20} className="text-[var(--color-muted)]" /></div>
   }
@@ -72,7 +78,10 @@ export function BrandEdit() {
     )
   }
 
-  if (!draft) {
+  // Empty state: the row isn't there yet. For a Connect builder that
+  // means "no sync has succeeded"; for a Manual builder it means the
+  // wizard didn't finish.
+  if (!brand) {
     return (
       <div className="p-8">
         <div className="max-w-3xl mx-auto">
@@ -89,6 +98,11 @@ export function BrandEdit() {
         </div>
       </div>
     )
+  }
+
+  // Row exists but local edit state is still catching up — brief spin.
+  if (!draft) {
+    return <div className="p-8"><Spinner size={20} className="text-[var(--color-muted)]" /></div>
   }
 
   function up<K extends keyof BuilderBrand>(key: K, value: BuilderBrand[K]) {

@@ -34,6 +34,7 @@ export function TermsEdit() {
     },
   })
   const data = termsQuery.data ?? null
+  useEffect(() => { setDraft(null) }, [id])
   useEffect(() => { if (data) setDraft(data) }, [data])
 
   const synced = Boolean(data?.synced)
@@ -67,7 +68,7 @@ export function TermsEdit() {
       </div>
     )
   }
-  if (!draft) {
+  if (!data) {
     return (
       <div className="p-8">
         <div className="max-w-3xl mx-auto">
@@ -84,6 +85,9 @@ export function TermsEdit() {
         </div>
       </div>
     )
+  }
+  if (!draft) {
+    return <div className="p-8"><Spinner size={20} className="text-[var(--color-muted)]" /></div>
   }
 
   function up<K extends keyof BuilderTerms>(key: K, value: BuilderTerms[K]) {

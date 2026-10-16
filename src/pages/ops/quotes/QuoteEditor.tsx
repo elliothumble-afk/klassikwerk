@@ -4,6 +4,7 @@ import { useNavigate, useParams, useSearchParams, Link } from 'react-router'
 import { FileText, Send, Save, Copy, Hammer, ExternalLink } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { invokeFn } from '@/lib/fnInvoke'
+import { renderQuotePdfToStorage } from '@/lib/pdf/renderPdf'
 import { Spinner } from '@/components/ui/Spinner'
 import type {
   BuilderTerms, CatalogOption, OptionGroup, Platform, Tier, Quote, QuoteOption,
@@ -242,10 +243,10 @@ export function QuoteEditor() {
   const generatePdf = useMutation({
     mutationFn: async () => {
       if (!existing) throw new Error('Save the quote first')
-      return await invokeFn<{ url: string }>('render-quote', { quote_id: existing.id })
+      return await renderQuotePdfToStorage(existing.id)
     },
-    onSuccess: d => {
-      setStatus(`PDF ready: ${d.url}`)
+    onSuccess: url => {
+      setStatus(`PDF ready: ${url}`)
       qc.invalidateQueries({ queryKey: ['quote-edit', existingQuoteId] })
     },
     onError: e => setErr((e as Error).message),

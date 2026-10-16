@@ -96,25 +96,14 @@ To put a builder on their own domain:
 
 Live in `supabase/functions/`:
 
-- `submit-inquiry` — public: creates a `leads` row + `customers` row from the
-  landing page's inquiry form and emails Humble House via Resend.
-- `render-quote` — Builds a brand-skinned, brochure-style HTML quote
-  (header with logo or wordmark, platform hero, specification with
-  swatch thumbnails, pricing with payment schedule including the
-  reservation line, process stages, operator contact block) and
-  converts it to PDF via Browserless. Uploads to `media` and writes
-  back `quotes.pdf_url`.
-- `send-quote` — emails the customer the quote PDF and a tracked link to
-  `/q/:token` via Resend; logs `quote_events.sent`; moves lead to `quoted`;
-  fires `zoho-push`. Degrades to a sent-locally flow when `RESEND_API_KEY`
-  is unset so previews still progress.
+- `send-quote` — emails the customer a link to `/q/:token` plus the
+  pre-generated `quotes.pdf_url` via Resend; logs `quote_events.sent`;
+  moves lead to `quoted`; fires `zoho-push`. Degrades to a sent-locally
+  flow when `RESEND_API_KEY` is unset so previews still progress.
 - `get-quote` — public: looks up a quote by its random token so `/q/:token`
   can render a branded read-only view (no login).
 - `approve-quote` — public: flips the quote to `approved`, logs the event,
   fires `zoho-push`.
-- `render-contract` — merges a build's data into the builder's current
-  contract template, renders the same brand chrome as the quote, and
-  converts to PDF via Browserless. Uploads to `media`, records a `media` row.
 - `zoho-lead-webhook` — public (shared-secret): Zoho Workflow Rule POSTs here
   when a lead becomes Warm; upserts the customer, upserts a `leads` row at
   stage `warm`, logs to `zoho_sync_log`. Idempotent.
@@ -126,12 +115,9 @@ Live in `supabase/functions/`:
 Deploy:
 
 ```bash
-supabase functions deploy submit-inquiry --no-verify-jwt
-supabase functions deploy render-quote
 supabase functions deploy send-quote
 supabase functions deploy get-quote --no-verify-jwt
 supabase functions deploy approve-quote --no-verify-jwt
-supabase functions deploy render-contract
 supabase functions deploy zoho-lead-webhook --no-verify-jwt
 supabase functions deploy zoho-push
 ```
@@ -139,7 +125,6 @@ supabase functions deploy zoho-push
 Secrets:
 
 ```bash
-supabase secrets set BROWSERLESS_TOKEN=...        # required for render-quote / render-contract
 supabase secrets set RESEND_API_KEY=re_...
 supabase secrets set RESEND_FROM=quotes@yourdomain
 supabase secrets set HH_INBOX_EMAIL=elliot.humble@gmail.com
@@ -148,23 +133,28 @@ supabase secrets set ZOHO_CLIENT_ID=... ZOHO_CLIENT_SECRET=... ZOHO_REFRESH_TOKE
 supabase secrets set ZOHO_DC=us ZOHO_WEBHOOK_SECRET=...
 ```
 
-### Why Browserless for HTML→PDF
+### Quote and contract PDFs
 
-Supabase Edge Functions run on Deno Deploy. There is no reliable
-headless-Chrome stack we can bundle there (Puppeteer and Playwright both
-need a Chromium binary; the deploy size caps and the lack of libc
-support rule out shipping Chrome inside the function). We therefore
-hand the rendered HTML off to [Browserless](https://www.browserless.io),
-a hosted headless Chrome, via its `/pdf` endpoint. Real Chrome rendering
-gives us Google Fonts, CSS backgrounds, images, and page-break
-semantics — the shared `_shared/htmlTemplate.ts` builds a brochure-style
-HTML document that both `render-quote` and `render-contract` pass to
-`_shared/htmlToPdf.ts`.
+Both PDFs are rendered **client-side** with
+[`@react-pdf/renderer`](https://react-pdf.org). The same pattern ECD
+Connect uses:
 
-To swap in another provider later (Gotenberg hosted somewhere, PDFShift,
-etc.), replace `htmlToPdf` only — the template layer is converter-agnostic.
-Create a Browserless account, grab the API token from the dashboard,
-and set it with `supabase secrets set BROWSERLESS_TOKEN=...`.
+- `src/lib/pdf/QuotePdf.tsx` — brochure-style quote (brand header,
+  platform hero, specification grouped by option group with swatch
+  thumbnails, pricing with the reservation deposit on top of the
+  payment schedule, process stages, operator contact block).
+- `src/lib/pdf/ContractPdf.tsx` — contract chrome around the merged
+  Markdown body of the builder's current `contract_templates` row.
+- `src/lib/pdf/renderPdf.ts` — fetches the data, calls
+  `pdf(doc).toBlob()`, uploads the blob to the `media` bucket, and
+  updates `quotes.pdf_url` (quote) or inserts a `media` row (contract).
+- `src/lib/pdf/fonts.ts` — registers the builder's `font_display` and
+  `font_body` from fontsource (`cdn.jsdelivr.net/npm/@fontsource/<slug>`).
+
+**Generate PDF** on `/ops/quotes/:id` and **Generate contract** on
+`/ops/builds/:id` run the renderer in the browser; `send-quote` just
+emails a link to `quotes.pdf_url`. No HTML-to-PDF edge function and no
+third-party conversion service is involved.
 
 The Supabase service role is read from `SUPABASE_SERVICE_ROLE_KEY` and is set
 by Supabase automatically for deployed functions.

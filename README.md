@@ -133,6 +133,87 @@ supabase secrets set ZOHO_CLIENT_ID=... ZOHO_CLIENT_SECRET=... ZOHO_REFRESH_TOKE
 supabase secrets set ZOHO_DC=us ZOHO_WEBHOOK_SECRET=...
 ```
 
+### Synced builders (Connect)
+
+A builder's catalog, brand, terms and contract template can come from an
+external feed instead of the Ops admin. ECD Auto Design is the first
+synced builder.
+
+**Pick a source in the wizard.** The new leading **Source** step offers
+**Manual** (current flow) or **Connect**. The Connect flow asks for:
+
+- `catalog_source_url` — the HTTPS endpoint that serves the feed JSON.
+- `catalog_source_token` — bearer token sent in `Authorization`.
+- `lead_intake_url` — where approved quotes are POSTed.
+
+On Create & sync, the wizard inserts the builder row and immediately
+invokes `sync-builder-catalog`; on success the builder flips to
+`active = true` and the Done step offers a jump to the brand page
+(which now shows the Sync panel instead of a free-form editor).
+
+**Token storage.** The token is stored on `builders.catalog_source_token`
+and only ever read server-side by the sync and quote-push edge
+functions (service role). It never leaves the backend. If you prefer
+to keep tokens outside Postgres, set an Edge Function secret like
+`BUILDER_TOKEN_<slug>` and swap the fetch header assembly in
+`sync-builder-catalog/index.ts` — the column can then stay null.
+
+**Feed shape.** The function validates the body with zod before any
+upsert. Minimal schema (see `supabase/functions/sync-builder-catalog/fixtures/ecd-sample.json` for a full example):
+
+```jsonc
+{
+  "builder": { "slug": "ecd", "name": "ECD Auto Design", "legal_name": "..." },
+  "brand": { "external_id": "...", "color_accent": "#...", "font_display": "...", "font_body": "...", "process_copy": [...], ... },
+  "terms": { "external_id": "...", "reservation_cents": 2500000, "payment_schedule": [{ "label": "...", "percent": 25, "trigger": "..." }], "option_mode": "priced", "payment_mode": "none", ... },
+  "contract_template": { "external_id": "...", "title": "Work Authorization", "body_markdown": "# ..." },
+  "platforms":     [{ "external_id": "...", "slug": "...", "name": "...", "chassis": "...", "years": "...", "sort": 1, "active": true }],
+  "tiers":         [{ "external_id": "...", "slug": "...", "name": "...", "base_price_cents": 23500000, "quote_only": false, "active": true, "sort": 1 }],
+  "option_groups": [{ "external_id": "...", "slug": "...", "name": "...", "selection": "single", "required": true, "sort": 1, "platform_external_id": null }],
+  "options":       [{ "external_id": "...", "group_external_id": "...", "slug": "...", "name": "...", "price_cents": 350000, "included_in_tier_external_ids": [], "platform_external_ids": [], "sort": 1, "active": true }]
+}
+```
+
+**Upsert rules.** Everything is matched by `(builder_id, external_id)`
+and `synced=true` is set. Rows previously synced for the builder that
+are missing from a subsequent feed are flipped to `active=false` (or,
+for `catalog_option_groups`, deleted — groups have no active flag);
+rows added by hand (`synced=false`) are untouched. The contract
+template is versioned: a new `contract_templates` row with
+`is_current=true` is inserted only when `title + body_markdown`
+hashes differently from the current one.
+
+**Observability.** Every call writes a `sync_runs` row (`running` →
+`success`/`error` with per-table counts) and updates
+`builders.last_synced_at` / `last_sync_status` / `last_sync_error`.
+The Sync panel on **Ops → Builders → <builder> → Brand** shows the
+latest status, lists the last five runs, and offers:
+
+- **Sync now** — hits the live feed URL.
+- **Sync from fixture (dev)** — POSTs the committed
+  `public/fixtures/ecd-sample.json` back to the function as an inline
+  payload. Lets the whole flow be demoed before Connect ships the feed.
+
+**Quote hand-off.** When a quote is approved, `approve-quote` chains
+into `push-quote-to-builder` which POSTs the spec (customer, platform,
+tier, options with external ids, price, PDF URL, HH quote id, Zoho
+lead id) to the builder's `lead_intake_url`. Each attempt is logged to
+`builder_push_log` and surfaced at the bottom of the Quote editor with
+a Retry button on error.
+
+**Nightly schedule.** Not wired yet. Options:
+
+1. Supabase scheduled functions (`supabase functions schedule`) — simplest.
+2. `pg_cron` + `pg_net` calling `/functions/v1/sync-builder-catalog`
+   with the service-role key — most flexible, lives in the database.
+
+Pick one when the real Connect feed ships. Until then, "Sync now"
+suffices.
+
+**Adding another synced builder.** Walk the wizard, pick Connect, drop
+in the three URLs and the token. The feed must match the schema in
+`sync-builder-catalog/index.ts`; use the ECD fixture as a template.
+
 ### Quote and contract PDFs
 
 Both PDFs are rendered **client-side** with

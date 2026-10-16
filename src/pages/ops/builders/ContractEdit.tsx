@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase'
 import { Spinner } from '@/components/ui/Spinner'
 import { Check } from 'lucide-react'
 import type { ContractTemplate } from '@/types/database'
+import { SyncPanel } from './SyncPanel'
 
 const KNOWN_FIELDS = [
   'builder_name',
@@ -72,6 +73,16 @@ export function ContractEdit() {
   const [title, setTitle] = useState<string>('Work Authorization')
   const [bumped, setBumped] = useState(false)
 
+  const { data: builder } = useQuery({
+    queryKey: ['builder', id],
+    enabled: Boolean(id),
+    queryFn: async () => {
+      const { data, error } = await supabase.from('builders').select('*').eq('id', id!).single()
+      if (error) throw error
+      return data as import('@/types/database').Builder
+    },
+  })
+
   const { data: current, isLoading } = useQuery({
     queryKey: ['contract-current', id],
     enabled: Boolean(id),
@@ -86,6 +97,8 @@ export function ContractEdit() {
       return data as ContractTemplate | null
     },
   })
+
+  const synced = Boolean(current?.synced)
 
   const { data: versions } = useQuery({
     queryKey: ['contract-versions', id],
@@ -150,6 +163,9 @@ export function ContractEdit() {
       <div className="max-w-6xl mx-auto">
         <h1 className="text-2xl mb-4" style={{ fontFamily: 'var(--font-display)' }}>Contract template</h1>
 
+        {builder && <SyncPanel builder={builder} />}
+
+        <fieldset disabled={synced} className={synced ? 'opacity-70' : ''}>
         <div className="grid grid-cols-2 gap-6">
           <div>
             <div className="mb-3">
@@ -198,6 +214,7 @@ export function ContractEdit() {
             />
           </div>
         </div>
+        </fieldset>
       </div>
     </div>
   )

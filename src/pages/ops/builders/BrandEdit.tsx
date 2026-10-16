@@ -3,12 +3,23 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams } from 'react-router'
 import { supabase } from '@/lib/supabase'
 import { Spinner } from '@/components/ui/Spinner'
-import type { BuilderBrand, ProcessStage } from '@/types/database'
+import type { Builder, BuilderBrand, ProcessStage } from '@/types/database'
 import { Check } from 'lucide-react'
+import { SyncPanel } from './SyncPanel'
 
 export function BrandEdit() {
   const { id } = useParams<{ id: string }>()
   const qc = useQueryClient()
+
+  const { data: builder } = useQuery({
+    queryKey: ['builder', id],
+    enabled: Boolean(id),
+    queryFn: async () => {
+      const { data, error } = await supabase.from('builders').select('*').eq('id', id!).single()
+      if (error) throw error
+      return data as Builder
+    },
+  })
 
   const { data: brand, isLoading } = useQuery({
     queryKey: ['builder-brand', id],
@@ -19,6 +30,8 @@ export function BrandEdit() {
       return data as BuilderBrand | null
     },
   })
+
+  const synced = Boolean(brand?.synced)
 
   const [draft, setDraft] = useState<BuilderBrand | null>(null)
   useEffect(() => { if (brand) setDraft(brand) }, [brand])
@@ -67,6 +80,9 @@ export function BrandEdit() {
       <div className="max-w-3xl mx-auto">
         <h1 className="text-2xl mb-6" style={{ fontFamily: 'var(--font-display)' }}>Brand</h1>
 
+        {builder && <SyncPanel builder={builder} />}
+
+        <fieldset disabled={synced} className={synced ? 'opacity-70' : ''}>
         <section className="space-y-3 mb-8">
           <Field label="Wordmark text"><input value={draft.wordmark_text ?? ''} onChange={e => up('wordmark_text', e.target.value)} className={input} /></Field>
           <Field label="Logo URL"><input value={draft.logo_url ?? ''} onChange={e => up('logo_url', e.target.value)} className={input} /></Field>
@@ -112,13 +128,14 @@ export function BrandEdit() {
 
         <button
           onClick={() => save.mutate(draft)}
-          disabled={save.isPending}
+          disabled={save.isPending || synced}
           className="h-9 px-4 rounded-[var(--radius-sm)] bg-[var(--color-accent)] text-white text-sm hover:opacity-90 inline-flex items-center gap-2 disabled:opacity-50"
         >
           {save.isPending ? <Spinner size={13} /> : <Check size={14} />}
           {save.isPending ? 'Saving…' : save.isSuccess ? 'Saved' : 'Save brand'}
         </button>
         {save.error && <p className="mt-2 text-xs text-[var(--color-danger)]">{(save.error as Error).message}</p>}
+        </fieldset>
       </div>
     </div>
   )

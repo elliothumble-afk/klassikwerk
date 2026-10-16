@@ -287,7 +287,7 @@ export function TiersTab() {
       qc.setQueryData<Tier[]>(QUERY_KEY, old => {
         if (!old) return old
         if (id) return old.map(t => t.id === id ? { ...t, ...payload } : t)
-        return [...old, { ...payload, id: crypto.randomUUID(), created_at: '', updated_at: '' }]
+        return [...old, { ...payload, id: crypto.randomUUID(), created_at: '', updated_at: '', synced: false, external_id: null }]
       })
       return { prev }
     },

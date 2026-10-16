@@ -4,12 +4,23 @@ import { useParams } from 'react-router'
 import { Check } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { Spinner } from '@/components/ui/Spinner'
-import type { BuilderTerms, PaymentSchedule } from '@/types/database'
+import type { Builder, BuilderTerms, PaymentSchedule } from '@/types/database'
+import { SyncPanel } from './SyncPanel'
 
 export function TermsEdit() {
   const { id } = useParams<{ id: string }>()
   const qc = useQueryClient()
   const [draft, setDraft] = useState<BuilderTerms | null>(null)
+
+  const { data: builder } = useQuery({
+    queryKey: ['builder', id],
+    enabled: Boolean(id),
+    queryFn: async () => {
+      const { data, error } = await supabase.from('builders').select('*').eq('id', id!).single()
+      if (error) throw error
+      return data as Builder
+    },
+  })
 
   const { data, isLoading } = useQuery({
     queryKey: ['builder-terms', id],
@@ -21,6 +32,8 @@ export function TermsEdit() {
     },
   })
   useEffect(() => { if (data) setDraft(data) }, [data])
+
+  const synced = Boolean(data?.synced)
 
   const save = useMutation({
     mutationFn: async (next: BuilderTerms) => {
@@ -65,6 +78,9 @@ export function TermsEdit() {
       <div className="max-w-3xl mx-auto">
         <h1 className="text-2xl mb-6" style={{ fontFamily: 'var(--font-display)' }}>Terms</h1>
 
+        {builder && <SyncPanel builder={builder} />}
+
+        <fieldset disabled={synced} className={synced ? 'opacity-70' : ''}>
         <div className="space-y-3 mb-8">
           <Field label="Reservation (USD cents)">
             <input type="number" value={draft.reservation_cents} onChange={e => up('reservation_cents', Number(e.target.value))} className={`${input} w-full`} />
@@ -124,12 +140,13 @@ export function TermsEdit() {
 
         <button
           onClick={() => save.mutate(draft)}
-          disabled={save.isPending}
+          disabled={save.isPending || synced}
           className="h-9 px-4 rounded-[var(--radius-sm)] bg-[var(--color-accent)] text-white text-sm hover:opacity-90 inline-flex items-center gap-2 disabled:opacity-50"
         >
           {save.isPending ? <Spinner size={13} /> : <Check size={14} />}
           {save.isPending ? 'Saving…' : save.isSuccess ? 'Saved' : 'Save terms'}
         </button>
+        </fieldset>
       </div>
     </div>
   )

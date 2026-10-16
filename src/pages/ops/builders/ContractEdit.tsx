@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams } from 'react-router'
 import { supabase } from '@/lib/supabase'
 import { Spinner } from '@/components/ui/Spinner'
+import { ErrorState } from '@/components/ui/ErrorState'
 import { Check } from 'lucide-react'
 import type { ContractTemplate } from '@/types/database'
 import { SyncPanel } from './SyncPanel'
@@ -73,7 +74,7 @@ export function ContractEdit() {
   const [title, setTitle] = useState<string>('Work Authorization')
   const [bumped, setBumped] = useState(false)
 
-  const { data: builder } = useQuery({
+  const builderQuery = useQuery({
     queryKey: ['builder', id],
     enabled: Boolean(id),
     queryFn: async () => {
@@ -82,8 +83,9 @@ export function ContractEdit() {
       return data as import('@/types/database').Builder
     },
   })
+  const builder = builderQuery.data
 
-  const { data: current, isLoading } = useQuery({
+  const currentQuery = useQuery({
     queryKey: ['contract-current', id],
     enabled: Boolean(id),
     queryFn: async () => {
@@ -97,7 +99,7 @@ export function ContractEdit() {
       return data as ContractTemplate | null
     },
   })
-
+  const current = currentQuery.data ?? null
   const synced = Boolean(current?.synced)
 
   const { data: versions } = useQuery({
@@ -156,7 +158,35 @@ export function ContractEdit() {
     setBody(prev => `${prev}{{${field}}}`)
   }
 
-  if (isLoading) return <div className="p-8"><Spinner size={20} className="text-[var(--color-muted)]" /></div>
+  if (builderQuery.isLoading || currentQuery.isLoading) {
+    return <div className="p-8"><Spinner size={20} className="text-[var(--color-muted)]" /></div>
+  }
+  if (builderQuery.error || currentQuery.error) {
+    const err = (builderQuery.error ?? currentQuery.error) as Error
+    return (
+      <div className="p-8 max-w-6xl mx-auto">
+        <ErrorState message={err.message} retry={() => { builderQuery.refetch(); currentQuery.refetch() }} />
+      </div>
+    )
+  }
+  if (!current) {
+    return (
+      <div className="p-8">
+        <div className="max-w-6xl mx-auto">
+          <h1 className="text-2xl mb-4" style={{ fontFamily: 'var(--font-display)' }}>Contract template</h1>
+          {builder && <SyncPanel builder={builder} />}
+          <div className="rounded-[var(--radius-md)] border border-dashed border-[var(--color-border)] bg-[var(--color-surface)] p-8 text-center">
+            <p className="text-sm text-[var(--color-foreground)] mb-1">No contract template on this builder yet.</p>
+            <p className="text-xs text-[var(--color-muted)]">
+              {builder?.catalog_source === 'connect'
+                ? 'Run a sync to pull the template from Connect, or use the fixture button above.'
+                : 'Delete this builder and recreate it through the wizard, or add a template version via SQL.'}
+            </p>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="p-8">

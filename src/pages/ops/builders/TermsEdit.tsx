@@ -4,6 +4,7 @@ import { useParams } from 'react-router'
 import { Check } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { Spinner } from '@/components/ui/Spinner'
+import { ErrorState } from '@/components/ui/ErrorState'
 import type { Builder, BuilderTerms, PaymentSchedule } from '@/types/database'
 import { SyncPanel } from './SyncPanel'
 
@@ -12,7 +13,7 @@ export function TermsEdit() {
   const qc = useQueryClient()
   const [draft, setDraft] = useState<BuilderTerms | null>(null)
 
-  const { data: builder } = useQuery({
+  const builderQuery = useQuery({
     queryKey: ['builder', id],
     enabled: Boolean(id),
     queryFn: async () => {
@@ -21,8 +22,9 @@ export function TermsEdit() {
       return data as Builder
     },
   })
+  const builder = builderQuery.data
 
-  const { data, isLoading } = useQuery({
+  const termsQuery = useQuery({
     queryKey: ['builder-terms', id],
     enabled: Boolean(id),
     queryFn: async () => {
@@ -31,6 +33,7 @@ export function TermsEdit() {
       return data as BuilderTerms | null
     },
   })
+  const data = termsQuery.data ?? null
   useEffect(() => { if (data) setDraft(data) }, [data])
 
   const synced = Boolean(data?.synced)
@@ -53,8 +56,34 @@ export function TermsEdit() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['builder-terms', id] }),
   })
 
-  if (isLoading || !draft) {
+  if (builderQuery.isLoading || termsQuery.isLoading) {
     return <div className="p-8"><Spinner size={20} className="text-[var(--color-muted)]" /></div>
+  }
+  if (builderQuery.error || termsQuery.error) {
+    const err = (builderQuery.error ?? termsQuery.error) as Error
+    return (
+      <div className="p-8 max-w-3xl mx-auto">
+        <ErrorState message={err.message} retry={() => { builderQuery.refetch(); termsQuery.refetch() }} />
+      </div>
+    )
+  }
+  if (!draft) {
+    return (
+      <div className="p-8">
+        <div className="max-w-3xl mx-auto">
+          <h1 className="text-2xl mb-6" style={{ fontFamily: 'var(--font-display)' }}>Terms</h1>
+          {builder && <SyncPanel builder={builder} />}
+          <div className="rounded-[var(--radius-md)] border border-dashed border-[var(--color-border)] bg-[var(--color-surface)] p-8 text-center">
+            <p className="text-sm text-[var(--color-foreground)] mb-1">No terms on this builder yet.</p>
+            <p className="text-xs text-[var(--color-muted)]">
+              {builder?.catalog_source === 'connect'
+                ? 'Run a sync to pull terms from Connect, or use the fixture button above.'
+                : 'Delete this builder and recreate it through the wizard, or add the terms row via SQL.'}
+            </p>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   function up<K extends keyof BuilderTerms>(key: K, value: BuilderTerms[K]) {

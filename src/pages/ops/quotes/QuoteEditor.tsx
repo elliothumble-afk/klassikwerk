@@ -353,6 +353,38 @@ export function QuoteEditor() {
     onError: e => setErr((e as Error).message),
   })
 
+  // Latest builder_push_log for this quote
+  const { data: lastPush, refetch: refetchPush } = useQuery({
+    queryKey: ['builder-push-log', existing?.id],
+    enabled: Boolean(existing?.id),
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('builder_push_log')
+        .select('status, error, http_status, created_at')
+        .eq('quote_id', existing!.id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      if (error) throw error
+      return data as {
+        status: 'success' | 'error' | 'pending'
+        error: string | null
+        http_status: number | null
+        created_at: string
+      } | null
+    },
+    refetchInterval: 5000,
+  })
+
+  const retryPush = useMutation({
+    mutationFn: async () => {
+      if (!existing) throw new Error('Save the quote first')
+      await invokeFn('push-quote-to-builder', { quote_id: existing.id })
+    },
+    onSuccess: () => { setStatus('Pushed to builder'); refetchPush() },
+    onError: e => setErr((e as Error).message),
+  })
+
   if (leadId && !lead) {
     return <div className="p-8"><Spinner size={20} className="text-[var(--color-muted)]" /></div>
   }
@@ -586,6 +618,34 @@ export function QuoteEditor() {
           {status && <span className="text-xs text-[var(--color-success)]">{status}</span>}
           {err && <span className="text-xs text-[var(--color-danger)]">{err}</span>}
         </div>
+
+        {existing && lastPush && (
+          <div className="mt-4 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm">
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="text-xs uppercase tracking-wide text-[var(--color-muted)] mr-2">Builder push</span>
+                <span className={lastPush.status === 'error' ? 'text-[var(--color-danger)]' : 'text-[var(--color-foreground)]'}>
+                  {lastPush.status}
+                  {lastPush.http_status != null ? ` · HTTP ${lastPush.http_status}` : ''}
+                  {lastPush.error ? ` — ${lastPush.error}` : ''}
+                </span>
+                <span className="ml-2 text-xs text-[var(--color-muted)]">
+                  {new Date(lastPush.created_at).toLocaleString()}
+                </span>
+              </div>
+              {lastPush.status === 'error' && (
+                <button
+                  onClick={() => retryPush.mutate()}
+                  disabled={retryPush.isPending}
+                  className="h-8 px-3 rounded-[var(--radius-sm)] border border-[var(--color-border)] text-xs inline-flex items-center gap-1.5 hover:bg-[var(--color-surface-raised)] disabled:opacity-50"
+                >
+                  {retryPush.isPending && <Spinner size={11} />}
+                  Retry
+                </button>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

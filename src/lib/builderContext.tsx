@@ -86,6 +86,8 @@ function defaultBrand(builderId: string): BuilderBrand {
     process_copy: [],
     custom_domain: null,
     enquire_url: 'https://humblehouseauto.com',
+    synced: false,
+    external_id: null,
     created_at: '',
     updated_at: '',
   }
@@ -105,6 +107,8 @@ function defaultTerms(builderId: string): BuilderTerms {
     quote_validity_days: 30,
     quote_intro_copy: null,
     brochure_url: null,
+    synced: false,
+    external_id: null,
     created_at: '',
     updated_at: '',
   }

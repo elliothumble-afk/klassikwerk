@@ -2,10 +2,15 @@ import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, Link } from 'react-router'
 import { supabase } from '@/lib/supabase'
+import { invokeFn } from '@/lib/fnInvoke'
+import { Spinner } from '@/components/ui/Spinner'
 import type { Builder } from '@/types/database'
 
-const STEPS = ['Identity', 'Brand', 'Terms', 'Contract', 'Done'] as const
-type Step = typeof STEPS[number]
+const MANUAL_STEPS = ['Source', 'Identity', 'Brand', 'Terms', 'Contract', 'Done'] as const
+const CONNECT_STEPS = ['Source', 'Identity', 'Connect', 'Done'] as const
+type Step =
+  | typeof MANUAL_STEPS[number]
+  | typeof CONNECT_STEPS[number]
 
 const DEFAULT_PROCESS = [
   { label: 'Configure', copy: 'Choose a platform, a tier, and the specification.' },
@@ -49,6 +54,7 @@ Customer signature: ______________________________   Date: ______________
 `
 
 interface WizardState {
+  source: 'manual' | 'connect'
   // Identity
   name: string
   slug: string
@@ -70,13 +76,18 @@ interface WizardState {
   schedule: { label: string; percent: number; trigger: string }[]
   // Contract
   contract_markdown: string
+  // Connect
+  catalog_source_url: string
+  catalog_source_token: string
+  lead_intake_url: string
 }
 
 export function BuilderWizard() {
   const navigate = useNavigate()
   const qc = useQueryClient()
-  const [step, setStep] = useState<Step>('Identity')
+  const [step, setStep] = useState<Step>('Source')
   const [state, setState] = useState<WizardState>({
+    source: 'manual',
     name: '',
     slug: '',
     legal_name: '',
@@ -97,6 +108,9 @@ export function BuilderWizard() {
       { label: 'Delivery',         percent: 50, trigger: 'delivery' },
     ],
     contract_markdown: GENERIC_CONTRACT,
+    catalog_source_url: '',
+    catalog_source_token: '',
+    lead_intake_url: '',
   })
   const [createdBuilder, setCreatedBuilder] = useState<Builder | null>(null)
 
@@ -119,6 +133,7 @@ export function BuilderWizard() {
           legal_name: state.legal_name || state.name,
           active: true,
           sort: 100,
+          catalog_source: 'manual',
         })
         .select('*')
         .single()
@@ -173,7 +188,45 @@ export function BuilderWizard() {
     },
   })
 
+  const createConnect = useMutation({
+    mutationFn: async () => {
+      const operatorRes = await supabase.from('operators').select('id').limit(1).single()
+      if (operatorRes.error) throw operatorRes.error
+      const operatorId = operatorRes.data.id
+
+      const builderIns = await supabase
+        .from('builders')
+        .insert({
+          operator_id: operatorId,
+          slug: state.slug,
+          name: state.name,
+          legal_name: state.legal_name || state.name,
+          active: false,
+          sort: 100,
+          catalog_source: 'connect',
+          catalog_source_url: state.catalog_source_url || null,
+          catalog_source_token: state.catalog_source_token || null,
+          lead_intake_url: state.lead_intake_url || null,
+        })
+        .select('*')
+        .single()
+      if (builderIns.error) throw builderIns.error
+      const builder = builderIns.data as Builder
+
+      // Trigger first sync. If it fails we still created the builder,
+      // so the operator can retry from the builder page.
+      await invokeFn('sync-builder-catalog', { builder_id: builder.id })
+      return builder
+    },
+    onSuccess: builder => {
+      setCreatedBuilder(builder)
+      setStep('Done')
+      qc.invalidateQueries({ queryKey: ['ops', 'builders'] })
+    },
+  })
+
   const label = `h-9 px-3 w-full rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] text-sm`
+  const activeSteps = (state.source === 'connect' ? CONNECT_STEPS : MANUAL_STEPS)
 
   return (
     <div className="p-8">
@@ -182,7 +235,7 @@ export function BuilderWizard() {
           New builder
         </h1>
         <ol className="flex gap-2 text-xs mb-8">
-          {STEPS.map(s => (
+          {activeSteps.map(s => (
             <li
               key={s}
               className={`px-2 py-1 rounded ${
@@ -196,6 +249,29 @@ export function BuilderWizard() {
           ))}
         </ol>
 
+        {step === 'Source' && (
+          <section className="space-y-3">
+            <p className="text-sm text-[var(--color-muted)] mb-4">
+              Where does this builder's catalog, brand, terms and contract come from?
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <SourceCard
+                active={state.source === 'manual'}
+                onClick={() => up('source', 'manual')}
+                title="Manual"
+                description="You configure brand, terms and the contract template in Ops."
+              />
+              <SourceCard
+                active={state.source === 'connect'}
+                onClick={() => up('source', 'connect')}
+                title="Connect"
+                description="Pull from an external feed. Also sends approved quotes back."
+              />
+            </div>
+            <StepNav canNext onNext={() => setStep('Identity')} />
+          </section>
+        )}
+
         {step === 'Identity' && (
           <section className="space-y-3">
             <Field label="Name">
@@ -207,7 +283,54 @@ export function BuilderWizard() {
             <Field label="Legal name">
               <input value={state.legal_name} onChange={e => up('legal_name', e.target.value)} className={label} />
             </Field>
-            <StepNav canNext={state.name.length > 0 && state.slug.length > 0} onNext={() => setStep('Brand')} />
+            <StepNav
+              onPrev={() => setStep('Source')}
+              canNext={state.name.length > 0 && state.slug.length > 0}
+              onNext={() => setStep(state.source === 'connect' ? 'Connect' : 'Brand')}
+            />
+          </section>
+        )}
+
+        {step === 'Connect' && (
+          <section className="space-y-3">
+            <Field label="Catalog feed URL">
+              <input
+                value={state.catalog_source_url}
+                onChange={e => up('catalog_source_url', e.target.value)}
+                placeholder="https://connect.example.com/humble-house/catalog.json"
+                className={label}
+              />
+            </Field>
+            <Field label="Bearer token">
+              <input
+                type="password"
+                value={state.catalog_source_token}
+                onChange={e => up('catalog_source_token', e.target.value)}
+                placeholder="Secret token used to fetch the feed"
+                className={label}
+              />
+            </Field>
+            <Field label="Lead intake URL">
+              <input
+                value={state.lead_intake_url}
+                onChange={e => up('lead_intake_url', e.target.value)}
+                placeholder="https://connect.example.com/humble-house/leads"
+                className={label}
+              />
+              <p className="text-xs text-[var(--color-muted)] mt-1">
+                Approved quotes POST here as leads in the builder's CRM.
+              </p>
+            </Field>
+            <StepNav
+              onPrev={() => setStep('Identity')}
+              canNext={!createConnect.isPending && state.catalog_source_url.length > 0}
+              onNext={() => createConnect.mutate()}
+              nextLabel={createConnect.isPending ? 'Creating + syncing…' : 'Create & sync'}
+            />
+            {createConnect.error && (
+              <p className="text-xs text-[var(--color-danger)]">{(createConnect.error as Error).message}</p>
+            )}
+            {createConnect.isPending && <div className="mt-2 flex items-center gap-2 text-xs text-[var(--color-muted)]"><Spinner size={12} /> Pulling the feed…</div>}
           </section>
         )}
 
@@ -318,6 +441,29 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <label className="text-xs text-[var(--color-muted)] block mb-1">{label}</label>
       {children}
     </div>
+  )
+}
+
+function SourceCard({
+  active, onClick, title, description,
+}: {
+  active: boolean
+  onClick: () => void
+  title: string
+  description: string
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`text-left rounded-[var(--radius-md)] border p-4 transition ${
+        active
+          ? 'border-[var(--color-accent)] bg-[var(--color-surface)]'
+          : 'border-[var(--color-border)] hover:border-[var(--color-accent)]'
+      }`}
+    >
+      <div className="font-medium">{title}</div>
+      <div className="text-xs text-[var(--color-muted)] mt-1">{description}</div>
+    </button>
   )
 }
 

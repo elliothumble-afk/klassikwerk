@@ -1,0 +1,90 @@
+{
+  "builder": {
+    "slug": "ecd",
+    "name": "ECD Auto Design",
+    "legal_name": "ECD Automotive Design LLC"
+  },
+  "brand": {
+    "external_id": "ecd:brand:main",
+    "wordmark_text": "ECD",
+    "logo_url": null,
+    "tagline": "The world's finest hand-built Defenders and Range Rovers.",
+    "color_accent": "#2A3B2B",
+    "color_bg": "#F5F3EE",
+    "color_text": "#1A1A1A",
+    "font_display": "Playfair Display",
+    "font_body": "Inter",
+    "hero_copy": "Every ECD is one of one. Choose a platform, choose a package, and we build it to your spec in Kissimmee, Florida.",
+    "process_copy": [
+      { "label": "Design",     "copy": "A design session walks every choice from exterior colour to stereo." },
+      { "label": "Reserve",    "copy": "A deposit holds your production slot and locks the start date." },
+      { "label": "Contract",   "copy": "Final spec is signed. We acquire or receive the donor vehicle." },
+      { "label": "Build",      "copy": "A single craftsman is assigned the car for the duration." },
+      { "label": "Paint",      "copy": "Colour, stitching, and leather samples are approved in person." },
+      { "label": "Mechanical", "copy": "Powertrain, suspension and interior electronics come together." },
+      { "label": "Delivery",   "copy": "Hand-over at the workshop or at your door." },
+      { "label": "Aftercare",  "copy": "Two-year unlimited-mileage warranty and lifetime support." }
+    ],
+    "enquire_url": "https://ecdautodesign.com/contact"
+  },
+  "terms": {
+    "external_id": "ecd:terms:main",
+    "reservation_cents": 2500000,
+    "payment_schedule": [
+      { "label": "Contract signing",       "percent": 25, "trigger": "contract" },
+      { "label": "Build start",            "percent": 25, "trigger": "intake" },
+      { "label": "Paint and interior",     "percent": 25, "trigger": "samples" },
+      { "label": "Delivery",               "percent": 25, "trigger": "delivery" }
+    ],
+    "warranty_text": "Two-year unlimited-mileage warranty on all work performed by ECD, plus a four-year powertrain warranty.",
+    "governing_law": "State of Florida",
+    "lead_time_copy": "18 to 24 months from contract signing.",
+    "currency": "usd",
+    "quote_validity_days": 30,
+    "quote_intro_copy": "Thank you for considering ECD. The specification below is held for thirty days and may be revised in collaboration with your design consultant.",
+    "payment_mode": "none",
+    "option_mode": "priced"
+  },
+  "contract_template": {
+    "external_id": "ecd:contract:v1",
+    "title": "Work Authorization",
+    "body_markdown": "# Work Authorization\n\n**Builder:** {{builder_legal_name}}\n**Customer:** {{customer_full_name}}\n**Address:** {{customer_address}}\n\n## Vehicle\n\n- Platform: {{vehicle_platform}}\n- VIN: {{vehicle_vin}}\n- Year: {{vehicle_year}}\n\n## Configuration\n\n{{configuration_table}}\n\n## Price\n\nTotal: **{{price_total}}**\n\n## Payment Schedule\n\n{{payment_schedule_table}}\n\n## Warranty\n\n{{warranty_text}}\n\n## Governing Law\n\nThis agreement is governed by the laws of {{governing_law}}.\n\n## Signatures\n\nCustomer: ______________________________   Date: ______________\n\n{{builder_name}} authorized representative: ______________________________   Date: ______________\n"
+  },
+  "platforms": [
+    { "external_id": "ecd:platform:defender-90",    "slug": "defender-90",    "name": "Defender 90",         "chassis": "D90",  "years": "1983–1990", "hero_image_url": null, "sort": 1, "active": true },
+    { "external_id": "ecd:platform:defender-110",   "slug": "defender-110",   "name": "Defender 110",        "chassis": "D110", "years": "1983–1990", "hero_image_url": null, "sort": 2, "active": true },
+    { "external_id": "ecd:platform:rrc-soft-dash",  "slug": "rrc-soft-dash",  "name": "Range Rover Classic (Soft Dash)",    "chassis": "RRC-SD", "years": "1987–1995", "hero_image_url": null, "sort": 3, "active": true },
+    { "external_id": "ecd:platform:rrc-classic",    "slug": "rrc-classic",    "name": "Range Rover Classic", "chassis": "RRC",  "years": "1970–1987", "hero_image_url": null, "sort": 4, "active": true }
+  ],
+  "tiers": [
+    { "external_id": "ecd:tier:signature-6-2",  "slug": "signature-6-2",  "name": "Signature 6.2L V8",         "base_price_cents": 23500000, "lead_time_weeks": 80, "quote_only": false, "active": true, "sort": 1 },
+    { "external_id": "ecd:tier:signature-ev",   "slug": "signature-ev",   "name": "Signature EV (Tesla drive)","base_price_cents": 29500000, "lead_time_weeks": 90, "quote_only": false, "active": true, "sort": 2 },
+    { "external_id": "ecd:tier:bespoke",        "slug": "bespoke",        "name": "Bespoke",                   "base_price_cents": null,     "lead_time_weeks": null, "quote_only": true, "active": true, "sort": 3 }
+  ],
+  "option_groups": [
+    { "external_id": "ecd:group:exterior",  "slug": "exterior",  "name": "Exterior colour",   "selection": "single", "required": true,  "sort": 1 },
+    { "external_id": "ecd:group:interior",  "slug": "interior",  "name": "Interior leather",  "selection": "single", "required": true,  "sort": 2 },
+    { "external_id": "ecd:group:wheels",    "slug": "wheels",    "name": "Wheels",            "selection": "single", "required": false, "sort": 3 },
+    { "external_id": "ecd:group:audio",     "slug": "audio",     "name": "Audio",             "selection": "single", "required": false, "sort": 4 },
+    { "external_id": "ecd:group:packages",  "slug": "packages",  "name": "Packages",          "selection": "multi",  "required": false, "sort": 5 }
+  ],
+  "options": [
+    { "external_id": "ecd:opt:ext:monterey-blue",   "group_external_id": "ecd:group:exterior", "slug": "monterey-blue",   "name": "Monterey Blue",    "code": "EXT-MBL",   "price_cents": 350000, "included_in_tier_external_ids": [],                             "swatch_image_url": null, "sort": 1, "active": true, "platform_external_ids": [] },
+    { "external_id": "ecd:opt:ext:keswick-green",   "group_external_id": "ecd:group:exterior", "slug": "keswick-green",   "name": "Keswick Green",    "code": "EXT-KGN",   "price_cents": 350000, "included_in_tier_external_ids": [],                             "swatch_image_url": null, "sort": 2, "active": true, "platform_external_ids": [] },
+    { "external_id": "ecd:opt:ext:alpine-white",    "group_external_id": "ecd:group:exterior", "slug": "alpine-white",    "name": "Alpine White",     "code": "EXT-AWH",   "price_cents": 0,      "included_in_tier_external_ids": ["ecd:tier:signature-6-2", "ecd:tier:signature-ev"], "swatch_image_url": null, "sort": 3, "active": true, "platform_external_ids": [] },
+
+    { "external_id": "ecd:opt:int:brg-leather",     "group_external_id": "ecd:group:interior", "slug": "brg-leather",     "name": "British Racing Green leather", "code": "INT-BRG", "price_cents": 480000, "included_in_tier_external_ids": [],                           "swatch_image_url": null, "sort": 1, "active": true, "platform_external_ids": [] },
+    { "external_id": "ecd:opt:int:tan-leather",     "group_external_id": "ecd:group:interior", "slug": "tan-leather",     "name": "Saddle Tan leather", "code": "INT-TAN",   "price_cents": 480000, "included_in_tier_external_ids": [],                             "swatch_image_url": null, "sort": 2, "active": true, "platform_external_ids": [] },
+    { "external_id": "ecd:opt:int:black-leather",   "group_external_id": "ecd:group:interior", "slug": "black-leather",   "name": "Classic Black leather", "code": "INT-BLK", "price_cents": 0,      "included_in_tier_external_ids": ["ecd:tier:signature-6-2", "ecd:tier:signature-ev"], "swatch_image_url": null, "sort": 3, "active": true, "platform_external_ids": [] },
+
+    { "external_id": "ecd:opt:whl:ecd-5spoke",      "group_external_id": "ecd:group:wheels",   "slug": "ecd-5spoke-18",   "name": "ECD 18\" five-spoke",  "code": "WHL-5S18", "price_cents": 0,      "included_in_tier_external_ids": ["ecd:tier:signature-6-2", "ecd:tier:signature-ev"], "swatch_image_url": null, "sort": 1, "active": true, "platform_external_ids": [] },
+    { "external_id": "ecd:opt:whl:kahn-mondial",    "group_external_id": "ecd:group:wheels",   "slug": "kahn-mondial-20", "name": "Kahn Mondial 20\"",    "code": "WHL-KM20", "price_cents": 650000, "included_in_tier_external_ids": [],                             "swatch_image_url": null, "sort": 2, "active": true, "platform_external_ids": ["ecd:platform:defender-90", "ecd:platform:defender-110"] },
+
+    { "external_id": "ecd:opt:aud:focal-premium",   "group_external_id": "ecd:group:audio",    "slug": "focal-premium",   "name": "Focal Premium 10-speaker", "code": "AUD-FPR", "price_cents": 1200000, "included_in_tier_external_ids": [],                           "swatch_image_url": null, "sort": 1, "active": true, "platform_external_ids": [] },
+    { "external_id": "ecd:opt:aud:carplay-head",    "group_external_id": "ecd:group:audio",    "slug": "carplay-head",    "name": "Hidden Apple CarPlay",     "code": "AUD-CPL", "price_cents": 350000,  "included_in_tier_external_ids": [],                           "swatch_image_url": null, "sort": 2, "active": true, "platform_external_ids": [] },
+
+    { "external_id": "ecd:opt:pkg:cold-climate",    "group_external_id": "ecd:group:packages", "slug": "cold-climate",    "name": "Cold-climate package",     "code": "PKG-CLD", "price_cents": 950000,  "included_in_tier_external_ids": [],                           "swatch_image_url": null, "sort": 1, "active": true, "platform_external_ids": [] },
+    { "external_id": "ecd:opt:pkg:safari",          "group_external_id": "ecd:group:packages", "slug": "safari",          "name": "Safari-ready package",     "code": "PKG-SFR", "price_cents": 1850000, "included_in_tier_external_ids": [],                           "swatch_image_url": null, "sort": 2, "active": true, "platform_external_ids": ["ecd:platform:defender-110"] },
+    { "external_id": "ecd:opt:pkg:towing",          "group_external_id": "ecd:group:packages", "slug": "towing",          "name": "Towing package",           "code": "PKG-TOW", "price_cents": 480000,  "included_in_tier_external_ids": [],                           "swatch_image_url": null, "sort": 3, "active": true, "platform_external_ids": [] }
+  ]
+}

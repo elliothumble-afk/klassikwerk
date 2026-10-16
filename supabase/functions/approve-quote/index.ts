@@ -46,6 +46,15 @@ Deno.serve(async (req) => {
       })
     } catch (_) { /* ignore */ }
 
+    // Fire-and-forget builder push for synced builders with a lead_intake_url
+    try {
+      await fetch(`${SUPABASE_URL}/functions/v1/push-quote-to-builder`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SERVICE_ROLE}` },
+        body: JSON.stringify({ quote_id: quote.id }),
+      })
+    } catch (_) { /* ignore */ }
+
     return new Response(JSON.stringify({ ok: true }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })

@@ -1,7 +1,9 @@
 import { useState } from 'react'
+import { Link } from 'react-router'
 import { PlatformsTab } from './PlatformsTab'
 import { TiersTab } from './TiersTab'
 import { OptionsTab } from './OptionsTab'
+import { useOpsBuilderSelection } from '@/lib/opsBuilderSelection'
 
 type Tab = 'platforms' | 'tiers' | 'options'
 
@@ -13,6 +15,8 @@ const TABS: { id: Tab; label: string }[] = [
 
 export function CatalogPage() {
   const [active, setActive] = useState<Tab>('platforms')
+  const { selected } = useOpsBuilderSelection()
+  const isConnect = selected?.catalog_source === 'connect'
 
   return (
     <div className="p-8">
@@ -23,6 +27,16 @@ export function CatalogPage() {
         >
           Catalog
         </h1>
+
+        {isConnect && selected && (
+          <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-accent-light)] p-4 mb-6 text-sm">
+            <strong className="font-medium">Managed by Connect.</strong>{' '}
+            This catalog is synced from an external feed. Rows marked{' '}
+            <span className="text-xs px-1.5 py-0.5 rounded bg-[var(--color-surface-raised)]">synced</span>{' '}
+            will be re-written on the next sync — edit source data in Connect, or run{' '}
+            <Link to={`/ops/builders/${selected.id}/brand`} className="underline">Sync now</Link>.
+          </div>
+        )}
 
         {/* Tab bar */}
         <div className="flex gap-1 p-1 bg-[var(--color-surface-raised)] rounded-[var(--radius-md)] w-fit mb-8">

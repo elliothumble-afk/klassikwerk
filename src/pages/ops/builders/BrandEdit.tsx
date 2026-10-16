@@ -3,14 +3,27 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams } from 'react-router'
 import { supabase } from '@/lib/supabase'
 import { Spinner } from '@/components/ui/Spinner'
-import type { BuilderBrand, ProcessStage } from '@/types/database'
+import { ErrorState } from '@/components/ui/ErrorState'
+import type { Builder, BuilderBrand, ProcessStage } from '@/types/database'
 import { Check } from 'lucide-react'
+import { SyncPanel } from './SyncPanel'
 
 export function BrandEdit() {
   const { id } = useParams<{ id: string }>()
   const qc = useQueryClient()
 
-  const { data: brand, isLoading } = useQuery({
+  const builderQuery = useQuery({
+    queryKey: ['builder', id],
+    enabled: Boolean(id),
+    queryFn: async () => {
+      const { data, error } = await supabase.from('builders').select('*').eq('id', id!).single()
+      if (error) throw error
+      return data as Builder
+    },
+  })
+  const builder = builderQuery.data
+
+  const brandQuery = useQuery({
     queryKey: ['builder-brand', id],
     enabled: Boolean(id),
     queryFn: async () => {
@@ -19,8 +32,13 @@ export function BrandEdit() {
       return data as BuilderBrand | null
     },
   })
+  const brand = brandQuery.data ?? null
+  const synced = Boolean(brand?.synced)
 
+  // Reset local edit state when the builder id changes (user navigating
+  // between builders should NOT see the previous builder's draft).
   const [draft, setDraft] = useState<BuilderBrand | null>(null)
+  useEffect(() => { setDraft(null) }, [id])
   useEffect(() => { if (brand) setDraft(brand) }, [brand])
 
   const save = useMutation({
@@ -45,7 +63,45 @@ export function BrandEdit() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['builder-brand', id] }),
   })
 
-  if (isLoading || !draft) {
+  // Wait for both queries, then decide between error / empty state / form.
+  // A query that resolves with no row is NOT loading — `maybeSingle()`
+  // returns `{ data: null, error: null }`, which flips isLoading false.
+  if (builderQuery.isLoading || brandQuery.isLoading) {
+    return <div className="p-8"><Spinner size={20} className="text-[var(--color-muted)]" /></div>
+  }
+  if (builderQuery.error || brandQuery.error) {
+    const err = (builderQuery.error ?? brandQuery.error) as Error
+    return (
+      <div className="p-8 max-w-3xl mx-auto">
+        <ErrorState message={err.message} retry={() => { builderQuery.refetch(); brandQuery.refetch() }} />
+      </div>
+    )
+  }
+
+  // Empty state: the row isn't there yet. For a Connect builder that
+  // means "no sync has succeeded"; for a Manual builder it means the
+  // wizard didn't finish.
+  if (!brand) {
+    return (
+      <div className="p-8">
+        <div className="max-w-3xl mx-auto">
+          <h1 className="text-2xl mb-6" style={{ fontFamily: 'var(--font-display)' }}>Brand</h1>
+          {builder && <SyncPanel builder={builder} />}
+          <div className="rounded-[var(--radius-md)] border border-dashed border-[var(--color-border)] bg-[var(--color-surface)] p-8 text-center">
+            <p className="text-sm text-[var(--color-foreground)] mb-1">No brand on this builder yet.</p>
+            <p className="text-xs text-[var(--color-muted)]">
+              {builder?.catalog_source === 'connect'
+                ? 'Run a sync to pull the brand from Connect, or use the fixture button above.'
+                : 'Delete this builder and recreate it through the wizard, or add the brand row via SQL.'}
+            </p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Row exists but local edit state is still catching up — brief spin.
+  if (!draft) {
     return <div className="p-8"><Spinner size={20} className="text-[var(--color-muted)]" /></div>
   }
 
@@ -67,6 +123,9 @@ export function BrandEdit() {
       <div className="max-w-3xl mx-auto">
         <h1 className="text-2xl mb-6" style={{ fontFamily: 'var(--font-display)' }}>Brand</h1>
 
+        {builder && <SyncPanel builder={builder} />}
+
+        <fieldset disabled={synced} className={synced ? 'opacity-70' : ''}>
         <section className="space-y-3 mb-8">
           <Field label="Wordmark text"><input value={draft.wordmark_text ?? ''} onChange={e => up('wordmark_text', e.target.value)} className={input} /></Field>
           <Field label="Logo URL"><input value={draft.logo_url ?? ''} onChange={e => up('logo_url', e.target.value)} className={input} /></Field>
@@ -112,13 +171,14 @@ export function BrandEdit() {
 
         <button
           onClick={() => save.mutate(draft)}
-          disabled={save.isPending}
+          disabled={save.isPending || synced}
           className="h-9 px-4 rounded-[var(--radius-sm)] bg-[var(--color-accent)] text-white text-sm hover:opacity-90 inline-flex items-center gap-2 disabled:opacity-50"
         >
           {save.isPending ? <Spinner size={13} /> : <Check size={14} />}
           {save.isPending ? 'Saving…' : save.isSuccess ? 'Saved' : 'Save brand'}
         </button>
         {save.error && <p className="mt-2 text-xs text-[var(--color-danger)]">{(save.error as Error).message}</p>}
+        </fieldset>
       </div>
     </div>
   )

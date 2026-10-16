@@ -232,7 +232,7 @@ export function PlatformsTab() {
         qc.setQueryData<Platform[]>(QUERY_KEY, old => {
           if (!old) return old
           if (id) return old.map(p => p.id === id ? { ...p, ...data } : p)
-          return [...old, { ...data, builder_id: selected.id, id: crypto.randomUUID(), created_at: '', updated_at: '' }]
+          return [...old, { ...data, builder_id: selected.id, id: crypto.randomUUID(), created_at: '', updated_at: '', synced: false, external_id: null }]
         })
       }
       return { prev }

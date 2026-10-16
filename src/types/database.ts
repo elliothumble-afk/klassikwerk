@@ -98,6 +98,13 @@ export type Database = {
           sort: number
           stripe_account_id: string | null
           zoho_product_id: string | null
+          catalog_source: 'manual' | 'connect'
+          catalog_source_url: string | null
+          catalog_source_token: string | null
+          lead_intake_url: string | null
+          last_synced_at: string | null
+          last_sync_status: 'success' | 'error' | null
+          last_sync_error: string | null
           created_at: string
           updated_at: string
         }
@@ -111,6 +118,13 @@ export type Database = {
           sort?: number
           stripe_account_id?: string | null
           zoho_product_id?: string | null
+          catalog_source?: 'manual' | 'connect'
+          catalog_source_url?: string | null
+          catalog_source_token?: string | null
+          lead_intake_url?: string | null
+          last_synced_at?: string | null
+          last_sync_status?: 'success' | 'error' | null
+          last_sync_error?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -123,7 +137,82 @@ export type Database = {
           sort?: number
           stripe_account_id?: string | null
           zoho_product_id?: string | null
+          catalog_source?: 'manual' | 'connect'
+          catalog_source_url?: string | null
+          catalog_source_token?: string | null
+          lead_intake_url?: string | null
+          last_synced_at?: string | null
+          last_sync_status?: 'success' | 'error' | null
+          last_sync_error?: string | null
           updated_at?: string
+        }
+        Relationships: []
+      }
+      sync_runs: {
+        Row: {
+          id: string
+          builder_id: string
+          started_at: string
+          finished_at: string | null
+          status: 'running' | 'success' | 'error'
+          counts: Json
+          error: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          builder_id: string
+          started_at?: string
+          finished_at?: string | null
+          status: 'running' | 'success' | 'error'
+          counts?: Json
+          error?: string | null
+          created_at?: string
+        }
+        Update: {
+          builder_id?: string
+          started_at?: string
+          finished_at?: string | null
+          status?: 'running' | 'success' | 'error'
+          counts?: Json
+          error?: string | null
+        }
+        Relationships: []
+      }
+      builder_push_log: {
+        Row: {
+          id: string
+          builder_id: string
+          quote_id: string | null
+          kind: string
+          payload: Json
+          response: Json | null
+          status: 'success' | 'error' | 'pending'
+          error: string | null
+          http_status: number | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          builder_id: string
+          quote_id?: string | null
+          kind: string
+          payload?: Json
+          response?: Json | null
+          status: 'success' | 'error' | 'pending'
+          error?: string | null
+          http_status?: number | null
+          created_at?: string
+        }
+        Update: {
+          builder_id?: string
+          quote_id?: string | null
+          kind?: string
+          payload?: Json
+          response?: Json | null
+          status?: 'success' | 'error' | 'pending'
+          error?: string | null
+          http_status?: number | null
         }
         Relationships: []
       }
@@ -882,22 +971,33 @@ export type Database = {
   }
 }
 
-export type Platform = Database['public']['Tables']['catalog_platforms']['Row']
-export type Tier = Database['public']['Tables']['catalog_tiers']['Row']
-export type OptionGroup = Database['public']['Tables']['catalog_option_groups']['Row']
-export type CatalogOption = Database['public']['Tables']['catalog_options']['Row']
+// Fields added in the Phase 4 migration to every catalog + brand + terms
+// + contract table. The Database type above intentionally does not list
+// them so the sync-side upserts stay permissive; the UI aliases below
+// intersect them in so synced / external_id are available in TSX.
+export interface SyncableColumns {
+  synced: boolean
+  external_id: string | null
+}
+
+export type Platform = Database['public']['Tables']['catalog_platforms']['Row'] & SyncableColumns
+export type Tier = Database['public']['Tables']['catalog_tiers']['Row'] & SyncableColumns
+export type OptionGroup = Database['public']['Tables']['catalog_option_groups']['Row'] & SyncableColumns
+export type CatalogOption = Database['public']['Tables']['catalog_options']['Row'] & SyncableColumns
 export type Profile = Database['public']['Tables']['profiles']['Row']
 export type Operator = Database['public']['Tables']['operators']['Row']
 export type Builder = Database['public']['Tables']['builders']['Row']
-export type BuilderBrand = Database['public']['Tables']['builder_brand']['Row']
-export type BuilderTerms = Database['public']['Tables']['builder_terms']['Row']
-export type ContractTemplate = Database['public']['Tables']['contract_templates']['Row']
+export type BuilderBrand = Database['public']['Tables']['builder_brand']['Row'] & SyncableColumns
+export type BuilderTerms = Database['public']['Tables']['builder_terms']['Row'] & SyncableColumns
+export type ContractTemplate = Database['public']['Tables']['contract_templates']['Row'] & SyncableColumns
 export type Customer = Database['public']['Tables']['customers']['Row']
 export type Lead = Database['public']['Tables']['leads']['Row']
 export type Quote = Database['public']['Tables']['quotes']['Row']
 export type QuoteOption = Database['public']['Tables']['quote_options']['Row']
 export type QuoteEvent = Database['public']['Tables']['quote_events']['Row']
 export type ZohoSyncLog = Database['public']['Tables']['zoho_sync_log']['Row']
+export type SyncRun = Database['public']['Tables']['sync_runs']['Row']
+export type BuilderPushLog = Database['public']['Tables']['builder_push_log']['Row']
 
 export const LEAD_STAGES = [
   'inquiry', 'warm', 'quoting', 'quoted', 'revising',

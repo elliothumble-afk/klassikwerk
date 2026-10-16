@@ -4,14 +4,27 @@ import { useParams } from 'react-router'
 import { Check } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { Spinner } from '@/components/ui/Spinner'
-import type { BuilderTerms, PaymentSchedule } from '@/types/database'
+import { ErrorState } from '@/components/ui/ErrorState'
+import type { Builder, BuilderTerms, PaymentSchedule } from '@/types/database'
+import { SyncPanel } from './SyncPanel'
 
 export function TermsEdit() {
   const { id } = useParams<{ id: string }>()
   const qc = useQueryClient()
   const [draft, setDraft] = useState<BuilderTerms | null>(null)
 
-  const { data, isLoading } = useQuery({
+  const builderQuery = useQuery({
+    queryKey: ['builder', id],
+    enabled: Boolean(id),
+    queryFn: async () => {
+      const { data, error } = await supabase.from('builders').select('*').eq('id', id!).single()
+      if (error) throw error
+      return data as Builder
+    },
+  })
+  const builder = builderQuery.data
+
+  const termsQuery = useQuery({
     queryKey: ['builder-terms', id],
     enabled: Boolean(id),
     queryFn: async () => {
@@ -20,7 +33,11 @@ export function TermsEdit() {
       return data as BuilderTerms | null
     },
   })
+  const data = termsQuery.data ?? null
+  useEffect(() => { setDraft(null) }, [id])
   useEffect(() => { if (data) setDraft(data) }, [data])
+
+  const synced = Boolean(data?.synced)
 
   const save = useMutation({
     mutationFn: async (next: BuilderTerms) => {
@@ -40,7 +57,36 @@ export function TermsEdit() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['builder-terms', id] }),
   })
 
-  if (isLoading || !draft) {
+  if (builderQuery.isLoading || termsQuery.isLoading) {
+    return <div className="p-8"><Spinner size={20} className="text-[var(--color-muted)]" /></div>
+  }
+  if (builderQuery.error || termsQuery.error) {
+    const err = (builderQuery.error ?? termsQuery.error) as Error
+    return (
+      <div className="p-8 max-w-3xl mx-auto">
+        <ErrorState message={err.message} retry={() => { builderQuery.refetch(); termsQuery.refetch() }} />
+      </div>
+    )
+  }
+  if (!data) {
+    return (
+      <div className="p-8">
+        <div className="max-w-3xl mx-auto">
+          <h1 className="text-2xl mb-6" style={{ fontFamily: 'var(--font-display)' }}>Terms</h1>
+          {builder && <SyncPanel builder={builder} />}
+          <div className="rounded-[var(--radius-md)] border border-dashed border-[var(--color-border)] bg-[var(--color-surface)] p-8 text-center">
+            <p className="text-sm text-[var(--color-foreground)] mb-1">No terms on this builder yet.</p>
+            <p className="text-xs text-[var(--color-muted)]">
+              {builder?.catalog_source === 'connect'
+                ? 'Run a sync to pull terms from Connect, or use the fixture button above.'
+                : 'Delete this builder and recreate it through the wizard, or add the terms row via SQL.'}
+            </p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+  if (!draft) {
     return <div className="p-8"><Spinner size={20} className="text-[var(--color-muted)]" /></div>
   }
 
@@ -65,6 +111,9 @@ export function TermsEdit() {
       <div className="max-w-3xl mx-auto">
         <h1 className="text-2xl mb-6" style={{ fontFamily: 'var(--font-display)' }}>Terms</h1>
 
+        {builder && <SyncPanel builder={builder} />}
+
+        <fieldset disabled={synced} className={synced ? 'opacity-70' : ''}>
         <div className="space-y-3 mb-8">
           <Field label="Reservation (USD cents)">
             <input type="number" value={draft.reservation_cents} onChange={e => up('reservation_cents', Number(e.target.value))} className={`${input} w-full`} />
@@ -124,12 +173,13 @@ export function TermsEdit() {
 
         <button
           onClick={() => save.mutate(draft)}
-          disabled={save.isPending}
+          disabled={save.isPending || synced}
           className="h-9 px-4 rounded-[var(--radius-sm)] bg-[var(--color-accent)] text-white text-sm hover:opacity-90 inline-flex items-center gap-2 disabled:opacity-50"
         >
           {save.isPending ? <Spinner size={13} /> : <Check size={14} />}
           {save.isPending ? 'Saving…' : save.isSuccess ? 'Saved' : 'Save terms'}
         </button>
+        </fieldset>
       </div>
     </div>
   )

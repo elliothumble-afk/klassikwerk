@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { createBrowserRouter, RouterProvider } from 'react-router'
+import { createBrowserRouter, Navigate, RouterProvider } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { AuthGuard } from '@/components/auth/AuthGuard'
@@ -11,6 +11,7 @@ import { ForgotPasswordPage } from '@/pages/auth/ForgotPasswordPage'
 import { ResetPasswordPage } from '@/pages/auth/ResetPasswordPage'
 import { PortalShell } from '@/pages/portal/PortalShell'
 import { OpsShell } from '@/pages/ops/OpsShell'
+import { OpsDashboard } from '@/pages/ops/OpsDashboard'
 import { CatalogPage } from '@/pages/ops/catalog/CatalogPage'
 import { BuildersList } from '@/pages/ops/builders/BuildersList'
 import { BuilderWizard } from '@/pages/ops/builders/BuilderWizard'
@@ -19,13 +20,15 @@ import { TermsEdit } from '@/pages/ops/builders/TermsEdit'
 import { ContractEdit } from '@/pages/ops/builders/ContractEdit'
 import { BuildsList } from '@/pages/ops/builds/BuildsList'
 import { BuildDetail } from '@/pages/ops/builds/BuildDetail'
+import { LeadsBoard } from '@/pages/ops/leads/LeadsBoard'
+import { LeadDetail } from '@/pages/ops/leads/LeadDetail'
+import { QuotesList } from '@/pages/ops/quotes/QuotesList'
+import { QuoteEditor } from '@/pages/ops/quotes/QuoteEditor'
+import { ZohoSettings } from '@/pages/ops/settings/ZohoSettings'
 import { OperatorLanding } from '@/pages/public/OperatorLanding'
 import { BuilderShell } from '@/pages/public/BuilderShell'
 import { BuilderHome } from '@/pages/public/BuilderHome'
-import { ProcessPage } from '@/pages/public/ProcessPage'
-import { PlatformsPage } from '@/pages/public/PlatformsPage'
-import { ConfigurePage } from '@/pages/public/ConfigurePage'
-import { ReserveSuccess } from '@/pages/public/ReserveSuccess'
+import { QuoteView } from '@/pages/public/QuoteView'
 
 function useCustomDomainSlug(): { slug: string | null; loading: boolean } {
   const hostname = typeof window === 'undefined' ? '' : window.location.hostname
@@ -52,10 +55,11 @@ export function App() {
   const router = useMemo(() => {
     const builderChildren = [
       { index: true, element: <BuilderHome /> },
-      { path: 'platforms', element: <PlatformsPage /> },
-      { path: 'process', element: <ProcessPage /> },
-      { path: 'configure', element: <ConfigurePage /> },
-      { path: 'reserve/success', element: <ReserveSuccess /> },
+      // Legacy routes — redirect back to the builder landing
+      { path: 'configure', element: <Navigate to="." replace /> },
+      { path: 'platforms', element: <Navigate to="." replace /> },
+      { path: 'process', element: <Navigate to="." replace /> },
+      { path: 'reserve/success', element: <Navigate to="." replace /> },
     ]
 
     const rootRoute = customDomainSlug
@@ -65,6 +69,7 @@ export function App() {
     return createBrowserRouter([
       rootRoute,
       { path: '/b/:builderSlug', element: <BuilderShell />, children: builderChildren },
+      { path: '/q/:token', element: <QuoteView /> },
       { path: '/auth/login', element: <LoginPage /> },
       { path: '/auth/callback', element: <CallbackPage /> },
       { path: '/auth/forgot-password', element: <ForgotPasswordPage /> },
@@ -84,8 +89,13 @@ export function App() {
               {
                 element: <OpsShell />,
                 children: [
-                  { index: true, element: <CatalogPage /> },
+                  { index: true, element: <OpsDashboard /> },
                   { path: 'catalog', element: <CatalogPage /> },
+                  { path: 'leads', element: <LeadsBoard /> },
+                  { path: 'leads/:id', element: <LeadDetail /> },
+                  { path: 'quotes', element: <QuotesList /> },
+                  { path: 'quotes/new', element: <QuoteEditor /> },
+                  { path: 'quotes/:id', element: <QuoteEditor /> },
                   { path: 'builds', element: <BuildsList /> },
                   { path: 'builds/:id', element: <BuildDetail /> },
                   {
@@ -99,6 +109,11 @@ export function App() {
                   { path: 'builders/:id/brand', element: <BrandEdit /> },
                   { path: 'builders/:id/terms', element: <TermsEdit /> },
                   { path: 'builders/:id/contract', element: <ContractEdit /> },
+                  {
+                    path: 'settings/zoho',
+                    element: <RoleGuard role="operator" />,
+                    children: [{ index: true, element: <ZohoSettings /> }],
+                  },
                 ],
               },
             ],

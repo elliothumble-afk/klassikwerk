@@ -38,6 +38,7 @@ export function BrandEdit() {
         hero_copy: next.hero_copy,
         process_copy: next.process_copy,
         custom_domain: next.custom_domain,
+        enquire_url: next.enquire_url,
       })
       if (error) throw error
     },
@@ -84,6 +85,17 @@ export function BrandEdit() {
           </div>
 
           <Field label="Custom domain (optional)"><input value={draft.custom_domain ?? ''} onChange={e => up('custom_domain', e.target.value || null)} className={input} placeholder="example.com" /></Field>
+          <Field label="Enquire URL">
+            <input
+              value={draft.enquire_url}
+              onChange={e => up('enquire_url', e.target.value)}
+              className={input}
+              placeholder="https://humblehouseauto.com"
+            />
+            <p className="text-xs text-[var(--color-muted)] mt-1">
+              Where the public "Enquire" button on this builder's landing points to.
+            </p>
+          </Field>
         </section>
 
         <section className="mb-8">

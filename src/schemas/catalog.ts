@@ -18,6 +18,7 @@ export const tierSchema = z.object({
   lead_time_weeks: z.coerce.number().int().min(1).nullable(),
   description: z.string().nullable().or(z.literal('')).transform(v => v || null),
   quote_only: z.boolean(),
+  active: z.boolean(),
   sort: z.coerce.number().int().min(0),
 })
 

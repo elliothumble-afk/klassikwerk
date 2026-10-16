@@ -1,6 +1,7 @@
 import { Document, Image, Page, StyleSheet, Text, View } from '@react-pdf/renderer'
 import type { ReactElement } from 'react'
 import type { ContractPdfInput } from './types'
+import { resolveFamily } from './fonts'
 
 /**
  * Substitute `{{merge_field}}` placeholders in the markdown body.
@@ -106,12 +107,14 @@ export function ContractPdf(input: ContractPdfInput) {
   const { brand, builder, operator_contact } = input
   const merged = mergeMarkdown(input.body_markdown, input.merge_fields)
   const blocks = parseBlocks(merged)
+  const fontDisplay = resolveFamily(brand.font_display)
+  const fontBody = resolveFamily(brand.font_body)
 
   const styles = StyleSheet.create({
     page: {
       backgroundColor: brand.color_bg,
       color: brand.color_text,
-      fontFamily: brand.font_body,
+      fontFamily: fontBody,
       fontSize: 10.5,
       paddingTop: 48,
       paddingBottom: 54,
@@ -126,7 +129,7 @@ export function ContractPdf(input: ContractPdfInput) {
       paddingBottom: 12,
       marginBottom: 20,
     },
-    wordmark: { fontFamily: brand.font_display, fontSize: 18 },
+    wordmark: { fontFamily: fontDisplay, fontSize: 18 },
     headerLogo: { width: 90, height: 32, objectFit: 'contain' },
     tagline: { fontSize: 8, color: brand.color_text + '99', marginTop: 2 },
     small: { fontSize: 8, color: brand.color_text + '99' },
@@ -137,9 +140,9 @@ export function ContractPdf(input: ContractPdfInput) {
       textTransform: 'uppercase',
       color: brand.color_text + '99',
     },
-    h1: { fontFamily: brand.font_display, fontSize: 22, marginTop: 10, marginBottom: 10 },
-    h2: { fontFamily: brand.font_display, fontSize: 14, marginTop: 16, marginBottom: 8 },
-    h3: { fontFamily: brand.font_display, fontSize: 11, color: brand.color_accent, marginTop: 12, marginBottom: 4 },
+    h1: { fontFamily: fontDisplay, fontSize: 22, marginTop: 10, marginBottom: 10 },
+    h2: { fontFamily: fontDisplay, fontSize: 14, marginTop: 16, marginBottom: 8 },
+    h3: { fontFamily: fontDisplay, fontSize: 11, color: brand.color_accent, marginTop: 12, marginBottom: 4 },
     p: { marginBottom: 8 },
     bold: { fontWeight: 'semibold' },
     ul: { marginBottom: 8, marginLeft: 10 },

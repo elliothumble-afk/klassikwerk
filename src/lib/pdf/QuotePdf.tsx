@@ -1,6 +1,7 @@
 import { Document, Image, Page, StyleSheet, Text, View } from '@react-pdf/renderer'
 import type { QuotePdfInput } from './types'
 import { money } from './types'
+import { resolveFamily } from './fonts'
 
 interface ContactLine {
   text: string
@@ -32,12 +33,14 @@ export function QuotePdf(input: QuotePdfInput) {
   const currency = terms.currency
   const validUntil = new Date(new Date(input.created_at).getTime() + (terms.quote_validity_days ?? 30) * 86400_000)
     .toISOString().slice(0, 10)
+  const fontDisplay = resolveFamily(brand.font_display)
+  const fontBody = resolveFamily(brand.font_body)
 
   const styles = StyleSheet.create({
     page: {
       backgroundColor: brand.color_bg,
       color: brand.color_text,
-      fontFamily: brand.font_body,
+      fontFamily: fontBody,
       fontSize: 10,
       paddingTop: 48,
       paddingBottom: 54,
@@ -52,7 +55,7 @@ export function QuotePdf(input: QuotePdfInput) {
       paddingBottom: 12,
       marginBottom: 20,
     },
-    wordmark: { fontFamily: brand.font_display, fontSize: 18 },
+    wordmark: { fontFamily: fontDisplay, fontSize: 18 },
     headerLogo: { width: 90, height: 32, objectFit: 'contain' },
     tagline: { fontSize: 8, color: brand.color_text + '99', marginTop: 2 },
     small: { fontSize: 8, color: brand.color_text + '99' },
@@ -63,7 +66,7 @@ export function QuotePdf(input: QuotePdfInput) {
       backgroundColor: '#e9e5dc',
     },
     coverTitle: {
-      fontFamily: brand.font_display,
+      fontFamily: fontDisplay,
       fontSize: 26,
       marginBottom: 4,
       marginTop: 8,
@@ -85,18 +88,18 @@ export function QuotePdf(input: QuotePdfInput) {
     },
     metaValue: { fontSize: 11 },
     metaAccent: {
-      fontFamily: brand.font_display,
+      fontFamily: fontDisplay,
       fontSize: 15,
       color: brand.color_accent,
     },
     h2: {
-      fontFamily: brand.font_display,
+      fontFamily: fontDisplay,
       fontSize: 15,
       marginTop: 14,
       marginBottom: 10,
     },
     h3: {
-      fontFamily: brand.font_display,
+      fontFamily: fontDisplay,
       fontSize: 11,
       color: brand.color_accent,
       marginTop: 10,
@@ -144,7 +147,7 @@ export function QuotePdf(input: QuotePdfInput) {
       textTransform: 'uppercase',
     },
     totalCaption: { fontSize: 8, color: brand.color_text + '77', marginTop: 2 },
-    totalAmount: { fontFamily: brand.font_display, fontSize: 22 },
+    totalAmount: { fontFamily: fontDisplay, fontSize: 22 },
     intro: { fontSize: 11, color: brand.color_text + 'CC', marginBottom: 14 },
     processGrid: {
       flexDirection: 'row',
@@ -159,7 +162,7 @@ export function QuotePdf(input: QuotePdfInput) {
       padding: 12,
     },
     processN: {
-      fontFamily: brand.font_display,
+      fontFamily: fontDisplay,
       fontSize: 16,
       color: brand.color_accent,
     },

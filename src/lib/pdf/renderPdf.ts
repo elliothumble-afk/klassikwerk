@@ -207,22 +207,26 @@ export async function renderContractPdfToStorage(buildId: string): Promise<strin
     vehicle = (vr.data ?? null) as VehicleShape
   }
 
-  const scheduleRows = (terms?.payment_schedule ?? []).map(p =>
-    `| ${p.label} | ${p.percent}% | ${p.trigger} |`
-  )
-  const paymentScheduleTable = ['| Step | Share | Trigger |', '| --- | --- | --- |', ...scheduleRows].join('\n')
+  const addressFormatted = (() => {
+    const a = customer?.address as { formatted?: string } | null | undefined
+    if (!a) return '[address]'
+    if (typeof a === 'string') return a
+    return a.formatted ?? JSON.stringify(a)
+  })()
+
+  const { PAYMENT_SCHEDULE_SENTINEL } = await import('./types')
 
   const fields: Record<string, string> = {
     builder_name: builderRow.name,
     builder_legal_name: builderRow.legal_name ?? builderRow.name,
     customer_full_name: profile?.full_name ?? customer?.full_name ?? customer?.email ?? '[customer]',
-    customer_address: customer?.address ? JSON.stringify(customer.address) : '[address]',
+    customer_address: addressFormatted,
     vehicle_platform: platform.name,
     vehicle_vin: vehicle?.vin ?? '[VIN]',
     vehicle_year: vehicle?.year?.toString() ?? '[year]',
     configuration_table: configurationTable,
     price_total: money(build.price_cents),
-    payment_schedule_table: paymentScheduleTable,
+    payment_schedule_table: PAYMENT_SCHEDULE_SENTINEL,
     warranty_text: terms?.warranty_text ?? '',
     governing_law: terms?.governing_law ?? '',
   }
@@ -237,6 +241,10 @@ export async function renderContractPdfToStorage(buildId: string): Promise<strin
     version: tpl.version,
     body_markdown: tpl.body_markdown,
     merge_fields: fields,
+    price_cents: build.price_cents ?? 0,
+    reservation_cents: terms?.reservation_cents ?? 0,
+    payment_schedule: terms?.payment_schedule ?? [],
+    currency: terms?.currency ?? 'usd',
     builder: { name: builderRow.name, legal_name: builderRow.legal_name, slug: builderRow.slug },
     brand,
     operator_contact: operatorContact,

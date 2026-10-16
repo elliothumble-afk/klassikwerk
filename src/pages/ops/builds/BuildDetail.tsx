@@ -5,6 +5,7 @@ import { FileText } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { renderContractPdfToStorage } from '@/lib/pdf/renderPdf'
 import { Spinner } from '@/components/ui/Spinner'
+import { VehicleIntake } from './VehicleIntake'
 
 interface BuildDoc {
   id: string
@@ -26,7 +27,7 @@ export function BuildDetail() {
       const { data, error } = await supabase
         .from('builds')
         .select(`
-          id, stage, price_cents, created_at, builder_id,
+          id, stage, price_cents, created_at, builder_id, customer_id, vehicle_id, platform_id,
           platform:catalog_platforms(name, chassis, years),
           tier:catalog_tiers(name, base_price_cents, lead_time_weeks)
         `)
@@ -39,6 +40,9 @@ export function BuildDetail() {
         price_cents: number | null
         created_at: string
         builder_id: string
+        customer_id: string | null
+        vehicle_id: string | null
+        platform_id: string
         platform: { name: string; chassis: string; years: string } | null
         tier: { name: string; base_price_cents: number | null; lead_time_weeks: number | null } | null
       }
@@ -91,6 +95,14 @@ export function BuildDetail() {
           <Row label="Stage" value={build.stage} />
           <Row label="Total" value={build.price_cents != null ? `$${(build.price_cents / 100).toLocaleString()}` : '—'} />
         </div>
+
+        <VehicleIntake
+          buildId={build.id}
+          builderId={build.builder_id}
+          platformId={build.platform_id}
+          customerId={build.customer_id}
+          vehicleId={build.vehicle_id}
+        />
 
         <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
           <div className="flex items-center justify-between mb-3">

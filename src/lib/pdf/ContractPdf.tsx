@@ -1,6 +1,7 @@
 import { Document, Image, Page, StyleSheet, Text, View } from '@react-pdf/renderer'
 import type { ReactElement } from 'react'
 import type { ContractPdfInput } from './types'
+import { PAYMENT_SCHEDULE_SENTINEL, money } from './types'
 import { resolveFamily } from './fonts'
 
 /**
@@ -15,6 +16,7 @@ type Block =
   | { kind: 'p'; text: string }
   | { kind: 'ul'; items: string[] }
   | { kind: 'table'; header: string[]; rows: string[][] }
+  | { kind: 'payment-schedule' }
 
 /**
  * Minimal markdown → block list: headings, paragraphs, pipe tables,
@@ -75,7 +77,8 @@ function parseBlocks(md: string): Block[] {
       i += 1
     }
     const text = buf.join(' ').trim()
-    if (text) out.push({ kind: 'p', text })
+    if (text === PAYMENT_SCHEDULE_SENTINEL) out.push({ kind: 'payment-schedule' })
+    else if (text) out.push({ kind: 'p', text })
   }
 
   return out
@@ -171,6 +174,39 @@ export function ContractPdf(input: ContractPdfInput) {
     },
     footerContact: { fontSize: 8, color: brand.color_text + '99' },
     footerContactName: { fontSize: 8, color: brand.color_text, marginBottom: 2 },
+    scheduleBlock: { marginTop: 4, marginBottom: 12 },
+    scheduleHeader: {
+      flexDirection: 'row',
+      borderBottom: `0.75 solid ${brand.color_text}44`,
+      paddingVertical: 4,
+    },
+    scheduleRow: {
+      flexDirection: 'row',
+      borderBottom: `0.5 solid ${brand.color_text}18`,
+      paddingVertical: 6,
+    },
+    scheduleSubtotal: {
+      flexDirection: 'row',
+      borderBottom: `0.5 solid ${brand.color_text}22`,
+      paddingVertical: 6,
+      backgroundColor: '#00000008',
+    },
+    scheduleLabel: { flexGrow: 1, flexShrink: 1, flexBasis: 0, fontSize: 10 },
+    scheduleTrigger: { width: 110, fontSize: 9, color: brand.color_text + '88' },
+    scheduleAmount: { width: 130, textAlign: 'right', fontSize: 10 },
+    scheduleLabelHeader: {
+      flexGrow: 1, flexShrink: 1, flexBasis: 0,
+      fontSize: 8, textTransform: 'uppercase', letterSpacing: 1, color: brand.color_text + '99',
+    },
+    scheduleTriggerHeader: {
+      width: 110,
+      fontSize: 8, textTransform: 'uppercase', letterSpacing: 1, color: brand.color_text + '99',
+    },
+    scheduleAmountHeader: {
+      width: 130, textAlign: 'right',
+      fontSize: 8, textTransform: 'uppercase', letterSpacing: 1, color: brand.color_text + '99',
+    },
+    subtotalText: { fontWeight: 'medium', color: brand.color_text + 'CC' },
   })
 
   const contact = [operator_contact.person, operator_contact.email, operator_contact.phone, operator_contact.website]
@@ -203,6 +239,41 @@ export function ContractPdf(input: ContractPdfInput) {
     </View>
   )
 
+  const balanceCents = Math.max(0, input.price_cents - input.reservation_cents)
+  const PaymentSchedule = ({ keyProp }: { keyProp: string }) => (
+    <View key={keyProp} style={styles.scheduleBlock}>
+      <View style={styles.scheduleHeader}>
+        <Text style={styles.scheduleLabelHeader}>Step</Text>
+        <Text style={styles.scheduleTriggerHeader}>Trigger</Text>
+        <Text style={styles.scheduleAmountHeader}>Amount</Text>
+      </View>
+      <View style={styles.scheduleRow}>
+        <Text style={styles.scheduleLabel}>Reservation deposit</Text>
+        <Text style={styles.scheduleTrigger}>Immediate</Text>
+        <Text style={styles.scheduleAmount}>{money(input.reservation_cents, input.currency)}</Text>
+      </View>
+      <View style={styles.scheduleSubtotal}>
+        <Text style={{ ...styles.scheduleLabel, ...styles.subtotalText }}>Balance after reservation</Text>
+        <Text style={styles.scheduleTrigger}></Text>
+        <Text style={{ ...styles.scheduleAmount, ...styles.subtotalText }}>
+          {money(balanceCents, input.currency)}
+        </Text>
+      </View>
+      {(input.payment_schedule ?? []).map((step, j) => {
+        const dollars = Math.round(balanceCents * (step.percent / 100))
+        return (
+          <View key={`${keyProp}-${j}`} style={styles.scheduleRow}>
+            <Text style={styles.scheduleLabel}>{step.label}</Text>
+            <Text style={styles.scheduleTrigger}>{step.trigger}</Text>
+            <Text style={styles.scheduleAmount}>
+              {step.percent}% · {money(dollars, input.currency)}
+            </Text>
+          </View>
+        )
+      })}
+    </View>
+  )
+
   const renderBlock = (b: Block, idx: number): ReactElement => {
     const key = `b${idx}`
     switch (b.kind) {
@@ -212,6 +283,8 @@ export function ContractPdf(input: ContractPdfInput) {
         return <Text key={key} style={styles.h2}>{b.text}</Text>
       case 'h3':
         return <Text key={key} style={styles.h3}>{b.text}</Text>
+      case 'payment-schedule':
+        return <PaymentSchedule key={key} keyProp={key} />
       case 'p':
         return (
           <Text key={key} style={styles.p}>

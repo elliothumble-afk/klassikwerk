@@ -86,10 +86,18 @@ export interface ContractPdfInput {
   version: number
   body_markdown: string
   merge_fields: Record<string, string>
+  price_cents: number
+  reservation_cents: number
+  payment_schedule: { label: string; percent: number; trigger: string }[]
+  currency: string
   builder: BuilderLike
   brand: BrandLike
   operator_contact: OperatorContact
 }
+
+/** Sentinel string that replaces {{payment_schedule_table}} so the
+ *  contract renderer can swap in the structured schedule component. */
+export const PAYMENT_SCHEDULE_SENTINEL = '__KW_PAYMENT_SCHEDULE__'
 
 export function money(cents: number | null | undefined, currency = 'usd'): string {
   if (cents == null) return '—'

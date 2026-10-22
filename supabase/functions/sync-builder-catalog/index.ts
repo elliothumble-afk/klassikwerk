@@ -527,6 +527,19 @@ Deno.serve(async (req) => {
 
 // ──────────────────────────────────────────────────────────────────
 // Shopify sync
+//
+// Discovery lives in /pages/models-range. Each vehicle sits in a
+//   <div class="product-item_container model-item">
+// block with
+//   <h4 class="shop-title">…</h4>  (model name)
+//   <h5>DESIGNED TO FIT YEAR …</h5>  (year range)
+//   <a class="con-btn" href="/collections/…">EXTERIOR PARTS</a>  (×N)
+// We group collections into platforms by the h4 heading and into
+// exterior / interior / alloy-wheels groups by the anchor text,
+// not by slug. Many of Chelsea's hrefs are Shopify URL aliases that
+// 301 to a different canonical collection; the canonical handle is
+// read from <link rel="canonical"> and products.json is fetched on
+// *that* handle so we don't hit the empty alias.
 // ──────────────────────────────────────────────────────────────────
 
 interface ShopifyProductVariant {
@@ -548,50 +561,118 @@ const SHOPIFY_CATEGORIES = ['exterior', 'interior', 'alloy-wheels'] as const
 type ShopifyCategory = typeof SHOPIFY_CATEGORIES[number]
 const UA = 'Mozilla/5.0 (compatible; HumbleHouseSync/1.0)'
 
-function titleCase(slug: string): string {
-  return slug.split('-').map(w => w[0] ? w[0].toUpperCase() + w.slice(1) : w).join(' ')
-}
-function yearsFromSlug(slug: string): string {
-  const m = /(\d{4})-(?:(\d{4})|present)/.exec(slug)
-  if (!m) return ''
-  return `${m[1]}–${m[2] ?? 'present'}`
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+/** Fetch with throttling + exponential backoff on 429. */
+async function shopifyFetch(url: string, maxRetries = 5): Promise<Response> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const r = await fetch(url, { headers: { 'User-Agent': UA }, redirect: 'follow' })
+    if (r.status !== 429) return r
+    // Shopify may send Retry-After; otherwise exponential backoff 1,2,4,8,16s.
+    const retryAfter = Number(r.headers.get('Retry-After')) || Math.pow(2, attempt)
+    await sleep(retryAfter * 1000)
+  }
+  return fetch(url, { headers: { 'User-Agent': UA }, redirect: 'follow' })
 }
 
-function classifyCollectionSlug(slug: string): { platform: string; category: ShopifyCategory } | null {
-  for (const cat of SHOPIFY_CATEGORIES) {
-    const re = new RegExp(`^(.*?)-${cat}(?:-|$)`)
-    const m = re.exec(slug)
-    if (m && m[1]) return { platform: m[1], category: cat }
-  }
+function stripTags(s: string): string {
+  return s.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
+}
+
+function slugify(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
+/** "DESIGNED TO FIT YEAR 2020 ONWARDS" → "2020-onwards"; empty if none. */
+function yearSlug(text: string): string {
+  if (!text) return ''
+  const stripped = text.replace(/designed\s+to\s+fit\s+year/i, '').trim()
+  return slugify(stripped)
+}
+
+/** "DESIGNED TO FIT YEAR 2020 ONWARDS" → "2020–present"; ""s untouched. */
+function yearsDisplay(text: string): string {
+  if (!text) return '—'
+  const t = text.replace(/designed\s+to\s+fit\s+year/i, '').trim()
+  // Normalize ONWARDS/PRESENT to "present"
+  return t.replace(/\s+ONWARDS/i, '–present').replace(/\s+PRESENT/i, '–present').replace(/\s*-\s*/g, '–')
+}
+
+function anchorTextToCategory(text: string): ShopifyCategory | null {
+  const up = text.toUpperCase()
+  if (up.includes('EXTERIOR')) return 'exterior'
+  if (up.includes('INTERIOR')) return 'interior'
+  if (up.includes('ALLOY') || up.includes('WHEEL')) return 'alloy-wheels'
   return null
+}
+
+interface DiscoveredVehicle {
+  name: string
+  years: string          // display
+  slug: string           // slugified name + years for stable platform id
+  hrefs: Partial<Record<ShopifyCategory, string>>
+}
+
+function discoverVehiclesFromModels(html: string): DiscoveredVehicle[] {
+  // Split on the vehicle block marker. The first chunk is the page header; drop it.
+  const parts = html.split(/<div\s+class="product-item_container\s+model-item"/i).slice(1)
+  const out: DiscoveredVehicle[] = []
+  for (const part of parts) {
+    // The block technically extends until the next product-item_container, but
+    // because we already split, each `part` begins at one vehicle and ends
+    // where the splitter cut it. The content of interest (heading + buttons)
+    // sits at the top of the part.
+    const h4 = /<h4[^>]*class="shop-title"[^>]*>([\s\S]*?)<\/h4>/i.exec(part)
+    if (!h4) continue
+    const name = stripTags(h4[1])
+    if (!name) continue
+    const h5 = /<h5[^>]*>([\s\S]*?)<\/h5>/i.exec(part)
+    const yearsRaw = h5 ? stripTags(h5[1]) : ''
+
+    const hrefs: Partial<Record<ShopifyCategory, string>> = {}
+    const anchorRe = /<a[^>]*class="con-btn"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi
+    let m: RegExpExecArray | null
+    while ((m = anchorRe.exec(part)) !== null) {
+      const href = m[1]
+      if (!href.startsWith('/collections/')) continue
+      const label = stripTags(m[2])
+      const cat = anchorTextToCategory(label)
+      if (!cat) continue
+      if (!hrefs[cat]) hrefs[cat] = href
+    }
+
+    if (Object.keys(hrefs).length === 0) continue
+    const slug = slugify(`${name}-${yearSlug(yearsRaw)}`)
+    out.push({ name, years: yearsDisplay(yearsRaw), slug, hrefs })
+  }
+  return out
+}
+
+async function resolveCanonicalCollection(baseUrl: string, href: string): Promise<string | null> {
+  const url = href.startsWith('http') ? href : `${baseUrl}${href}`
+  const r = await shopifyFetch(url)
+  if (!r.ok) return null
+  const html = await r.text()
+  const canonMatch = /<link[^>]+rel=["']canonical["'][^>]*href=["']([^"']+)["']/i.exec(html)
+  const canonicalUrl = canonMatch ? canonMatch[1] : r.url
+  const match = /\/collections\/([a-z0-9][a-z0-9-]*)/i.exec(canonicalUrl)
+  return match ? match[1] : null
 }
 
 async function syncShopify(admin: ReturnType<typeof createClient>, builder: any) {
   const baseUrl = (builder.catalog_source_url || '').replace(/\/$/, '')
   if (!baseUrl) throw new Error('builder.catalog_source_url is not set')
 
-  // ─── Discover platforms + collection URLs from /pages/models-range ─
-  const pageRes = await fetch(`${baseUrl}/pages/models-range`, { headers: { 'User-Agent': UA } })
+  // ─── Models range → vehicle structure ──────────────────────────────
+  const pageRes = await shopifyFetch(`${baseUrl}/pages/models-range`)
   if (!pageRes.ok) throw new Error(`models-range HTTP ${pageRes.status}`)
   const html = await pageRes.text()
-  const linkMatches = html.matchAll(/href="\/collections\/([a-z0-9][a-z0-9-]*)"/g)
-  const discovered = new Set<string>()
-  for (const m of linkMatches) discovered.add(m[1])
+  const vehicles = discoverVehiclesFromModels(html)
 
-  const platformsMap = new Map<string, Partial<Record<ShopifyCategory, string>>>()
-  for (const slug of discovered) {
-    const hit = classifyCollectionSlug(slug)
-    if (!hit) continue
-    if (!platformsMap.has(hit.platform)) platformsMap.set(hit.platform, {})
-    platformsMap.get(hit.platform)![hit.category] = slug
-  }
-  // A platform must have at least two of the three categories to count —
-  // this filters out false positives like `lightweight-alloy-wheels`.
-  const validPlatforms = Array.from(platformsMap.entries())
-    .filter(([_, cats]) => Object.keys(cats).length >= 2)
-    .sort((a, b) => a[0].localeCompare(b[0]))
-
-  // ─── Pricing multipliers from builder_terms ─────────────────────────
+  // ─── Pricing multipliers from builder_terms ────────────────────────
   const termsRes = await admin.from('builder_terms')
     .select('fx_rate, kit_markup')
     .eq('builder_id', builder.id)
@@ -600,7 +681,7 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
   const fx = Number((termsRes.data as any).fx_rate ?? 1)
   const markup = Number((termsRes.data as any).kit_markup ?? 1)
 
-  // ─── Upsert the 3 shared option groups ──────────────────────────────
+  // ─── Upsert three shared option groups ─────────────────────────────
   const groupMeta: Record<ShopifyCategory, { slug: string; name: string; sort: number }> = {
     exterior: { slug: 'shopify-exterior', name: 'Exterior', sort: 10 },
     interior: { slug: 'shopify-interior', name: 'Interior', sort: 20 },
@@ -625,44 +706,67 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     groupIdByCat.set(cat, (ins.data as any).id)
   }
 
-  // ─── Upsert platforms ───────────────────────────────────────────────
-  const platformIdBySlug = new Map<string, string>()
-  for (const [platformSlug, _cats] of validPlatforms) {
+  // ─── Resolve canonicals + build platform set ───────────────────────
+  interface ResolvedVehicle {
+    vehicle: DiscoveredVehicle
+    canonicals: Partial<Record<ShopifyCategory, string>>
+  }
+  const resolved: ResolvedVehicle[] = []
+  for (const v of vehicles) {
+    const canonicals: Partial<Record<ShopifyCategory, string>> = {}
+    for (const cat of SHOPIFY_CATEGORIES) {
+      const href = v.hrefs[cat]
+      if (!href) continue
+      const canonical = await resolveCanonicalCollection(baseUrl, href)
+      if (canonical) canonicals[cat] = canonical
+    }
+    if (Object.keys(canonicals).length > 0) resolved.push({ vehicle: v, canonicals })
+  }
+
+  // ─── Upsert platforms ──────────────────────────────────────────────
+  const platformIdByVehicle = new Map<string, string>()  // v.slug → id
+  const seenPlatformExternalIds = new Set<string>()
+  for (const { vehicle } of resolved) {
+    const externalId = `shopify:platform:${vehicle.slug}`
     const ins = await admin.from('catalog_platforms').upsert({
       builder_id: builder.id,
-      slug: platformSlug,
-      name: titleCase(platformSlug),
-      chassis: platformSlug,
-      years: yearsFromSlug(platformSlug) || '—',
+      slug: vehicle.slug,
+      name: vehicle.name,
+      chassis: vehicle.slug,
+      years: vehicle.years,
       sort: 0,
       active: true,
       synced: true,
-      external_id: `shopify:platform:${platformSlug}`,
+      external_id: externalId,
     }, { onConflict: 'builder_id,external_id' }).select('id').single()
     if (ins.error) throw ins.error
-    platformIdBySlug.set(platformSlug, (ins.data as any).id)
+    platformIdByVehicle.set(vehicle.slug, (ins.data as any).id)
+    seenPlatformExternalIds.add(externalId)
   }
 
-  // ─── Walk collections ───────────────────────────────────────────────
+  // ─── Walk each (vehicle, category) canonical collection ────────────
   const perPlatform: Record<string, { options: number }> = {}
   const seenOptionExternalIds = new Set<string>()
   let totalUpserted = 0
   let totalVariantsSplit = 0
 
-  for (const [platformSlug, cats] of validPlatforms) {
-    perPlatform[platformSlug] = { options: 0 }
-    const platformId = platformIdBySlug.get(platformSlug)!
+  for (const { vehicle, canonicals } of resolved) {
+    perPlatform[vehicle.slug] = { options: 0 }
+    const platformId = platformIdByVehicle.get(vehicle.slug)!
+    const vehicleSeen = new Set<string>()  // dedupe same product across categories
 
     for (const cat of SHOPIFY_CATEGORIES) {
-      const collectionSlug = cats[cat]
-      if (!collectionSlug) continue
+      const canonicalSlug = canonicals[cat]
+      if (!canonicalSlug) continue
       const groupId = groupIdByCat.get(cat)!
 
+      // Batch all pages' options; one upsert at the end of the collection.
+      const rows: Record<string, unknown>[] = []
       let page = 1
-      // Hard cap to protect runtime
       while (page <= 10) {
-        const url = `${baseUrl}/collections/${collectionSlug}/products.json?limit=250&page=${page}`
-        const r = await fetch(url, { headers: { 'User-Agent': UA } })
+        const url = `${baseUrl}/collections/${canonicalSlug}/products.json?limit=250&page=${page}`
+        await sleep(100)
+        const r = await shopifyFetch(url)
         if (!r.ok) {
           if (r.status === 404) break
           throw new Error(`${url} HTTP ${r.status}`)
@@ -679,14 +783,16 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
 
           for (const variant of variants) {
             const suffix = isMulti ? `-${variant.id}` : ''
-            const externalId = `shopify:option:${platformSlug}:${product.handle}${suffix}`
-            const slug = `${platformSlug}-${product.handle}${suffix}`.slice(0, 200)
+            const externalId = `shopify:option:${vehicle.slug}:${product.handle}${suffix}`
+            if (vehicleSeen.has(externalId)) continue  // seen under a prior category
+            vehicleSeen.add(externalId)
+            const slug = slugify(`${vehicle.slug}-${product.handle}${suffix}`)
             const name = isMulti ? `${product.title} — ${variant.title}` : product.title
             const priceGbp = Number(variant.price ?? 0)
             const priceCents = Math.round(priceGbp * fx * markup * 100)
             const image = (product.images ?? [])[0]?.src ?? null
 
-            const ins = await admin.from('catalog_options').upsert({
+            rows.push({
               builder_id: builder.id,
               group_id: groupId,
               slug,
@@ -700,48 +806,69 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
               active: Boolean(variant.available),
               synced: true,
               external_id: externalId,
-            }, { onConflict: 'builder_id,external_id' }).select('id').single()
-            if (ins.error) throw ins.error
-            const optionId = (ins.data as any).id as string
-            seenOptionExternalIds.add(externalId)
-
-            // Each option is restricted to one platform
-            await admin.from('catalog_option_platforms').delete().eq('option_id', optionId)
-            await admin.from('catalog_option_platforms').insert({
-              option_id: optionId,
-              platform_id: platformId,
             })
-            perPlatform[platformSlug].options += 1
-            totalUpserted += 1
           }
         }
         if (products.length < 250) break
         page += 1
       }
+
+      if (rows.length > 0) {
+        // Bulk upsert and link in two DB round-trips per collection.
+        const ins = await admin.from('catalog_options')
+          .upsert(rows, { onConflict: 'builder_id,external_id' })
+          .select('id, external_id')
+        if (ins.error) throw ins.error
+        const inserted = ins.data as unknown as { id: string; external_id: string }[]
+        const links = inserted.map(o => ({ option_id: o.id, platform_id: platformId }))
+        if (links.length > 0) {
+          const linkIns = await admin.from('catalog_option_platforms')
+            .upsert(links, { onConflict: 'option_id,platform_id', ignoreDuplicates: true })
+          if (linkIns.error) throw linkIns.error
+        }
+        for (const o of inserted) seenOptionExternalIds.add(o.external_id)
+        perPlatform[vehicle.slug].options += inserted.length
+        totalUpserted += inserted.length
+      }
     }
   }
 
-  // ─── Deactivate options missing from this run ───────────────────────
-  const seenArr = Array.from(seenOptionExternalIds)
-  const missing = await admin.from('catalog_options')
+  // ─── Deactivate platforms + options missing from this run ──────────
+  const platformsMissing = await admin.from('catalog_platforms')
     .update({ active: false })
     .eq('builder_id', builder.id)
     .eq('synced', true)
     .eq('active', true)
-    .not('external_id', 'in', `(${seenArr.map(id => `"${id}"`).join(',') || '""'})`)
+    .not('external_id', 'in', `(${Array.from(seenPlatformExternalIds).map(id => `"${id}"`).join(',') || '""'})`)
     .select('id')
+
+  const optionsMissing = await admin.from('catalog_options')
+    .update({ active: false })
+    .eq('builder_id', builder.id)
+    .eq('synced', true)
+    .eq('active', true)
+    .not('external_id', 'in', `(${Array.from(seenOptionExternalIds).map(id => `"${id}"`).join(',') || '""'})`)
+    .select('id')
+
+  // Pretty per-platform report keyed by vehicle name for the UI
+  const perPlatformNamed: Record<string, number> = {}
+  for (const { vehicle } of resolved) {
+    perPlatformNamed[`${vehicle.name} (${vehicle.years})`] = perPlatform[vehicle.slug].options
+  }
 
   return {
     source: 'shopify',
-    discovered_slugs: discovered.size,
-    platforms: validPlatforms.length,
+    vehicles_discovered: vehicles.length,
+    vehicles_with_canonical: resolved.length,
+    platforms: resolved.length,
     option_groups: SHOPIFY_CATEGORIES.length,
     options: {
       upserted: totalUpserted,
-      deactivated: missing.data?.length ?? 0,
+      deactivated: optionsMissing.data?.length ?? 0,
       variants_split: totalVariantsSplit,
     },
-    per_platform: perPlatform,
+    platforms_deactivated: platformsMissing.data?.length ?? 0,
+    per_platform: perPlatformNamed,
     fx_rate: fx,
     kit_markup: markup,
   }

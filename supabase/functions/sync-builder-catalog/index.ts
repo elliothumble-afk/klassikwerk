@@ -171,8 +171,8 @@ Deno.serve(async (req) => {
     if (builderRes.error) throw builderRes.error
     const builder = builderRes.data as any
 
-    if (builder.catalog_source !== 'connect') {
-      throw new Error(`Builder ${builder.slug} is manual, not connect.`)
+    if (builder.catalog_source !== 'connect' && builder.catalog_source !== 'shopify') {
+      throw new Error(`Builder ${builder.slug} is ${builder.catalog_source}, not a synced source.`)
     }
 
     // Open a sync_runs row in `running` state so the UI shows live state.
@@ -182,6 +182,29 @@ Deno.serve(async (req) => {
     }).select('id').single()
     if (runIns.error) throw runIns.error
     runId = (runIns.data as any).id
+
+    // ────────────────────────────────────────────────────────────
+    // Shopify branch — no feed JSON; walks /pages/models-range +
+    // /collections/<slug>/products.json. Brand / terms / contract
+    // stay manual (not touched by this sync).
+    // ────────────────────────────────────────────────────────────
+    if (builder.catalog_source === 'shopify') {
+      const shopifyCounts = await syncShopify(admin, builder)
+      const nowIso = new Date().toISOString()
+      await admin.from('sync_runs').update({
+        status: 'success',
+        finished_at: nowIso,
+        counts: shopifyCounts,
+      }).eq('id', runId!)
+      await admin.from('builders').update({
+        last_synced_at: nowIso,
+        last_sync_status: 'success',
+        last_sync_error: null,
+      }).eq('id', builderId)
+      return new Response(JSON.stringify({ ok: true, counts: shopifyCounts, run_id: runId }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
 
     // ────────────────────────────────────────────────────────────
     // Load the feed
@@ -501,3 +524,225 @@ Deno.serve(async (req) => {
     })
   }
 })
+
+// ──────────────────────────────────────────────────────────────────
+// Shopify sync
+// ──────────────────────────────────────────────────────────────────
+
+interface ShopifyProductVariant {
+  id: number
+  title: string
+  sku: string | null
+  price: string
+  available: boolean
+}
+interface ShopifyProductImage { src: string }
+interface ShopifyProduct {
+  handle: string
+  title: string
+  variants: ShopifyProductVariant[]
+  images: ShopifyProductImage[]
+}
+
+const SHOPIFY_CATEGORIES = ['exterior', 'interior', 'alloy-wheels'] as const
+type ShopifyCategory = typeof SHOPIFY_CATEGORIES[number]
+const UA = 'Mozilla/5.0 (compatible; HumbleHouseSync/1.0)'
+
+function titleCase(slug: string): string {
+  return slug.split('-').map(w => w[0] ? w[0].toUpperCase() + w.slice(1) : w).join(' ')
+}
+function yearsFromSlug(slug: string): string {
+  const m = /(\d{4})-(?:(\d{4})|present)/.exec(slug)
+  if (!m) return ''
+  return `${m[1]}–${m[2] ?? 'present'}`
+}
+
+function classifyCollectionSlug(slug: string): { platform: string; category: ShopifyCategory } | null {
+  for (const cat of SHOPIFY_CATEGORIES) {
+    const re = new RegExp(`^(.*?)-${cat}(?:-|$)`)
+    const m = re.exec(slug)
+    if (m && m[1]) return { platform: m[1], category: cat }
+  }
+  return null
+}
+
+async function syncShopify(admin: ReturnType<typeof createClient>, builder: any) {
+  const baseUrl = (builder.catalog_source_url || '').replace(/\/$/, '')
+  if (!baseUrl) throw new Error('builder.catalog_source_url is not set')
+
+  // ─── Discover platforms + collection URLs from /pages/models-range ─
+  const pageRes = await fetch(`${baseUrl}/pages/models-range`, { headers: { 'User-Agent': UA } })
+  if (!pageRes.ok) throw new Error(`models-range HTTP ${pageRes.status}`)
+  const html = await pageRes.text()
+  const linkMatches = html.matchAll(/href="\/collections\/([a-z0-9][a-z0-9-]*)"/g)
+  const discovered = new Set<string>()
+  for (const m of linkMatches) discovered.add(m[1])
+
+  const platformsMap = new Map<string, Partial<Record<ShopifyCategory, string>>>()
+  for (const slug of discovered) {
+    const hit = classifyCollectionSlug(slug)
+    if (!hit) continue
+    if (!platformsMap.has(hit.platform)) platformsMap.set(hit.platform, {})
+    platformsMap.get(hit.platform)![hit.category] = slug
+  }
+  // A platform must have at least two of the three categories to count —
+  // this filters out false positives like `lightweight-alloy-wheels`.
+  const validPlatforms = Array.from(platformsMap.entries())
+    .filter(([_, cats]) => Object.keys(cats).length >= 2)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+
+  // ─── Pricing multipliers from builder_terms ─────────────────────────
+  const termsRes = await admin.from('builder_terms')
+    .select('fx_rate, kit_markup')
+    .eq('builder_id', builder.id)
+    .single()
+  if (termsRes.error) throw termsRes.error
+  const fx = Number((termsRes.data as any).fx_rate ?? 1)
+  const markup = Number((termsRes.data as any).kit_markup ?? 1)
+
+  // ─── Upsert the 3 shared option groups ──────────────────────────────
+  const groupMeta: Record<ShopifyCategory, { slug: string; name: string; sort: number }> = {
+    exterior: { slug: 'shopify-exterior', name: 'Exterior', sort: 10 },
+    interior: { slug: 'shopify-interior', name: 'Interior', sort: 20 },
+    'alloy-wheels': { slug: 'shopify-alloy-wheels', name: 'Alloy wheels', sort: 30 },
+  }
+  const groupIdByCat = new Map<ShopifyCategory, string>()
+  for (const cat of SHOPIFY_CATEGORIES) {
+    const meta = groupMeta[cat]
+    const ins = await admin.from('catalog_option_groups').upsert({
+      builder_id: builder.id,
+      slug: meta.slug,
+      name: meta.name,
+      selection: 'multi',
+      required: false,
+      platform_id: null,
+      sort: meta.sort,
+      active: true,
+      synced: true,
+      external_id: `shopify:group:${cat}`,
+    }, { onConflict: 'builder_id,external_id' }).select('id').single()
+    if (ins.error) throw ins.error
+    groupIdByCat.set(cat, (ins.data as any).id)
+  }
+
+  // ─── Upsert platforms ───────────────────────────────────────────────
+  const platformIdBySlug = new Map<string, string>()
+  for (const [platformSlug, _cats] of validPlatforms) {
+    const ins = await admin.from('catalog_platforms').upsert({
+      builder_id: builder.id,
+      slug: platformSlug,
+      name: titleCase(platformSlug),
+      chassis: platformSlug,
+      years: yearsFromSlug(platformSlug) || '—',
+      sort: 0,
+      active: true,
+      synced: true,
+      external_id: `shopify:platform:${platformSlug}`,
+    }, { onConflict: 'builder_id,external_id' }).select('id').single()
+    if (ins.error) throw ins.error
+    platformIdBySlug.set(platformSlug, (ins.data as any).id)
+  }
+
+  // ─── Walk collections ───────────────────────────────────────────────
+  const perPlatform: Record<string, { options: number }> = {}
+  const seenOptionExternalIds = new Set<string>()
+  let totalUpserted = 0
+  let totalVariantsSplit = 0
+
+  for (const [platformSlug, cats] of validPlatforms) {
+    perPlatform[platformSlug] = { options: 0 }
+    const platformId = platformIdBySlug.get(platformSlug)!
+
+    for (const cat of SHOPIFY_CATEGORIES) {
+      const collectionSlug = cats[cat]
+      if (!collectionSlug) continue
+      const groupId = groupIdByCat.get(cat)!
+
+      let page = 1
+      // Hard cap to protect runtime
+      while (page <= 10) {
+        const url = `${baseUrl}/collections/${collectionSlug}/products.json?limit=250&page=${page}`
+        const r = await fetch(url, { headers: { 'User-Agent': UA } })
+        if (!r.ok) {
+          if (r.status === 404) break
+          throw new Error(`${url} HTTP ${r.status}`)
+        }
+        const body = await r.json() as { products: ShopifyProduct[] }
+        const products = body.products ?? []
+        if (products.length === 0) break
+
+        for (const product of products) {
+          const variants = product.variants ?? []
+          if (variants.length === 0) continue
+          const isMulti = variants.length > 1
+          if (isMulti) totalVariantsSplit += variants.length
+
+          for (const variant of variants) {
+            const suffix = isMulti ? `-${variant.id}` : ''
+            const externalId = `shopify:option:${platformSlug}:${product.handle}${suffix}`
+            const slug = `${platformSlug}-${product.handle}${suffix}`.slice(0, 200)
+            const name = isMulti ? `${product.title} — ${variant.title}` : product.title
+            const priceGbp = Number(variant.price ?? 0)
+            const priceCents = Math.round(priceGbp * fx * markup * 100)
+            const image = (product.images ?? [])[0]?.src ?? null
+
+            const ins = await admin.from('catalog_options').upsert({
+              builder_id: builder.id,
+              group_id: groupId,
+              slug,
+              name,
+              code: variant.sku ?? null,
+              kit_sku: variant.sku ?? null,
+              price_cents: priceCents,
+              included_in_tier_ids: [],
+              swatch_image_url: image,
+              sort: 0,
+              active: Boolean(variant.available),
+              synced: true,
+              external_id: externalId,
+            }, { onConflict: 'builder_id,external_id' }).select('id').single()
+            if (ins.error) throw ins.error
+            const optionId = (ins.data as any).id as string
+            seenOptionExternalIds.add(externalId)
+
+            // Each option is restricted to one platform
+            await admin.from('catalog_option_platforms').delete().eq('option_id', optionId)
+            await admin.from('catalog_option_platforms').insert({
+              option_id: optionId,
+              platform_id: platformId,
+            })
+            perPlatform[platformSlug].options += 1
+            totalUpserted += 1
+          }
+        }
+        if (products.length < 250) break
+        page += 1
+      }
+    }
+  }
+
+  // ─── Deactivate options missing from this run ───────────────────────
+  const seenArr = Array.from(seenOptionExternalIds)
+  const missing = await admin.from('catalog_options')
+    .update({ active: false })
+    .eq('builder_id', builder.id)
+    .eq('synced', true)
+    .eq('active', true)
+    .not('external_id', 'in', `(${seenArr.map(id => `"${id}"`).join(',') || '""'})`)
+    .select('id')
+
+  return {
+    source: 'shopify',
+    discovered_slugs: discovered.size,
+    platforms: validPlatforms.length,
+    option_groups: SHOPIFY_CATEGORIES.length,
+    options: {
+      upserted: totalUpserted,
+      deactivated: missing.data?.length ?? 0,
+      variants_split: totalVariantsSplit,
+    },
+    per_platform: perPlatform,
+    fx_rate: fx,
+    kit_markup: markup,
+  }
+}

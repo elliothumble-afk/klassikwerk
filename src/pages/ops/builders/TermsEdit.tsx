@@ -51,6 +51,8 @@ export function TermsEdit() {
         currency: next.currency,
         payment_mode: next.payment_mode,
         option_mode: next.option_mode,
+        fx_rate: next.fx_rate,
+        kit_markup: next.kit_markup,
       })
       if (error) throw error
     },
@@ -121,6 +123,32 @@ export function TermsEdit() {
           <Field label="Currency">
             <input value={draft.currency} onChange={e => up('currency', e.target.value)} className={`${input} w-32`} />
           </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="FX rate">
+              <input
+                type="number"
+                step="0.0001"
+                value={draft.fx_rate}
+                onChange={e => up('fx_rate', Number(e.target.value))}
+                className={`${input} w-full`}
+              />
+              <p className="text-xs text-[var(--color-muted)] mt-1">
+                Multiplier applied to Shopify prices during sync. e.g. 1.27 if the source lists GBP and the builder sells in USD.
+              </p>
+            </Field>
+            <Field label="Kit markup">
+              <input
+                type="number"
+                step="0.0001"
+                value={draft.kit_markup}
+                onChange={e => up('kit_markup', Number(e.target.value))}
+                className={`${input} w-full`}
+              />
+              <p className="text-xs text-[var(--color-muted)] mt-1">
+                Additional multiplier on top of fx_rate. e.g. 1.2 for a 20% kit markup.
+              </p>
+            </Field>
+          </div>
           <Field label="Payment mode">
             <select
               value={draft.payment_mode}

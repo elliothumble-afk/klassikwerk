@@ -98,7 +98,7 @@ export type Database = {
           sort: number
           stripe_account_id: string | null
           zoho_product_id: string | null
-          catalog_source: 'manual' | 'connect'
+          catalog_source: 'manual' | 'connect' | 'shopify'
           catalog_source_url: string | null
           catalog_source_token: string | null
           lead_intake_url: string | null
@@ -118,7 +118,7 @@ export type Database = {
           sort?: number
           stripe_account_id?: string | null
           zoho_product_id?: string | null
-          catalog_source?: 'manual' | 'connect'
+          catalog_source?: 'manual' | 'connect' | 'shopify'
           catalog_source_url?: string | null
           catalog_source_token?: string | null
           lead_intake_url?: string | null
@@ -137,7 +137,7 @@ export type Database = {
           sort?: number
           stripe_account_id?: string | null
           zoho_product_id?: string | null
-          catalog_source?: 'manual' | 'connect'
+          catalog_source?: 'manual' | 'connect' | 'shopify'
           catalog_source_url?: string | null
           catalog_source_token?: string | null
           lead_intake_url?: string | null
@@ -279,6 +279,8 @@ export type Database = {
           currency: string
           payment_mode: 'none' | 'stripe'
           option_mode: 'included_only' | 'priced'
+          fx_rate: number
+          kit_markup: number
           quote_validity_days: number
           quote_intro_copy: string | null
           brochure_url: string | null
@@ -295,6 +297,8 @@ export type Database = {
           currency?: string
           payment_mode?: 'none' | 'stripe'
           option_mode?: 'included_only' | 'priced'
+          fx_rate?: number
+          kit_markup?: number
           quote_validity_days?: number
           quote_intro_copy?: string | null
           brochure_url?: string | null
@@ -310,6 +314,8 @@ export type Database = {
           currency?: string
           payment_mode?: 'none' | 'stripe'
           option_mode?: 'included_only' | 'priced'
+          fx_rate?: number
+          kit_markup?: number
           quote_validity_days?: number
           quote_intro_copy?: string | null
           brochure_url?: string | null

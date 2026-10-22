@@ -601,6 +601,28 @@ function yearsDisplay(text: string): string {
   return t.replace(/\s+ONWARDS/i, '–present').replace(/\s+PRESENT/i, '–present').replace(/\s*-\s*/g, '–')
 }
 
+/** Canonical casing for vehicle makes. Only the make is rewritten;
+ *  the rest of the heading (model name, trim text) is left as-is so
+ *  tokens like "JL" or "G350/400" aren't lower-cased. */
+const MAKE_CANONICAL: ReadonlyArray<[RegExp, string]> = [
+  [/^MERCEDES-BENZ\b/i,  'Mercedes-Benz'],
+  [/^MERCEDES\b/i,       'Mercedes'],
+  [/^LAND\s+ROVER\b/i,   'Land Rover'],
+  [/^RANGE\s+ROVER\b/i,  'Range Rover'],
+  [/^INEOS\b/i,          'Ineos'],
+  [/^JEEP\b/i,           'Jeep'],
+  [/^TOYOTA\b/i,         'Toyota'],
+  [/^FORD\b/i,           'Ford'],
+  [/^BMW\b/i,            'BMW'],
+]
+
+function normalizeMake(name: string): string {
+  for (const [re, canonical] of MAKE_CANONICAL) {
+    if (re.test(name)) return name.replace(re, canonical)
+  }
+  return name
+}
+
 function anchorTextToCategory(text: string): ShopifyCategory | null {
   const up = text.toUpperCase()
   if (up.includes('EXTERIOR')) return 'exterior'
@@ -627,7 +649,8 @@ function discoverVehiclesFromModels(html: string): DiscoveredVehicle[] {
     // sits at the top of the part.
     const h4 = /<h4[^>]*class="shop-title"[^>]*>([\s\S]*?)<\/h4>/i.exec(part)
     if (!h4) continue
-    const name = stripTags(h4[1])
+    const rawName = stripTags(h4[1])
+    const name = normalizeMake(rawName)
     if (!name) continue
     const h5 = /<h5[^>]*>([\s\S]*?)<\/h5>/i.exec(part)
     const yearsRaw = h5 ? stripTags(h5[1]) : ''

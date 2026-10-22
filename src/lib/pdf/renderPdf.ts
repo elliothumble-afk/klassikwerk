@@ -76,11 +76,18 @@ export async function renderQuotePdfToStorage(quoteId: string): Promise<string> 
   const optionIds = qoRows.map(o => o.option_id)
   const options: OptionLineForPdf[] = []
   if (optionIds.length) {
-    const optsRes = await supabase
-      .from('catalog_options')
-      .select('id, name, code, group_id, swatch_image_url, included_in_tier_ids')
-      .in('id', optionIds)
+    const [optsRes, platsRes] = await Promise.all([
+      supabase
+        .from('catalog_options')
+        .select('id, name, code, group_id, swatch_image_url, included_in_tier_ids')
+        .in('id', optionIds),
+      supabase
+        .from('catalog_option_platforms')
+        .select('option_id, platform_id')
+        .in('option_id', optionIds),
+    ])
     if (optsRes.error) throw optsRes.error
+    if (platsRes.error) throw platsRes.error
     const groupIds = Array.from(new Set((optsRes.data ?? []).map(o => o.group_id)))
     const groupsRes = await supabase
       .from('catalog_option_groups')
@@ -91,7 +98,16 @@ export async function renderQuotePdfToStorage(quoteId: string): Promise<string> 
       (groupsRes.data ?? []).map(g => [g.id as string, { name: g.name as string, sort: g.sort as number }])
     )
     const priceByOption = new Map(qoRows.map(r => [r.option_id, r.price_cents_at_selection]))
+    // option → platform restriction map
+    const restricted = new Map<string, Set<string>>()
+    for (const r of platsRes.data ?? []) {
+      if (!restricted.has(r.option_id)) restricted.set(r.option_id, new Set())
+      restricted.get(r.option_id)!.add(r.platform_id)
+    }
     for (const o of optsRes.data ?? []) {
+      // Skip options that are platform-restricted but not to this quote's platform.
+      const r = restricted.get(o.id)
+      if (r && r.size > 0 && !r.has(quote.platform_id)) continue
       options.push({
         group_name: groupById.get(o.group_id)?.name ?? 'Option',
         group_sort: groupById.get(o.group_id)?.sort ?? 0,

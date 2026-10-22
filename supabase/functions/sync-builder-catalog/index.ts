@@ -686,6 +686,10 @@ async function resolveCanonicalCollection(baseUrl: string, href: string): Promis
 }
 
 async function syncShopify(admin: ReturnType<typeof createClient>, builder: any) {
+  // Rows upserted during this run are stamped with updated_at >
+  // syncStartedAt; anything synced+active that wasn't touched is stale.
+  const syncStartedAt = new Date().toISOString()
+
   const baseUrl = (builder.catalog_source_url || '').replace(/\/$/, '')
   if (!baseUrl) throw new Error('builder.catalog_source_url is not set')
 
@@ -767,24 +771,46 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     seenPlatformExternalIds.add(externalId)
   }
 
-  // ─── Walk each (vehicle, category) canonical collection ────────────
+  // ─── Walk every (vehicle, category) collection and dedupe products ─
+  //
+  // A single product (one SKU / one Shopify handle) frequently sits in
+  // several vehicle collections — e.g. a wheel fits all three Defenders.
+  // We keep ONE catalog_options row per Shopify product and link it to
+  // every platform it belongs to via catalog_option_platforms. Group
+  // priority is alloy-wheels > interior > exterior so a wheel that
+  // appears in both an exterior and an alloy-wheels collection ends up
+  // under Alloy wheels.
+  const CATEGORY_PRIORITY: Record<ShopifyCategory, number> = {
+    exterior: 0,
+    interior: 1,
+    'alloy-wheels': 2,
+  }
+  interface CollectedOption {
+    external_id: string
+    slug: string
+    name: string
+    code: string | null
+    kit_sku: string | null
+    price_cents: number
+    swatch_image_url: string | null
+    active: boolean
+    group_id: string
+    group_priority: number
+    platform_ids: Set<string>
+  }
+  const byExternalId = new Map<string, CollectedOption>()
   const perPlatform: Record<string, { options: number }> = {}
-  const seenOptionExternalIds = new Set<string>()
-  let totalUpserted = 0
   let totalVariantsSplit = 0
 
   for (const { vehicle, canonicals } of resolved) {
     perPlatform[vehicle.slug] = { options: 0 }
     const platformId = platformIdByVehicle.get(vehicle.slug)!
-    const vehicleSeen = new Set<string>()  // dedupe same product across categories
 
     for (const cat of SHOPIFY_CATEGORIES) {
       const canonicalSlug = canonicals[cat]
       if (!canonicalSlug) continue
       const groupId = groupIdByCat.get(cat)!
 
-      // Batch all pages' options; one upsert at the end of the collection.
-      const rows: Record<string, unknown>[] = []
       let page = 1
       while (page <= 10) {
         const url = `${baseUrl}/collections/${canonicalSlug}/products.json?limit=250&page=${page}`
@@ -806,63 +832,163 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
 
           for (const variant of variants) {
             const suffix = isMulti ? `-${variant.id}` : ''
-            const externalId = `shopify:option:${vehicle.slug}:${product.handle}${suffix}`
-            if (vehicleSeen.has(externalId)) continue  // seen under a prior category
-            vehicleSeen.add(externalId)
-            const slug = slugify(`${vehicle.slug}-${product.handle}${suffix}`)
+            // external_id does NOT include the vehicle — one row per
+            // (product.handle, variant.id), shared across platforms.
+            const externalId = `shopify:option:${product.handle}${suffix}`
+            const slug = slugify(`shopify-${product.handle}${suffix}`)
             const name = isMulti ? `${product.title} — ${variant.title}` : product.title
             const priceGbp = Number(variant.price ?? 0)
             const priceCents = Math.round(priceGbp * fx * markup * 100)
             const image = (product.images ?? [])[0]?.src ?? null
+            const sku = variant.sku && variant.sku.trim() ? variant.sku.trim() : null
+            // Shopify "360° Tour" interior listings have no SKU and a
+            // zero price — syncing them active would spam the editor
+            // with "Set a price" warnings. Honour available + priced + skued.
+            const active = Boolean(variant.available) && priceCents > 0 && Boolean(sku)
+            const priority = CATEGORY_PRIORITY[cat]
 
-            rows.push({
-              builder_id: builder.id,
-              group_id: groupId,
-              slug,
-              name,
-              code: variant.sku ?? null,
-              kit_sku: variant.sku ?? null,
-              price_cents: priceCents,
-              included_in_tier_ids: [],
-              swatch_image_url: image,
-              sort: 0,
-              active: Boolean(variant.available),
-              synced: true,
-              external_id: externalId,
-            })
+            const existing = byExternalId.get(externalId)
+            if (!existing || priority > existing.group_priority) {
+              byExternalId.set(externalId, {
+                external_id: externalId,
+                slug,
+                name,
+                code: sku,
+                kit_sku: sku,
+                price_cents: priceCents,
+                swatch_image_url: image,
+                active,
+                group_id: groupId,
+                group_priority: priority,
+                platform_ids: new Set<string>(existing?.platform_ids ?? []),
+              })
+            }
+            byExternalId.get(externalId)!.platform_ids.add(platformId)
+            perPlatform[vehicle.slug].options += 1
           }
         }
         if (products.length < 250) break
         page += 1
       }
-
-      if (rows.length > 0) {
-        // Bulk upsert and link in two DB round-trips per collection.
-        const ins = await admin.from('catalog_options')
-          .upsert(rows, { onConflict: 'builder_id,external_id' })
-          .select('id, external_id')
-        if (ins.error) throw ins.error
-        const inserted = ins.data as unknown as { id: string; external_id: string }[]
-        const links = inserted.map(o => ({ option_id: o.id, platform_id: platformId }))
-        if (links.length > 0) {
-          const linkIns = await admin.from('catalog_option_platforms')
-            .upsert(links, { onConflict: 'option_id,platform_id', ignoreDuplicates: true })
-          if (linkIns.error) throw linkIns.error
-        }
-        for (const o of inserted) seenOptionExternalIds.add(o.external_id)
-        perPlatform[vehicle.slug].options += inserted.length
-        totalUpserted += inserted.length
-      }
     }
   }
 
-  // ─── Deactivate platforms + options missing from this run ──────────
+  // ─── Disambiguate shared titles ────────────────────────────────────
+  // Some Shopify stores publish several products with identical `title`
+  // but different handles (e.g. the same wheel style in 20"/22"/23", or
+  // duplicate listings with a trailing "-1"). For each title-collision
+  // group, strip the longest common prefix/suffix across the handles
+  // and append whatever's left to each name so operators can tell them
+  // apart in the configurator.
+  function commonPrefix(parts: string[][]): number {
+    if (parts.length === 0) return 0
+    let p = 0
+    while (p < parts[0].length && parts.every(a => a[p] === parts[0][p])) p++
+    return p
+  }
+  function commonSuffix(parts: string[][], prefixLen: number): number {
+    if (parts.length === 0) return 0
+    let s = 0
+    while (true) {
+      const positions = parts.map(a => a.length - 1 - s)
+      if (positions.some(pos => pos < prefixLen)) break
+      const char = parts[0][positions[0]]
+      if (!parts.every((a, i) => a[positions[i]] === char)) break
+      s++
+    }
+    return s
+  }
+  const groupsByName = new Map<string, string[]>()
+  for (const [extId, o] of byExternalId) {
+    const arr = groupsByName.get(o.name) ?? []
+    arr.push(extId)
+    groupsByName.set(o.name, arr)
+  }
+  for (const [_name, extIds] of groupsByName) {
+    if (extIds.length <= 1) continue
+    const handles = extIds.map(e => e.replace(/^shopify:option:/, '').replace(/-\d+$/, ''))
+    const partsList = handles.map(h => h.split('-'))
+    const pre = commonPrefix(partsList)
+    const suf = commonSuffix(partsList, pre)
+    for (let i = 0; i < extIds.length; i++) {
+      const middle = partsList[i].slice(pre, partsList[i].length - suf)
+      let hint: string
+      if (middle.length === 0) {
+        // Handles are prefix/suffix identical — must differ by a numeric
+        // tail stripped above (e.g. "-max" vs "-max-1"). Use the tail.
+        const rawTail = extIds[i].match(/-(\d+)$/)?.[1]
+        hint = rawTail ? `copy ${rawTail}` : `variant ${i + 1}`
+      } else {
+        // Title-case the differing tokens for readability.
+        hint = middle.map(t => {
+          const asNum = /^\d+$/.test(t) ? `${t}"` : null
+          if (asNum) return asNum
+          return t[0] ? t[0].toUpperCase() + t.slice(1) : t
+        }).join(' ')
+      }
+      const existing = byExternalId.get(extIds[i])!
+      existing.name = `${existing.name} (${hint})`
+    }
+  }
+
+  // ─── Bulk upsert the deduped options (chunked for URL limits) ──────
+  const allRows = Array.from(byExternalId.values()).map(o => ({
+    builder_id: builder.id,
+    group_id: o.group_id,
+    slug: o.slug,
+    name: o.name,
+    code: o.code,
+    kit_sku: o.kit_sku,
+    price_cents: o.price_cents,
+    included_in_tier_ids: [],
+    swatch_image_url: o.swatch_image_url,
+    sort: 0,
+    active: o.active,
+    synced: true,
+    external_id: o.external_id,
+  }))
+  const upsertedIdByExternal = new Map<string, string>()
+  const CHUNK = 100
+  for (let i = 0; i < allRows.length; i += CHUNK) {
+    const chunk = allRows.slice(i, i + CHUNK)
+    const ins = await admin.from('catalog_options')
+      .upsert(chunk, { onConflict: 'builder_id,external_id' })
+      .select('id, external_id')
+    if (ins.error) throw ins.error
+    for (const row of ins.data as unknown as { id: string; external_id: string }[]) {
+      upsertedIdByExternal.set(row.external_id, row.id)
+    }
+  }
+
+  // ─── Rebuild catalog_option_platforms links for the upserted set ───
+  const allOptionIds = Array.from(upsertedIdByExternal.values())
+  for (let i = 0; i < allOptionIds.length; i += CHUNK) {
+    const chunk = allOptionIds.slice(i, i + CHUNK)
+    const del = await admin.from('catalog_option_platforms').delete().in('option_id', chunk)
+    if (del.error) throw del.error
+  }
+  const allLinks: { option_id: string; platform_id: string }[] = []
+  for (const o of byExternalId.values()) {
+    const optionId = upsertedIdByExternal.get(o.external_id)
+    if (!optionId) continue
+    for (const pid of o.platform_ids) allLinks.push({ option_id: optionId, platform_id: pid })
+  }
+  for (let i = 0; i < allLinks.length; i += CHUNK) {
+    const chunk = allLinks.slice(i, i + CHUNK)
+    const ins = await admin.from('catalog_option_platforms').insert(chunk)
+    if (ins.error) throw ins.error
+  }
+
+  const totalUpserted = allRows.length
+
+  // ─── Deactivate stale rows via updated_at (survives URL-length limits) ─
+  // Anything synced + still-active that wasn't touched this run is stale.
   const platformsMissing = await admin.from('catalog_platforms')
     .update({ active: false })
     .eq('builder_id', builder.id)
     .eq('synced', true)
     .eq('active', true)
-    .not('external_id', 'in', `(${Array.from(seenPlatformExternalIds).map(id => `"${id}"`).join(',') || '""'})`)
+    .lt('updated_at', syncStartedAt)
     .select('id')
 
   const optionsMissing = await admin.from('catalog_options')
@@ -870,14 +996,29 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     .eq('builder_id', builder.id)
     .eq('synced', true)
     .eq('active', true)
-    .not('external_id', 'in', `(${Array.from(seenOptionExternalIds).map(id => `"${id}"`).join(',') || '""'})`)
+    .lt('updated_at', syncStartedAt)
     .select('id')
 
-  // Pretty per-platform report keyed by vehicle name for the UI
-  const perPlatformNamed: Record<string, number> = {}
+  // Per-platform report: count UNIQUE options linked to each vehicle,
+  // not raw hits across collections.
+  const platformIdToVehicleLabel = new Map<string, string>()
   for (const { vehicle } of resolved) {
-    perPlatformNamed[`${vehicle.name} (${vehicle.years})`] = perPlatform[vehicle.slug].options
+    platformIdToVehicleLabel.set(
+      platformIdByVehicle.get(vehicle.slug)!,
+      `${vehicle.name} (${vehicle.years})`
+    )
   }
+  const perPlatformNamed: Record<string, number> = {}
+  for (const label of platformIdToVehicleLabel.values()) perPlatformNamed[label] = 0
+  for (const o of byExternalId.values()) {
+    if (!o.active) continue
+    for (const pid of o.platform_ids) {
+      const label = platformIdToVehicleLabel.get(pid)
+      if (label) perPlatformNamed[label] += 1
+    }
+  }
+
+  const inactiveZeroOrNoSku = allRows.filter(r => !r.active).length
 
   return {
     source: 'shopify',
@@ -886,8 +1027,10 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     platforms: resolved.length,
     option_groups: SHOPIFY_CATEGORIES.length,
     options: {
+      unique_products: byExternalId.size,
       upserted: totalUpserted,
       deactivated: optionsMissing.data?.length ?? 0,
+      inactive_zero_price_or_no_sku: inactiveZeroOrNoSku,
       variants_split: totalVariantsSplit,
     },
     platforms_deactivated: platformsMissing.data?.length ?? 0,

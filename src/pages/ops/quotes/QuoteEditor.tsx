@@ -69,11 +69,13 @@ export function QuoteEditor() {
       const [plat, tie, grp, opt, terms] = await Promise.all([
         supabase.from('catalog_platforms').select('*').eq('builder_id', builderId).eq('active', true).order('sort'),
         supabase.from('catalog_tiers').select('*').eq('builder_id', builderId).eq('active', true).order('sort'),
-        // Explicit column list so a lagging PostgREST schema cache
-        // can't silently drop allow_quantity. If it's missing from the
-        // cache this errors loudly instead of rendering wheels at qty 1.
+        // Explicit column list (including allow_quantity) so a lagging
+        // PostgREST schema cache can't silently drop the field and let
+        // the editor fall back to qty 1. Only strictly-declared columns
+        // are listed — the Phase-4 sync extras (synced/external_id/
+        // active) deliberately aren't in the Database TS type.
         supabase.from('catalog_option_groups')
-          .select('id, builder_id, platform_id, slug, name, selection, required, sort, allow_quantity, synced, external_id, active, created_at, updated_at')
+          .select('id, builder_id, platform_id, slug, name, selection, required, sort, allow_quantity, created_at, updated_at')
           .eq('builder_id', builderId).order('sort'),
         supabase.from('catalog_options').select('*').eq('builder_id', builderId).eq('active', true).order('sort'),
         supabase.from('builder_terms').select('option_mode').eq('builder_id', builderId).maybeSingle(),

@@ -9,3 +9,6 @@
 
 [build.environment]
   NODE_VERSION = "20"
+  # Playwright is a devDependency used only for local tests; the
+  # Netlify build has no reason to download browser binaries.
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"

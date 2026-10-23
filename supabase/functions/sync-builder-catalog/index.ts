@@ -728,6 +728,9 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
       active: true,
       synced: true,
       external_id: `shopify:group:${cat}`,
+      // Wheels are sold as sets. Only the alloy-wheels group opts in
+      // to the Set-of-4 / Set-of-5 chooser; the other two stay at qty 1.
+      allow_quantity: cat === 'alloy-wheels',
     }, { onConflict: 'builder_id,external_id' }).select('id').single()
     if (ins.error) throw ins.error
     groupIdByCat.set(cat, (ins.data as any).id)

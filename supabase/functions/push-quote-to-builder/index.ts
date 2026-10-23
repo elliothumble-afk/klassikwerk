@@ -50,7 +50,7 @@ Deno.serve(async (req) => {
     const [platformRes, tierRes, qoRes] = await Promise.all([
       admin.from('catalog_platforms').select('slug, external_id, name').eq('id', (await admin.from('quotes').select('platform_id').eq('id', quote.id).single()).data!.platform_id).single(),
       admin.from('catalog_tiers').select('slug, external_id, name').eq('id', (await admin.from('quotes').select('tier_id').eq('id', quote.id).single()).data!.tier_id).single(),
-      admin.from('quote_options').select('option_id, price_cents_at_selection, catalog_options(slug, external_id, name)').eq('quote_id', quote.id),
+      admin.from('quote_options').select('option_id, price_cents_at_selection, quantity, catalog_options(slug, external_id, name)').eq('quote_id', quote.id),
     ])
     if (platformRes.error) throw platformRes.error
     if (tierRes.error) throw tierRes.error
@@ -82,6 +82,7 @@ Deno.serve(async (req) => {
         external_id: o.catalog_options?.external_id,
         name: o.catalog_options?.name,
         price_cents_at_selection: o.price_cents_at_selection,
+        qty: o.quantity ?? 1,
       })),
     }
 

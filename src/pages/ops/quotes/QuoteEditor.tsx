@@ -107,6 +107,7 @@ export function QuoteEditor() {
   const [platformId, setPlatformId] = useState<string>('')
   const [tierId, setTierId] = useState<string>('')
   const [selection, setSelection] = useState<Selection>({})
+  const [quantities, setQuantities] = useState<Record<string, number>>({})
   const [notes, setNotes] = useState<string>('')
 
   useEffect(() => {
@@ -115,14 +116,17 @@ export function QuoteEditor() {
       setTierId(existing.tier_id)
       setNotes(existing.notes ?? '')
       const sel: Selection = {}
+      const qty: Record<string, number> = {}
       // Need to map option_id → group_id; done once catalog is loaded
       if (catalog) {
         for (const qo of existing.quote_options) {
           const opt = catalog.options.find(o => o.id === qo.option_id)
           if (!opt) continue
           sel[opt.group_id] = [...(sel[opt.group_id] ?? []), qo.option_id]
+          qty[qo.option_id] = qo.quantity ?? 1
         }
         setSelection(sel)
+        setQuantities(qty)
       }
     } else if (lead?.platform_interest_id && !platformId) {
       setPlatformId(lead.platform_interest_id)
@@ -179,6 +183,22 @@ export function QuoteEditor() {
     [platformGroups, visibleOptionsByGroup]
   )
 
+  const groupById = useMemo(() => {
+    const m = new Map<string, OptionGroup>()
+    for (const g of catalog?.groups ?? []) m.set(g.id, g)
+    return m
+  }, [catalog])
+
+  // qty is 1 for ordinary options, 4 for a wheels option by default,
+  // 5 if the operator picked "+ matching spare".
+  function qtyFor(optionId: string): number {
+    const opt = catalog?.options.find(o => o.id === optionId)
+    if (!opt) return 1
+    const g = groupById.get(opt.group_id)
+    if (!g?.allow_quantity) return 1
+    return quantities[optionId] ?? 4
+  }
+
   const total = useMemo(() => {
     if (!tier || !catalog) return 0
     const base = tier.base_price_cents ?? 0
@@ -186,10 +206,12 @@ export function QuoteEditor() {
     const addons = Object.values(selection).flat().reduce((sum, optId) => {
       const opt = catalog.options.find(o => o.id === optId)
       if (!opt) return sum
-      return opt.included_in_tier_ids.includes(tier.id) ? sum : sum + opt.price_cents
+      if (opt.included_in_tier_ids.includes(tier.id)) return sum
+      return sum + opt.price_cents * qtyFor(optId)
     }, 0)
     return base + addons
-  }, [selection, catalog, tier, includedOnly])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selection, quantities, catalog, tier, includedOnly])
 
   function toggleOption(group: OptionGroup, optionId: string) {
     setSelection(prev => {
@@ -204,6 +226,16 @@ export function QuoteEditor() {
           : [...current, optionId],
       }
     })
+    // Clear the stored qty when deselecting so a re-click starts fresh
+    // at the default 4.
+    setQuantities(prev => {
+      const current = selection[group.id] ?? []
+      if (current.includes(optionId)) {
+        const { [optionId]: _, ...rest } = prev
+        return rest
+      }
+      return prev
+    })
   }
 
   // ---------- Save / revise / send / create contract ----------
@@ -217,13 +249,16 @@ export function QuoteEditor() {
           .eq('id', existing.id)
         if (upErr) throw upErr
         await supabase.from('quote_options').delete().eq('quote_id', existing.id)
-        const rows = Object.values(selection).flat().map(optionId => ({
-          quote_id: existing.id,
-          option_id: optionId,
-          price_cents_at_selection: catalog!.options.find(o => o.id === optionId)!.included_in_tier_ids.includes(tierId)
-            ? 0
-            : (catalog!.options.find(o => o.id === optionId)?.price_cents ?? 0),
-        }))
+        const rows = Object.values(selection).flat().map(optionId => {
+          const opt = catalog!.options.find(o => o.id === optionId)!
+          const included = opt.included_in_tier_ids.includes(tierId)
+          return {
+            quote_id: existing.id,
+            option_id: optionId,
+            price_cents_at_selection: included ? 0 : opt.price_cents,
+            quantity: qtyFor(optionId),
+          }
+        })
         if (rows.length) {
           const { error } = await supabase.from('quote_options').insert(rows)
           if (error) throw error
@@ -252,13 +287,16 @@ export function QuoteEditor() {
       if (q.error) throw q.error
       const quoteId = (q.data as { id: string }).id
 
-      const rows = Object.values(selection).flat().map(optionId => ({
-        quote_id: quoteId,
-        option_id: optionId,
-        price_cents_at_selection: catalog!.options.find(o => o.id === optionId)!.included_in_tier_ids.includes(tierId)
-          ? 0
-          : (catalog!.options.find(o => o.id === optionId)?.price_cents ?? 0),
-      }))
+      const rows = Object.values(selection).flat().map(optionId => {
+        const opt = catalog!.options.find(o => o.id === optionId)!
+        const included = opt.included_in_tier_ids.includes(tierId)
+        return {
+          quote_id: quoteId,
+          option_id: optionId,
+          price_cents_at_selection: included ? 0 : opt.price_cents,
+          quantity: qtyFor(optionId),
+        }
+      })
       if (rows.length) {
         const { error } = await supabase.from('quote_options').insert(rows)
         if (error) throw error
@@ -326,6 +364,7 @@ export function QuoteEditor() {
         quote_id: newQuoteId,
         option_id: qo.option_id,
         price_cents_at_selection: qo.price_cents_at_selection,
+        quantity: qo.quantity ?? 1,
       }))
       if (copies.length) {
         const { error } = await supabase.from('quote_options').insert(copies)
@@ -377,6 +416,7 @@ export function QuoteEditor() {
         build_id: buildId,
         option_id: qo.option_id,
         price_cents_at_selection: qo.price_cents_at_selection,
+        quantity: qo.quantity ?? 1,
       }))
       if (rows.length) await supabase.from('build_options').insert(rows)
       await supabase.from('build_stage_events').insert({
@@ -522,48 +562,70 @@ export function QuoteEditor() {
                         const included = opt.included_in_tier_ids.includes(tier.id)
                         const active = chosen.has(opt.id)
                         const priceMissing = !includedOnly && !included && opt.price_cents === 0
+                        const q = qtyFor(opt.id)
+                        const extendedCents = included ? 0 : opt.price_cents * q
                         return (
-                          <button
-                            key={opt.id}
-                            disabled={readOnly}
-                            onClick={() => toggleOption(group, opt.id)}
-                            className={`flex items-center justify-between gap-3 text-left rounded-[var(--radius-sm)] border px-3 py-2 transition ${
-                              active
-                                ? 'border-[var(--color-accent)] bg-[var(--color-accent-light)]'
-                                : 'border-[var(--color-border)] hover:border-[var(--color-accent)]'
-                            } disabled:opacity-50`}
-                            title={priceMissing ? `Set a price on ${opt.name} in Catalog → Options` : undefined}
-                          >
-                            <div className="flex items-center gap-3">
-                              {opt.swatch_image_url ? (
-                                <img src={opt.swatch_image_url} alt="" className="h-8 w-8 rounded-sm object-cover" />
-                              ) : (
-                                <div className="h-8 w-8 rounded-sm bg-[var(--color-surface-raised)]" />
-                              )}
-                              <div>
-                                <div className="text-sm">{opt.name}</div>
-                                {opt.code && <div className="text-xs text-[var(--color-muted)]">{opt.code}</div>}
-                              </div>
-                            </div>
-                            {!includedOnly && (
-                              <div className="text-xs shrink-0 text-right">
-                                {included ? (
-                                  <span className="text-[var(--color-muted)]">Included</span>
+                          <div key={opt.id} className="space-y-1.5">
+                            <button
+                              disabled={readOnly}
+                              onClick={() => toggleOption(group, opt.id)}
+                              className={`w-full flex items-center justify-between gap-3 text-left rounded-[var(--radius-sm)] border px-3 py-2 transition ${
+                                active
+                                  ? 'border-[var(--color-accent)] bg-[var(--color-accent-light)]'
+                                  : 'border-[var(--color-border)] hover:border-[var(--color-accent)]'
+                              } disabled:opacity-50`}
+                              title={priceMissing ? `Set a price on ${opt.name} in Catalog → Options` : undefined}
+                            >
+                              <div className="flex items-center gap-3">
+                                {opt.swatch_image_url ? (
+                                  <img src={opt.swatch_image_url} alt="" className="h-8 w-8 rounded-sm object-cover" />
                                 ) : (
-                                  <>
-                                    <span className={priceMissing ? 'text-[var(--color-danger)]' : 'text-[var(--color-muted)]'}>
-                                      +${(opt.price_cents / 100).toLocaleString()}
-                                    </span>
-                                    {priceMissing && (
-                                      <div className="text-[10px] text-[var(--color-danger)] mt-0.5">
-                                        Set a price
-                                      </div>
-                                    )}
-                                  </>
+                                  <div className="h-8 w-8 rounded-sm bg-[var(--color-surface-raised)]" />
                                 )}
+                                <div>
+                                  <div className="text-sm">{opt.name}</div>
+                                  {opt.code && <div className="text-xs text-[var(--color-muted)]">{opt.code}</div>}
+                                </div>
+                              </div>
+                              {!includedOnly && (
+                                <div className="text-xs shrink-0 text-right">
+                                  {included ? (
+                                    <span className="text-[var(--color-muted)]">Included</span>
+                                  ) : (
+                                    <>
+                                      <span className={priceMissing ? 'text-[var(--color-danger)]' : 'text-[var(--color-muted)]'}>
+                                        +${(extendedCents / 100).toLocaleString()}
+                                      </span>
+                                      {priceMissing && (
+                                        <div className="text-[10px] text-[var(--color-danger)] mt-0.5">
+                                          Set a price
+                                        </div>
+                                      )}
+                                    </>
+                                  )}
+                                </div>
+                              )}
+                            </button>
+                            {active && group.allow_quantity && (
+                              <div className="flex gap-1.5 pl-11">
+                                {[4, 5].map(n => (
+                                  <button
+                                    key={n}
+                                    type="button"
+                                    disabled={readOnly}
+                                    onClick={() => setQuantities(prev => ({ ...prev, [opt.id]: n }))}
+                                    className={`text-[11px] px-2 py-1 rounded-[var(--radius-sm)] border transition ${
+                                      q === n
+                                        ? 'border-[var(--color-accent)] bg-[var(--color-accent)] text-white'
+                                        : 'border-[var(--color-border)] text-[var(--color-muted)] hover:border-[var(--color-accent)]'
+                                    } disabled:opacity-50`}
+                                  >
+                                    {n === 4 ? 'Set of 4' : 'Set of 4 + matching spare'}
+                                  </button>
+                                ))}
                               </div>
                             )}
-                          </button>
+                          </div>
                         )
                       })}
                     </div>

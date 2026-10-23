@@ -701,12 +701,59 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
 
   // ─── Pricing multipliers from builder_terms ────────────────────────
   const termsRes = await admin.from('builder_terms')
-    .select('fx_rate, kit_markup')
+    .select('fx_rate, kit_markup, pricing_mode')
     .eq('builder_id', builder.id)
     .single()
   if (termsRes.error) throw termsRes.error
   const fx = Number((termsRes.data as any).fx_rate ?? 1)
   const markup = Number((termsRes.data as any).kit_markup ?? 1)
+  const isCostBased = (termsRes.data as any).pricing_mode === 'cost_based'
+
+  // ─── Load categories + existing option category locks (cost_based) ─
+  interface CategoryRow { id: string; name: string; shopify_tags: string[]; sort: number }
+  let categories: CategoryRow[] = []
+  let otherCategoryId: string | null = null
+  const existingByExternal = new Map<string, { category_id: string | null; category_locked: boolean }>()
+  if (isCostBased) {
+    const catRes = await admin.from('catalog_categories')
+      .select('id, name, shopify_tags, sort')
+      .eq('builder_id', builder.id)
+      .order('sort')
+    if (catRes.error) throw catRes.error
+    categories = (catRes.data ?? []) as CategoryRow[]
+    otherCategoryId = categories.find(c => c.name === 'Other')?.id ?? null
+
+    // Paginate so we see every row — PostgREST caps at 1000.
+    for (let from = 0; ; from += 1000) {
+      const r = await admin.from('catalog_options')
+        .select('external_id, category_id, category_locked')
+        .eq('builder_id', builder.id).eq('synced', true)
+        .range(from, from + 999)
+      if (r.error) throw r.error
+      const batch = (r.data ?? []) as { external_id: string; category_id: string | null; category_locked: boolean }[]
+      for (const row of batch) existingByExternal.set(row.external_id, row)
+      if (batch.length < 1000) break
+    }
+  }
+
+  function pickCategoryId(cat: ShopifyCategory, tags: string[]): string | null {
+    if (!isCostBased) return null
+    if (cat === 'alloy-wheels') {
+      return categories.find(c => c.name === 'Alloy wheels')?.id ?? otherCategoryId
+    }
+    // Pull the values out of `filter-exterior=<tag>` / `filter-interior=<tag>`
+    const filterValues: string[] = []
+    for (const t of tags) {
+      const m = /^filter-(?:exterior|interior)=(.+)$/i.exec(t)
+      if (m) filterValues.push(m[1].toLowerCase())
+    }
+    for (const c of categories) {
+      for (const tag of c.shopify_tags) {
+        if (filterValues.includes(tag.toLowerCase())) return c.id
+      }
+    }
+    return otherCategoryId
+  }
 
   // ─── Upsert three shared option groups ─────────────────────────────
   const groupMeta: Record<ShopifyCategory, { slug: string; name: string; sort: number }> = {
@@ -795,6 +842,9 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     code: string | null
     kit_sku: string | null
     price_cents: number
+    web_price_cents: number
+    source_currency: string
+    category_id: string | null
     swatch_image_url: string | null
     active: boolean
     sold_as_set: boolean
@@ -854,6 +904,16 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
             // Their price IS the kit price, not the per-wheel price —
             // so we must NOT multiply by four in the quote editor.
             const soldAsSet = cat === 'alloy-wheels' && !!sku && /-KIT$/i.test(sku)
+            const webPriceCents = Math.round(priceGbp * 100)
+
+            // Preserve ops-set category when the option is locked.
+            const existingRow = existingByExternal.get(externalId)
+            let categoryId: string | null
+            if (isCostBased && existingRow?.category_locked) {
+              categoryId = existingRow.category_id
+            } else {
+              categoryId = pickCategoryId(cat, (product.tags as string[]) ?? [])
+            }
 
             const existing = byExternalId.get(externalId)
             if (!existing || priority > existing.group_priority) {
@@ -864,6 +924,9 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
                 code: sku,
                 kit_sku: sku,
                 price_cents: priceCents,
+                web_price_cents: webPriceCents,
+                source_currency: 'GBP',
+                category_id: categoryId,
                 swatch_image_url: image,
                 active,
                 sold_as_set: soldAsSet,
@@ -987,6 +1050,9 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     code: o.code,
     kit_sku: o.kit_sku,
     price_cents: o.price_cents,
+    web_price_cents: o.web_price_cents,
+    source_currency: o.source_currency,
+    category_id: o.category_id,
     included_in_tier_ids: [],
     swatch_image_url: o.swatch_image_url,
     sort: 0,
@@ -1078,8 +1144,26 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
 
   const inactiveZeroOrNoSku = allRows.filter(r => !r.active).length
 
+  // ─── Reprice cost_based builders ───────────────────────────────────
+  // price_cents is otherwise written by this function at the raw web ×
+  // fx × markup rate. For cost_based builders we overwrite it with the
+  // full cost model (parts_sell + install_price) via a DB function.
+  let repriced = 0
+  let uncategorised = 0
+  if (isCostBased) {
+    const rp = await admin.rpc('reprice_builder', { target_builder: builder.id })
+    if (rp.error) throw rp.error
+    repriced = Number(rp.data ?? 0)
+    uncategorised = Array.from(byExternalId.values())
+      .filter(o => o.active && !o.category_id)
+      .length
+  }
+
   return {
     source: 'shopify',
+    pricing_mode: isCostBased ? 'cost_based' : 'simple',
+    repriced,
+    uncategorised,
     vehicles_discovered: vehicles.length,
     vehicles_with_canonical: resolved.length,
     platforms: resolved.length,

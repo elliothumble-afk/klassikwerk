@@ -34,12 +34,19 @@ interface QuoteData {
     warranty_text: string | null
     quote_validity_days: number
     quote_intro_copy: string | null
+    pricing_mode?: 'simple' | 'cost_based'
   } | null
   quote_options: {
     option_id: string
     price_cents_at_selection: number
     quantity: number
-    catalog_options: { name: string; code: string | null; sold_as_set: boolean } | null
+    catalog_options: {
+      name: string
+      code: string | null
+      sold_as_set: boolean
+      parts_sell_cents: number | null
+      install_price_cents: number | null
+    } | null
   }[]
 }
 
@@ -178,7 +185,12 @@ export function QuoteView() {
                 const qty = qo.quantity ?? 1
                 const soldAsSet = qo.catalog_options?.sold_as_set ?? false
                 const effectiveQty = soldAsSet ? 1 : qty
-                const extended = qo.price_cents_at_selection * effectiveQty
+                const parts = qo.catalog_options?.parts_sell_cents
+                const install = qo.catalog_options?.install_price_cents
+                const costBased = parts != null && install != null
+                const extended = costBased
+                  ? parts * effectiveQty + install
+                  : qo.price_cents_at_selection * effectiveQty
                 const qtyLabel = soldAsSet
                   ? 'Set of 4'
                   : qty === 5 ? 'Set of 5 incl. spare'
@@ -199,6 +211,11 @@ export function QuoteView() {
               })}
             </tbody>
           </table>
+          {terms?.pricing_mode === 'cost_based' && quote_options.length > 0 && (
+            <p className="mt-3 text-xs text-[var(--color-muted)]">
+              Prices include import shipping, duties and fitting.
+            </p>
+          )}
         </div>
 
         {(terms?.payment_schedule?.length ?? 0) > 0 && (

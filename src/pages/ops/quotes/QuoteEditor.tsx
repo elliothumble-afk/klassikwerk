@@ -78,7 +78,9 @@ export function QuoteEditor() {
           .select('id, builder_id, platform_id, slug, name, selection, required, sort, allow_quantity, created_at, updated_at')
           .eq('builder_id', builderId).order('sort'),
         supabase.from('catalog_options').select('*').eq('builder_id', builderId).eq('active', true).order('sort'),
-        supabase.from('builder_terms').select('option_mode').eq('builder_id', builderId).maybeSingle(),
+        supabase.from('builder_terms')
+          .select('option_mode, pricing_mode, partner_shop_rate_cents, hh_fee_pct, labour_rate_cents, paint_rate_cents')
+          .eq('builder_id', builderId).maybeSingle(),
       ])
       if (plat.error) throw plat.error
       if (tie.error) throw tie.error
@@ -99,7 +101,20 @@ export function QuoteEditor() {
         optionPlatforms = (op.data ?? []) as typeof optionPlatforms
       }
 
-      const optionMode = ((terms.data as Pick<BuilderTerms, 'option_mode'> | null)?.option_mode) ?? 'priced'
+      const tData = terms.data as (Pick<BuilderTerms, 'option_mode' | 'pricing_mode' | 'partner_shop_rate_cents' | 'hh_fee_pct' | 'labour_rate_cents' | 'paint_rate_cents'> | null)
+      const optionMode = tData?.option_mode ?? 'priced'
+      const pricingMode = tData?.pricing_mode ?? 'simple'
+
+      // Cost model inputs needed for the ops Margin panel.
+      let categories: { id: string; install_hours: number; paint_hours: number; paint_materials_cents: number }[] = []
+      if (pricingMode === 'cost_based') {
+        const cr = await supabase.from('catalog_categories')
+          .select('id, install_hours, paint_hours, paint_materials_cents')
+          .eq('builder_id', builderId)
+        if (cr.error) throw cr.error
+        categories = (cr.data ?? []) as typeof categories
+      }
+
       return {
         platforms: (plat.data ?? []) as Platform[],
         tiers: (tie.data ?? []) as Tier[],
@@ -107,6 +122,10 @@ export function QuoteEditor() {
         options: (opt.data ?? []) as CatalogOption[],
         optionPlatforms,
         optionMode: optionMode as 'included_only' | 'priced',
+        pricingMode: pricingMode as 'simple' | 'cost_based',
+        partnerShopRateCents: tData?.partner_shop_rate_cents ?? 11000,
+        hhFeePct: Number(tData?.hh_fee_pct ?? 0.05),
+        categories,
       }
     },
   })
@@ -209,6 +228,46 @@ export function QuoteEditor() {
     return quantities[optionId] ?? 4
   }
 
+  // Per-line cost snapshot. Captures the cost model at save time so a
+  // sent quote never reprices when Terms or Categories change later.
+  // Returns zeros when the builder isn't cost_based or data is missing
+  // (snapshot columns are nullable).
+  function snapshotFor(optionId: string, qty: number) {
+    const opt = catalog?.options.find(o => o.id === optionId)
+    if (!opt || catalog?.pricingMode !== 'cost_based') {
+      return { parts_sell_cents: null, landed_cost_cents: null, labour_cents: null, materials_cents: null, partner_cost_cents: null }
+    }
+    const cat = opt.category_id ? catalog.categories.find(c => c.id === opt.category_id) : null
+    const partsSell = (opt.parts_sell_cents ?? 0) * qty
+    const landed    = (opt.landed_cost_cents ?? 0) * qty
+    // Labour billed to the customer (install_price_cents on the option
+    // is labour + paint materials — split them for the snapshot).
+    const materials = cat?.paint_materials_cents ?? 0
+    const labour    = (opt.install_price_cents ?? 0) - materials
+    const partnerHours = cat ? Number(cat.install_hours) + Number(cat.paint_hours) : 0
+    const partnerCost = Math.round(partnerHours * catalog.partnerShopRateCents)
+    return {
+      parts_sell_cents: partsSell,
+      landed_cost_cents: landed,
+      labour_cents: labour,
+      materials_cents: materials,
+      partner_cost_cents: partnerCost,
+    }
+  }
+
+  // Per-line price in cents. For cost_based builders, quantity
+  // multiplies parts but NOT labour (install_price_cents). Everyone
+  // else keeps the legacy behaviour where price_cents × qty is the
+  // line price.
+  function lineCents(opt: CatalogOption, qty: number): number {
+    if (catalog?.pricingMode === 'cost_based'
+        && opt.parts_sell_cents != null
+        && opt.install_price_cents != null) {
+      return opt.parts_sell_cents * qty + opt.install_price_cents
+    }
+    return opt.price_cents * qty
+  }
+
   const total = useMemo(() => {
     if (!tier || !catalog) return 0
     const base = tier.base_price_cents ?? 0
@@ -217,11 +276,39 @@ export function QuoteEditor() {
       const opt = catalog.options.find(o => o.id === optId)
       if (!opt) return sum
       if (opt.included_in_tier_ids.includes(tier.id)) return sum
-      return sum + opt.price_cents * qtyFor(optId)
+      return sum + lineCents(opt, qtyFor(optId))
     }, 0)
     return base + addons
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selection, quantities, catalog, tier, includedOnly])
+
+  // Margin (ops only, cost_based builders): landed + partner labour +
+  // materials + HH fee. Everything per-line, with quantity multiplying
+  // landed parts but not labour/materials. Only renders when the
+  // snapshot columns are present.
+  const marginSummary = useMemo(() => {
+    if (!tier || !catalog || catalog.pricingMode !== 'cost_based') return null
+    const categoryById = new Map(catalog.categories.map(c => [c.id, c]))
+    let landed = 0, labour = 0, materials = 0
+    for (const optId of Object.values(selection).flat()) {
+      const opt = catalog.options.find(o => o.id === optId)
+      if (!opt) continue
+      const qty = qtyFor(optId)
+      const cat = opt.category_id ? categoryById.get(opt.category_id) : null
+      landed += (opt.landed_cost_cents ?? 0) * qty
+      if (cat) {
+        labour += (Number(cat.install_hours) + Number(cat.paint_hours)) * catalog.partnerShopRateCents
+        materials += cat.paint_materials_cents
+      }
+    }
+    const sale = total
+    const hhFee = Math.round(sale * catalog.hhFeePct)
+    const grossBefore = sale - landed - labour - materials
+    const grossAfter = grossBefore - hhFee
+    const marginPct = sale > 0 ? grossAfter / sale : 0
+    return { sale, landed, labour, materials, hhFee, grossBefore, grossAfter, marginPct }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selection, quantities, catalog, tier, total])
 
   function toggleOption(group: OptionGroup, optionId: string) {
     setSelection(prev => {
@@ -262,11 +349,13 @@ export function QuoteEditor() {
         const rows = Object.values(selection).flat().map(optionId => {
           const opt = catalog!.options.find(o => o.id === optionId)!
           const included = opt.included_in_tier_ids.includes(tierId)
+          const qty = qtyFor(optionId)
           return {
             quote_id: existing.id,
             option_id: optionId,
             price_cents_at_selection: included ? 0 : opt.price_cents,
-            quantity: qtyFor(optionId),
+            quantity: qty,
+            ...snapshotFor(optionId, qty),
           }
         })
         if (rows.length) {
@@ -300,11 +389,13 @@ export function QuoteEditor() {
       const rows = Object.values(selection).flat().map(optionId => {
         const opt = catalog!.options.find(o => o.id === optionId)!
         const included = opt.included_in_tier_ids.includes(tierId)
+        const qty = qtyFor(optionId)
         return {
           quote_id: quoteId,
           option_id: optionId,
           price_cents_at_selection: included ? 0 : opt.price_cents,
-          quantity: qtyFor(optionId),
+          quantity: qty,
+          ...snapshotFor(optionId, qty),
         }
       })
       if (rows.length) {
@@ -369,12 +460,19 @@ export function QuoteEditor() {
       }).select('id').single()
       if (insQuote.error) throw insQuote.error
       const newQuoteId = (insQuote.data as { id: string }).id
-      // Copy options
+      // Copy options — preserve the original snapshot. A revise is
+      // still the same price-at-the-time; a resave rewrites the
+      // snapshot via the regular save flow.
       const copies = existing.quote_options.map(qo => ({
         quote_id: newQuoteId,
         option_id: qo.option_id,
         price_cents_at_selection: qo.price_cents_at_selection,
         quantity: qo.quantity ?? 1,
+        parts_sell_cents: qo.parts_sell_cents ?? null,
+        landed_cost_cents: qo.landed_cost_cents ?? null,
+        labour_cents: qo.labour_cents ?? null,
+        materials_cents: qo.materials_cents ?? null,
+        partner_cost_cents: qo.partner_cost_cents ?? null,
       }))
       if (copies.length) {
         const { error } = await supabase.from('quote_options').insert(copies)
@@ -573,7 +671,7 @@ export function QuoteEditor() {
                         const active = chosen.has(opt.id)
                         const priceMissing = !includedOnly && !included && opt.price_cents === 0
                         const q = qtyFor(opt.id)
-                        const extendedCents = included ? 0 : opt.price_cents * q
+                        const extendedCents = included ? 0 : lineCents(opt, q)
                         return (
                           <div key={opt.id} className="space-y-1.5">
                             <button
@@ -729,6 +827,33 @@ export function QuoteEditor() {
           {status && <span className="text-xs text-[var(--color-success)]">{status}</span>}
           {err && <span className="text-xs text-[var(--color-danger)]">{err}</span>}
         </div>
+
+        {marginSummary && (() => {
+          const m = marginSummary
+          const pct = m.marginPct * 100
+          const colour = pct < 20 ? 'text-[var(--color-danger)]'
+            : pct < 25 ? 'text-amber-600'
+            : 'text-[var(--color-success)]'
+          const money = (c: number) => `$${(c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+          return (
+            <div className="mt-4 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm">
+              <div className="text-xs uppercase tracking-wide text-[var(--color-muted)] mb-2">Margin · ops only</div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                <div><div className="text-[var(--color-muted)]">Sale price</div><div className="text-sm">{money(m.sale)}</div></div>
+                <div><div className="text-[var(--color-muted)]">Parts landed</div><div className="text-sm">{money(m.landed)}</div></div>
+                <div><div className="text-[var(--color-muted)]">Partner labour + materials</div><div className="text-sm">{money(m.labour + m.materials)}</div></div>
+                <div><div className="text-[var(--color-muted)]">HH fee</div><div className="text-sm">{money(m.hhFee)}</div></div>
+              </div>
+              <div className="mt-3 flex items-end justify-between pt-3 border-t border-[var(--color-border)]">
+                <div>
+                  <div className="text-xs text-[var(--color-muted)]">Gross margin after HH</div>
+                  <div className={`text-lg ${colour}`}>{money(m.grossAfter)}</div>
+                </div>
+                <div className={`text-2xl font-mono ${colour}`}>{pct.toFixed(1)}%</div>
+              </div>
+            </div>
+          )
+        })()}
 
         {existing && lastPush && (
           <div className="mt-4 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm">

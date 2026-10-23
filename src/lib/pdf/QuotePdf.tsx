@@ -288,7 +288,15 @@ export function QuotePdf(input: QuotePdfInput) {
                 const qty = o.quantity ?? 1
                 // Kit SKUs: price IS the kit price → do not multiply.
                 const effectiveQty = o.sold_as_set ? 1 : qty
-                const extended = o.price_cents_at_selection * effectiveQty
+                // Cost-based builders split parts (× qty) from install
+                // (× 1). Legacy pricing bundles everything into
+                // price_cents_at_selection.
+                const costBased = input.pricing_mode === 'cost_based'
+                  && o.parts_sell_cents != null
+                  && o.install_price_cents != null
+                const extended = costBased
+                  ? (o.parts_sell_cents as number) * effectiveQty + (o.install_price_cents as number)
+                  : o.price_cents_at_selection * effectiveQty
                 const qtyLabel = o.sold_as_set
                   ? 'Set of 4'
                   : qty === 5 ? 'Set of 5 incl. spare'
@@ -323,6 +331,12 @@ export function QuotePdf(input: QuotePdfInput) {
               })}
             </View>
           ))
+        )}
+
+        {input.pricing_mode === 'cost_based' && grouped.length > 0 && (
+          <Text style={{ ...styles.small, marginTop: 10 }}>
+            Prices include import shipping, duties and fitting.
+          </Text>
         )}
 
         <Footer />

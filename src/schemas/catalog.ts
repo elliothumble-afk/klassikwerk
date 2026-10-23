@@ -32,6 +32,11 @@ export const catalogOptionSchema = z.object({
   sort: z.coerce.number().int().min(0),
   active: z.boolean(),
   sold_as_set: z.boolean(),
+  // Nullable (manual options can be left uncategorised). When an ops
+  // user edits, we also mark category_locked so a later sync won't
+  // reassign.
+  category_id: z.string().uuid().nullable().or(z.literal('')).transform(v => v || null),
+  origin_id: z.string().uuid().nullable().or(z.literal('')).transform(v => v || null),
 })
 
 export type PlatformForm = z.infer<typeof platformSchema>

@@ -39,7 +39,7 @@ Deno.serve(async (req) => {
     const [brandRes, termsRes, qoRes] = await Promise.all([
       admin.from('builder_brand').select('wordmark_text, logo_url, tagline, color_accent, color_bg, color_text, font_display, font_body').eq('builder_id', quote.builder.id).maybeSingle(),
       admin.from('builder_terms').select('*').eq('builder_id', quote.builder.id).maybeSingle(),
-      admin.from('quote_options').select('option_id, price_cents_at_selection, quantity, catalog_options(name, code, group_id, sold_as_set)').eq('quote_id', quote.id),
+      admin.from('quote_options').select('option_id, price_cents_at_selection, quantity, catalog_options(name, code, group_id, sold_as_set, parts_sell_cents, install_price_cents)').eq('quote_id', quote.id),
     ])
     if (qoRes.error) throw qoRes.error
 

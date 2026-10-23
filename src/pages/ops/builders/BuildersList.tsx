@@ -81,7 +81,13 @@ export function BuildersList() {
                         {b.active ? 'Active' : 'Inactive'}
                       </button>
                     </td>
-                    <td className="px-5 py-3 text-right">
+                    <td className="px-5 py-3 text-right space-x-3">
+                      <Link
+                        to={`/ops/builders/${b.id}/costing`}
+                        className="text-xs text-[var(--color-muted)] hover:underline"
+                      >
+                        Costing
+                      </Link>
                       <Link
                         to={`/b/${b.slug}`}
                         target="_blank"

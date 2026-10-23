@@ -79,7 +79,7 @@ export async function renderQuotePdfToStorage(quoteId: string): Promise<string> 
     const [optsRes, platsRes] = await Promise.all([
       supabase
         .from('catalog_options')
-        .select('id, name, code, group_id, swatch_image_url, included_in_tier_ids, sold_as_set')
+        .select('id, name, code, group_id, swatch_image_url, included_in_tier_ids, sold_as_set, parts_sell_cents, install_price_cents')
         .in('id', optionIds),
       supabase
         .from('catalog_option_platforms')
@@ -109,6 +109,11 @@ export async function renderQuotePdfToStorage(quoteId: string): Promise<string> 
       const r = restricted.get(o.id)
       if (r && r.size > 0 && !r.has(quote.platform_id)) continue
       const row = qoByOption.get(o.id)
+      const oo = o as {
+        sold_as_set?: boolean
+        parts_sell_cents?: number | null
+        install_price_cents?: number | null
+      }
       options.push({
         group_name: groupById.get(o.group_id)?.name ?? 'Option',
         group_sort: groupById.get(o.group_id)?.sort ?? 0,
@@ -117,7 +122,9 @@ export async function renderQuotePdfToStorage(quoteId: string): Promise<string> 
         swatch_image_url: o.swatch_image_url,
         price_cents_at_selection: row?.price_cents_at_selection ?? 0,
         quantity: row?.quantity ?? 1,
-        sold_as_set: (o as { sold_as_set?: boolean }).sold_as_set ?? false,
+        sold_as_set: oo.sold_as_set ?? false,
+        parts_sell_cents: oo.parts_sell_cents ?? null,
+        install_price_cents: oo.install_price_cents ?? null,
         included: (o.included_in_tier_ids ?? []).includes(quote.tier_id),
       })
     }
@@ -139,6 +146,7 @@ export async function renderQuotePdfToStorage(quoteId: string): Promise<string> 
     options,
     customer: (quote.lead?.customer ?? null) as CustomerLike | null,
     customer_phone: quote.lead?.phone ?? null,
+    pricing_mode: ((terms as unknown as { pricing_mode?: 'simple' | 'cost_based' })?.pricing_mode) ?? 'simple',
   }
 
   const [{ QuotePdf }, { registerBrandFonts }] = await Promise.all([

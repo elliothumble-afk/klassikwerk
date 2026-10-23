@@ -77,6 +77,7 @@ function OpsShellInner() {
               <NavItem to={`/ops/builders/${selected.id}/brand`} icon={<FileText size={15} />}>Brand</NavItem>
               <NavItem to={`/ops/builders/${selected.id}/terms`} icon={<FileText size={15} />}>Terms</NavItem>
               <NavItem to={`/ops/builders/${selected.id}/contract`} icon={<FileText size={15} />}>Contract</NavItem>
+              <NavItem to={`/ops/builders/${selected.id}/costing`} icon={<FileText size={15} />}>Costing</NavItem>
             </>
           )}
         </div>

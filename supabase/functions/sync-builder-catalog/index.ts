@@ -904,6 +904,25 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     arr.push(extId)
     groupsByName.set(o.name, arr)
   }
+  // Only accept a handle-based disambiguator when the differing middle
+  // is short and reads like a size / finish / colour. Anything longer
+  // or more generic ("Rs Forged Alloy Wheels Sale", "2023 Present Kahna R Hard Spare Wheel")
+  // leaks product-page junk into the catalog, so we fall through to SKU.
+  const SIZE_RE = /^\d{2,3}(?:-?inch)?$/i
+  const FINISH_WORDS = new Set([
+    'forged', 'chrome', 'gloss', 'matte', 'matt', 'satin', 'polished',
+    'brushed', 'anodised', 'anodized', 'painted',
+  ])
+  const COLOUR_WORDS = new Set([
+    'black', 'silver', 'white', 'red', 'blue', 'green', 'grey', 'gray',
+    'tan', 'brown', 'copper', 'bronze', 'gold', 'carbon', 'hyper', 'deep',
+    'olive',
+  ])
+  const isCleanToken = (t: string): boolean => {
+    const l = t.toLowerCase()
+    return SIZE_RE.test(l) || FINISH_WORDS.has(l) || COLOUR_WORDS.has(l)
+  }
+
   for (const [_name, extIds] of groupsByName) {
     if (extIds.length <= 1) continue
     const options = extIds.map(e => byExternalId.get(e)!)
@@ -912,10 +931,6 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     const pre = commonPrefix(partsList)
     const suf = commonSuffix(partsList, pre)
 
-    // If handles disambiguate the group, use their differing middle.
-    // Otherwise fall back to SKU — strip the longest common prefix/suffix
-    // across SKUs so the hint is the distinguishing fragment, not the
-    // whole code. Never surface "variant N" to a customer.
     const skuParts = options.map(o => (o.kit_sku ?? '').split(/[-_\s]+/).filter(Boolean))
     const skuPre = commonPrefix(skuParts)
     const skuSuf = commonSuffix(skuParts, skuPre)
@@ -927,21 +942,29 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
 
     for (let i = 0; i < extIds.length; i++) {
       const middle = partsList[i].slice(pre, partsList[i].length - suf)
-      let hint: string
-      if (middle.length > 0) {
+      let hint: string | null = null
+
+      // 1) Clean handle middle: ≤2 tokens, all look like size/finish/colour.
+      if (middle.length >= 1 && middle.length <= 2 && middle.every(isCleanToken)) {
         hint = middle.map(titleCaseTok).join(' ')
-      } else {
-        const skuMiddle = skuParts[i].slice(skuPre, skuParts[i].length - skuSuf)
-        if (skuMiddle.length > 0) {
-          hint = skuMiddle.join('-').toUpperCase()
-        } else if (options[i].kit_sku) {
-          // Last resort — show the full SKU, which is unique in Shopify.
-          hint = options[i].kit_sku as string
-        } else {
-          // No SKU and handles collide: show the handle tail.
-          hint = partsList[i].slice(-2).map(titleCaseTok).join(' ')
-        }
       }
+
+      // 2) SKU-based disambiguator: differing middle of the SKU tokens.
+      if (hint === null) {
+        const skuMiddle = skuParts[i].slice(skuPre, skuParts[i].length - skuSuf)
+        if (skuMiddle.length > 0) hint = skuMiddle.join('-').toUpperCase()
+      }
+
+      // 3) Full SKU — unique in Shopify by construction.
+      if (hint === null && options[i].kit_sku) hint = options[i].kit_sku as string
+
+      // 4) Last resort: a short handle tail — only if there is literally
+      //    no SKU to show.
+      if (hint === null) {
+        const tail = partsList[i].slice(-2)
+        hint = tail.map(titleCaseTok).join(' ')
+      }
+
       options[i].name = `${options[i].name} (${hint})`
     }
   }

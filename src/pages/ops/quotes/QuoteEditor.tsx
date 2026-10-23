@@ -66,27 +66,39 @@ export function QuoteEditor() {
     enabled: Boolean(lead?.builder_id),
     queryFn: async () => {
       const builderId = lead!.builder_id
-      const [plat, tie, grp, opt, optPlat, terms] = await Promise.all([
+      const [plat, tie, grp, opt, terms] = await Promise.all([
         supabase.from('catalog_platforms').select('*').eq('builder_id', builderId).eq('active', true).order('sort'),
         supabase.from('catalog_tiers').select('*').eq('builder_id', builderId).eq('active', true).order('sort'),
         supabase.from('catalog_option_groups').select('*').eq('builder_id', builderId).order('sort'),
         supabase.from('catalog_options').select('*').eq('builder_id', builderId).eq('active', true).order('sort'),
-        supabase.from('catalog_option_platforms').select('option_id, platform_id'),
         supabase.from('builder_terms').select('option_mode').eq('builder_id', builderId).maybeSingle(),
       ])
       if (plat.error) throw plat.error
       if (tie.error) throw tie.error
       if (grp.error) throw grp.error
       if (opt.error) throw opt.error
-      if (optPlat.error) throw optPlat.error
       if (terms.error) throw terms.error
+
+      // Scope the restriction fetch to THIS builder's active options
+      // so cross-builder link rows can't leak into the filter.
+      const builderOptionIds = (opt.data ?? []).map(o => o.id)
+      let optionPlatforms: { option_id: string; platform_id: string }[] = []
+      if (builderOptionIds.length > 0) {
+        const op = await supabase
+          .from('catalog_option_platforms')
+          .select('option_id, platform_id')
+          .in('option_id', builderOptionIds)
+        if (op.error) throw op.error
+        optionPlatforms = (op.data ?? []) as typeof optionPlatforms
+      }
+
       const optionMode = ((terms.data as Pick<BuilderTerms, 'option_mode'> | null)?.option_mode) ?? 'priced'
       return {
         platforms: (plat.data ?? []) as Platform[],
         tiers: (tie.data ?? []) as Tier[],
         groups: (grp.data ?? []) as OptionGroup[],
         options: (opt.data ?? []) as CatalogOption[],
-        optionPlatforms: (optPlat.data ?? []) as { option_id: string; platform_id: string }[],
+        optionPlatforms,
         optionMode: optionMode as 'included_only' | 'priced',
       }
     },
@@ -144,12 +156,17 @@ export function QuoteEditor() {
   const visibleOptionsByGroup = useMemo(() => {
     const by = new Map<string, CatalogOption[]>()
     if (!catalog) return by
+    // Nothing shows until a platform is chosen — options are platform-
+    // scoped, and without a platform we can't tell which to render.
+    if (!platform) return by
     for (const o of catalog.options) {
       if (includedOnly && tier && !o.included_in_tier_ids.includes(tier.id)) continue
-      if (platform) {
-        const restricted = optionPlatformMap.get(o.id)
-        if (restricted && restricted.size > 0 && !restricted.has(platform.id)) continue
-      }
+      const restricted = optionPlatformMap.get(o.id)
+      const isUniversal = !restricted || restricted.size === 0
+      const linkedToCurrent = restricted?.has(platform.id) ?? false
+      // Keep when the option is universal OR explicitly linked to the
+      // chosen platform. Hide only when restricted to OTHER platforms.
+      if (!isUniversal && !linkedToCurrent) continue
       if (!by.has(o.group_id)) by.set(o.group_id, [])
       by.get(o.group_id)!.push(o)
     }

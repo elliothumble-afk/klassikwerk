@@ -39,7 +39,7 @@ interface QuoteData {
     option_id: string
     price_cents_at_selection: number
     quantity: number
-    catalog_options: { name: string; code: string | null } | null
+    catalog_options: { name: string; code: string | null; sold_as_set: boolean } | null
   }[]
 }
 
@@ -176,8 +176,14 @@ export function QuoteView() {
               </tr>
               {quote_options.map(qo => {
                 const qty = qo.quantity ?? 1
-                const extended = qo.price_cents_at_selection * qty
-                const qtyLabel = qty === 5 ? 'Set of 5 incl. spare' : qty === 4 ? 'Set of 4' : null
+                const soldAsSet = qo.catalog_options?.sold_as_set ?? false
+                const effectiveQty = soldAsSet ? 1 : qty
+                const extended = qo.price_cents_at_selection * effectiveQty
+                const qtyLabel = soldAsSet
+                  ? 'Set of 4'
+                  : qty === 5 ? 'Set of 5 incl. spare'
+                  : qty === 4 ? 'Set of 4'
+                  : null
                 return (
                   <tr key={qo.option_id} className="border-b border-[var(--color-border)] last:border-0">
                     <td className="py-2 pr-3 text-[var(--color-muted)]">Option</td>

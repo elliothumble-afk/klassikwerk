@@ -797,6 +797,7 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     price_cents: number
     swatch_image_url: string | null
     active: boolean
+    sold_as_set: boolean
     group_id: string
     group_priority: number
     platform_ids: Set<string>
@@ -849,6 +850,10 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
             // with "Set a price" warnings. Honour available + priced + skued.
             const active = Boolean(variant.available) && priceCents > 0 && Boolean(sku)
             const priority = CATEGORY_PRIORITY[cat]
+            // Alloy-wheel kit SKUs end in -KIT (e.g. WACTF1258M1R-KIT).
+            // Their price IS the kit price, not the per-wheel price —
+            // so we must NOT multiply by four in the quote editor.
+            const soldAsSet = cat === 'alloy-wheels' && !!sku && /-KIT$/i.test(sku)
 
             const existing = byExternalId.get(externalId)
             if (!existing || priority > existing.group_priority) {
@@ -861,6 +866,7 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
                 price_cents: priceCents,
                 swatch_image_url: image,
                 active,
+                sold_as_set: soldAsSet,
                 group_id: groupId,
                 group_priority: priority,
                 platform_ids: new Set<string>(existing?.platform_ids ?? []),
@@ -985,6 +991,7 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     swatch_image_url: o.swatch_image_url,
     sort: 0,
     active: o.active,
+    sold_as_set: o.sold_as_set,
     synced: true,
     external_id: o.external_id,
   }))

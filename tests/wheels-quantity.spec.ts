@@ -35,7 +35,7 @@ function env(k: string): string {
 const ANON = env('VITE_SUPABASE_ANON_KEY')
 const SERVICE = env('SUPABASE_SERVICE_ROLE_KEY')
 
-interface Seed {
+interface PlatformSeed {
   leadId: string
   customerId: string
   platformName: string
@@ -43,13 +43,17 @@ interface Seed {
   tierBasePriceCents: number
   wheelName: string
   wheelPriceCents: number
+  soldAsSet: boolean
 }
 
-async function seed(): Promise<Seed> {
+async function seedForPlatform(opts: {
+  platformFilter: string
+  wheelFilter: { nameLike?: string; soldAsSet: boolean }
+}): Promise<PlatformSeed> {
   const admin = createClient(SUPABASE_URL, SERVICE, { auth: { persistSession: false } })
 
   const { data: cust, error: ce } = await admin.from('customers')
-    .insert({ full_name: 'Playwright Wheels', email: `pw-wheels-${Date.now()}@example.com` })
+    .insert({ full_name: `Playwright ${opts.platformFilter}`, email: `pw-${opts.platformFilter.replace(/\s+/g, '-')}-${Date.now()}@example.com` })
     .select('id').single()
   if (ce) throw ce
 
@@ -59,7 +63,7 @@ async function seed(): Promise<Seed> {
   if (le) throw le
 
   const { data: plat, error: pe } = await admin.from('catalog_platforms')
-    .select('id, name').eq('builder_id', CTC_ID).ilike('name', '%grenadier%')
+    .select('id, name').eq('builder_id', CTC_ID).ilike('name', `%${opts.platformFilter}%`)
     .eq('active', true).limit(1).single()
   if (pe) throw pe
 
@@ -68,25 +72,27 @@ async function seed(): Promise<Seed> {
     .eq('active', true).order('sort').limit(1).single()
   if (te) throw te
 
-  // Alloy wheels group, must be a universal (platform_id null) group
   const { data: grp, error: ge } = await admin.from('catalog_option_groups')
     .select('id').eq('builder_id', CTC_ID)
     .eq('external_id', 'shopify:group:alloy-wheels').single()
   if (ge) throw ge
 
-  // Any active wheel option linked to Grenadier platform with a non-zero price
   const { data: links, error: lke } = await admin.from('catalog_option_platforms')
     .select('option_id').eq('platform_id', plat.id)
   if (lke) throw lke
   const linkedIds = (links ?? []).map(r => r.option_id as string)
-  if (linkedIds.length === 0) throw new Error('No options linked to Grenadier')
+  if (linkedIds.length === 0) throw new Error(`No options linked to ${opts.platformFilter}`)
 
-  const { data: wheels, error: we } = await admin.from('catalog_options')
-    .select('id, name, price_cents').eq('group_id', grp.id)
+  let q = admin.from('catalog_options')
+    .select('id, name, price_cents, sold_as_set, kit_sku').eq('group_id', grp.id)
     .eq('active', true).gt('price_cents', 0).in('id', linkedIds)
-    .order('name').limit(1)
+    .eq('sold_as_set', opts.wheelFilter.soldAsSet)
+  if (opts.wheelFilter.nameLike) q = q.ilike('name', `%${opts.wheelFilter.nameLike}%`)
+  const { data: wheels, error: we } = await q.order('name').limit(1)
   if (we) throw we
-  if (!wheels || wheels.length === 0) throw new Error('No priced Grenadier wheel options found')
+  if (!wheels || wheels.length === 0) {
+    throw new Error(`No wheel options match ${JSON.stringify(opts.wheelFilter)} on ${opts.platformFilter}`)
+  }
   const wheel = wheels[0]
 
   return {
@@ -97,12 +103,12 @@ async function seed(): Promise<Seed> {
     tierBasePriceCents: (tier.base_price_cents as number | null) ?? 0,
     wheelName: wheel.name as string,
     wheelPriceCents: wheel.price_cents as number,
+    soldAsSet: Boolean(wheel.sold_as_set),
   }
 }
 
 async function cleanup(leadId: string, customerId: string) {
   const admin = createClient(SUPABASE_URL, SERVICE, { auth: { persistSession: false } })
-  // Any draft quotes created by the editor get cascaded via quote_options FK
   await admin.from('quotes').delete().eq('lead_id', leadId)
   await admin.from('leads').delete().eq('id', leadId)
   await admin.from('customers').delete().eq('id', customerId)
@@ -120,43 +126,72 @@ async function operatorSession() {
   return verify.data.session
 }
 
-test.describe('CTC Grenadier wheel quantity', () => {
-  let s: Seed
+async function injectSession(page: import('@playwright/test').Page) {
+  const session = await operatorSession()
+  const storageKey = `sb-${PROJECT_REF}-auth-token`
+  await page.addInitScript(({ key, value }) => {
+    window.localStorage.setItem(key, value)
+  }, { key: storageKey, value: JSON.stringify(session) })
+}
 
-  test.beforeAll(async () => { s = await seed() })
-  test.afterAll(async () => { if (s) await cleanup(s.leadId, s.customerId) })
+async function driveToOptions(page: import('@playwright/test').Page, s: PlatformSeed) {
+  await page.goto(`/ops/quotes/new?lead=${s.leadId}`)
+  await page.getByRole('button', { name: new RegExp(s.platformName, 'i') }).first().click()
+  await page.getByRole('button', { name: new RegExp(s.tierName, 'i') }).first().click()
+}
 
-  test('shows Set-of chips and multiplies total by 4', async ({ page }) => {
-    const session = await operatorSession()
-    const storageKey = `sb-${PROJECT_REF}-auth-token`
-    // Supabase-js v2 default persister writes the full session object
-    // under this key. Injecting it before any script runs makes the
-    // app treat the browser as signed in from first paint.
-    await page.addInitScript(({ key, value }) => {
-      window.localStorage.setItem(key, value)
-    }, { key: storageKey, value: JSON.stringify(session) })
+async function clickWheel(page: import('@playwright/test').Page, name: string) {
+  // Match the full wheel name so we don't pick a prefix-sharing sibling
+  // (G63 options all begin "Mercedes G-Wagon (2018 Onwards) G63 AMG").
+  const safe = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const tile = page.getByRole('button', { name: new RegExp(safe, 'i') }).first()
+  await tile.scrollIntoViewIfNeeded()
+  await tile.click()
+}
 
-    await page.goto(`/ops/quotes/new?lead=${s.leadId}`)
+test.describe('CTC wheel quantity', () => {
+  test('Grenadier non-kit wheel: chips appear, total = unit × 4', async ({ page }) => {
+    const s = await seedForPlatform({
+      platformFilter: 'grenadier',
+      wheelFilter: { soldAsSet: false },
+    })
+    try {
+      await injectSession(page)
+      await driveToOptions(page, s)
+      await clickWheel(page, s.wheelName)
 
-    // Step 1: pick Grenadier platform
-    await page.getByRole('button', { name: new RegExp(s.platformName, 'i') }).first().click()
+      await expect(page.getByRole('button', { name: 'Set of 4', exact: true })).toBeVisible()
+      await expect(page.getByRole('button', { name: 'Set of 4 + matching spare' })).toBeVisible()
 
-    // Step 2: pick a tier
-    await page.getByRole('button', { name: new RegExp(s.tierName, 'i') }).first().click()
+      const expected = `$${((s.tierBasePriceCents + s.wheelPriceCents * 4) / 100).toLocaleString('en-US')}`
+      await expect(page.getByText(expected, { exact: true }).first()).toBeVisible()
+    } finally {
+      await cleanup(s.leadId, s.customerId)
+    }
+  })
 
-    // Step 3: pick the wheel option (the option tile is a <button>
-    // containing the option name — scope by name to be unambiguous).
-    const wheelTile = page.getByRole('button', { name: new RegExp(s.wheelName.slice(0, 40).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') }).first()
-    await wheelTile.scrollIntoViewIfNeeded()
-    await wheelTile.click()
+  test('G63 kit SKU (Type 57 Deep Concave): no chips, total = unit × 1', async ({ page }) => {
+    const s = await seedForPlatform({
+      platformFilter: 'G63',
+      wheelFilter: { soldAsSet: true, nameLike: 'Type 57 Deep Concave' },
+    })
+    try {
+      await injectSession(page)
+      await driveToOptions(page, s)
+      await clickWheel(page, s.wheelName)
 
-    // Assert both chips are rendered
-    await expect(page.getByRole('button', { name: 'Set of 4', exact: true })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Set of 4 + matching spare' })).toBeVisible()
+      // No Set-of-5 chip (kit SKU — one price, no spare upgrade)
+      await expect(page.getByRole('button', { name: 'Set of 4 + matching spare' })).toHaveCount(0)
+      // The "Set of 4" sub-label under the option name is a div, not a
+      // button — scope to the one that is a button (the chip) to assert
+      // it's absent. Using role=button ensures we match the chip only.
+      await expect(page.getByRole('button', { name: 'Set of 4', exact: true })).toHaveCount(0)
 
-    // Assert the total shows unit_price × 4 (+ tier base)
-    const expectedCents = s.tierBasePriceCents + s.wheelPriceCents * 4
-    const expectedLabel = `$${(expectedCents / 100).toLocaleString('en-US')}`
-    await expect(page.getByText(expectedLabel, { exact: true }).first()).toBeVisible()
+      // Total adds the kit price ONCE
+      const expected = `$${((s.tierBasePriceCents + s.wheelPriceCents) / 100).toLocaleString('en-US')}`
+      await expect(page.getByText(expected, { exact: true }).first()).toBeVisible()
+    } finally {
+      await cleanup(s.leadId, s.customerId)
+    }
   })
 })

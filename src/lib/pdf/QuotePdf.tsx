@@ -286,8 +286,14 @@ export function QuotePdf(input: QuotePdfInput) {
               <Text style={styles.h3}>{groupName}</Text>
               {items.map((o, i) => {
                 const qty = o.quantity ?? 1
-                const extended = o.price_cents_at_selection * qty
-                const qtyLabel = qty === 5 ? 'Set of 5 incl. spare' : qty === 4 ? 'Set of 4' : null
+                // Kit SKUs: price IS the kit price → do not multiply.
+                const effectiveQty = o.sold_as_set ? 1 : qty
+                const extended = o.price_cents_at_selection * effectiveQty
+                const qtyLabel = o.sold_as_set
+                  ? 'Set of 4'
+                  : qty === 5 ? 'Set of 5 incl. spare'
+                  : qty === 4 ? 'Set of 4'
+                  : null
                 return (
                   <View key={i} style={styles.optionRow}>
                     {o.swatch_image_url ? (

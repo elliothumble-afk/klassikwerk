@@ -55,9 +55,12 @@ export interface OptionLineForPdf {
   name: string
   code: string | null
   swatch_image_url: string | null
-  /** Unit price. Multiply by `quantity` for the extended line price. */
+  /** Unit price. Multiply by `quantity` for the extended line price,
+   *  unless `sold_as_set` is true — then price_cents_at_selection
+   *  already is the set price and quantity is 1. */
   price_cents_at_selection: number
   quantity: number
+  sold_as_set: boolean
   included: boolean
 }
 

@@ -79,7 +79,7 @@ export async function renderQuotePdfToStorage(quoteId: string): Promise<string> 
     const [optsRes, platsRes] = await Promise.all([
       supabase
         .from('catalog_options')
-        .select('id, name, code, group_id, swatch_image_url, included_in_tier_ids')
+        .select('id, name, code, group_id, swatch_image_url, included_in_tier_ids, sold_as_set')
         .in('id', optionIds),
       supabase
         .from('catalog_option_platforms')
@@ -117,6 +117,7 @@ export async function renderQuotePdfToStorage(quoteId: string): Promise<string> 
         swatch_image_url: o.swatch_image_url,
         price_cents_at_selection: row?.price_cents_at_selection ?? 0,
         quantity: row?.quantity ?? 1,
+        sold_as_set: (o as { sold_as_set?: boolean }).sold_as_set ?? false,
         included: (o.included_in_tier_ids ?? []).includes(quote.tier_id),
       })
     }
@@ -193,7 +194,7 @@ export async function renderContractPdfToStorage(buildId: string): Promise<strin
   const optionIds = buildOpts.map(bo => bo.option_id)
   let configurationTable = '| Group | Choice |\n| --- | --- |'
   if (optionIds.length) {
-    const optsRes = await supabase.from('catalog_options').select('id, name, code, group_id').in('id', optionIds)
+    const optsRes = await supabase.from('catalog_options').select('id, name, code, group_id, sold_as_set').in('id', optionIds)
     if (optsRes.error) throw optsRes.error
     const groupIds = Array.from(new Set((optsRes.data ?? []).map(o => o.group_id)))
     const groupsRes = await supabase.from('catalog_option_groups').select('id, name').in('id', groupIds)
@@ -205,7 +206,12 @@ export async function renderContractPdfToStorage(buildId: string): Promise<strin
     const rows = (optsRes.data ?? []).map(o => {
       const grp = groupName.get(o.group_id) ?? 'Option'
       const qty = qtyByOption.get(o.id) ?? 1
-      const qtyLabel = qty === 5 ? ' — Set of 5 incl. spare' : qty === 4 ? ' — Set of 4' : ''
+      const soldAsSet = (o as { sold_as_set?: boolean }).sold_as_set ?? false
+      const qtyLabel = soldAsSet
+        ? ' — Set of 4'
+        : qty === 5 ? ' — Set of 5 incl. spare'
+        : qty === 4 ? ' — Set of 4'
+        : ''
       return `| ${grp} | ${o.name}${o.code ? ` (${o.code})` : ''}${qtyLabel} |`
     })
     configurationTable = ['| Group | Choice |', '| --- | --- |', ...rows].join('\n')

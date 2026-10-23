@@ -196,11 +196,14 @@ export function QuoteEditor() {
     return m
   }, [catalog])
 
-  // qty is 1 for ordinary options, 4 for a wheels option by default,
-  // 5 if the operator picked "+ matching spare".
+  // Three cases:
+  //  - sold_as_set wheels (kit SKUs): price is the kit price → qty 1
+  //  - ordinary wheels in an allow_quantity group → 4 default, 5 w/ spare
+  //  - everything else → qty 1
   function qtyFor(optionId: string): number {
     const opt = catalog?.options.find(o => o.id === optionId)
     if (!opt) return 1
+    if (opt.sold_as_set) return 1
     const g = groupById.get(opt.group_id)
     if (!g?.allow_quantity) return 1
     return quantities[optionId] ?? 4
@@ -592,6 +595,9 @@ export function QuoteEditor() {
                                 <div>
                                   <div className="text-sm">{opt.name}</div>
                                   {opt.code && <div className="text-xs text-[var(--color-muted)]">{opt.code}</div>}
+                                  {opt.sold_as_set && active && (
+                                    <div className="text-xs text-[var(--color-accent)]">Set of 4</div>
+                                  )}
                                 </div>
                               </div>
                               {!includedOnly && (
@@ -613,7 +619,7 @@ export function QuoteEditor() {
                                 </div>
                               )}
                             </button>
-                            {active && group.allow_quantity && (
+                            {active && group.allow_quantity && !opt.sold_as_set && (
                               <div className="flex gap-1.5 pl-11">
                                 {[4, 5].map(n => (
                                   <button

@@ -133,6 +133,7 @@ function optionFormToDb(data: CatalogOptionForm, builderId: string) {
     included_in_tier_ids: data.included_in_tier_ids,
     sort: data.sort,
     active: data.active,
+    sold_as_set: data.sold_as_set,
   }
 }
 
@@ -400,8 +401,9 @@ function OptionEditForm({ option, tiers, platforms, onSave, onCancel, saving }: 
           included_in_tier_ids: option.included_in_tier_ids,
           sort: option.sort,
           active: option.active,
+          sold_as_set: option.sold_as_set ?? false,
         }
-      : { price: 0, included_in_tier_ids: [], sort: 0, active: true },
+      : { price: 0, included_in_tier_ids: [], sort: 0, active: true, sold_as_set: false },
   })
 
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(
@@ -519,6 +521,13 @@ function OptionEditForm({ option, tiers, platforms, onSave, onCancel, saving }: 
             <label className="flex items-center gap-2 text-sm cursor-pointer">
               <input {...register('active')} type="checkbox" className="rounded" />
               Active
+            </label>
+            <label
+              className="flex items-center gap-2 text-sm cursor-pointer"
+              title="Price IS the price of a set of 4 — do not multiply by qty"
+            >
+              <input {...register('sold_as_set')} type="checkbox" className="rounded" />
+              Sold as set of 4
             </label>
             <div>
               <label className="text-xs text-[var(--color-muted)] mb-1 block">Sort</label>

@@ -882,6 +882,7 @@ export type Database = {
           swatch_image_url: string | null
           sort: number
           active: boolean
+          sold_as_set: boolean
           created_at: string
           updated_at: string
         }
@@ -897,6 +898,7 @@ export type Database = {
           swatch_image_url?: string | null
           sort?: number
           active?: boolean
+          sold_as_set?: boolean
           created_at?: string
           updated_at?: string
         }
@@ -911,6 +913,7 @@ export type Database = {
           swatch_image_url?: string | null
           sort?: number
           active?: boolean
+          sold_as_set?: boolean
           updated_at?: string
         }
         Relationships: []

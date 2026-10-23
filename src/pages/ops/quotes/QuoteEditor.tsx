@@ -66,17 +66,19 @@ export function QuoteEditor() {
     enabled: Boolean(lead?.builder_id),
     queryFn: async () => {
       const builderId = lead!.builder_id
-      const [plat, tie, grp, opt, terms] = await Promise.all([
+      const [plat, tie, grp, opt, optPlat, terms] = await Promise.all([
         supabase.from('catalog_platforms').select('*').eq('builder_id', builderId).eq('active', true).order('sort'),
         supabase.from('catalog_tiers').select('*').eq('builder_id', builderId).eq('active', true).order('sort'),
         supabase.from('catalog_option_groups').select('*').eq('builder_id', builderId).order('sort'),
         supabase.from('catalog_options').select('*').eq('builder_id', builderId).eq('active', true).order('sort'),
+        supabase.from('catalog_option_platforms').select('option_id, platform_id'),
         supabase.from('builder_terms').select('option_mode').eq('builder_id', builderId).maybeSingle(),
       ])
       if (plat.error) throw plat.error
       if (tie.error) throw tie.error
       if (grp.error) throw grp.error
       if (opt.error) throw opt.error
+      if (optPlat.error) throw optPlat.error
       if (terms.error) throw terms.error
       const optionMode = ((terms.data as Pick<BuilderTerms, 'option_mode'> | null)?.option_mode) ?? 'priced'
       return {
@@ -84,6 +86,7 @@ export function QuoteEditor() {
         tiers: (tie.data ?? []) as Tier[],
         groups: (grp.data ?? []) as OptionGroup[],
         options: (opt.data ?? []) as CatalogOption[],
+        optionPlatforms: (optPlat.data ?? []) as { option_id: string; platform_id: string }[],
         optionMode: optionMode as 'included_only' | 'priced',
       }
     },
@@ -125,17 +128,33 @@ export function QuoteEditor() {
     [catalog, platform]
   )
 
-  /** All options visible for the current tier, respecting `option_mode`. */
+  /** Map option_id → set of platform_ids it's restricted to. Options
+   *  without any rows are universal (allowed on every platform). */
+  const optionPlatformMap = useMemo(() => {
+    const m = new Map<string, Set<string>>()
+    for (const op of catalog?.optionPlatforms ?? []) {
+      if (!m.has(op.option_id)) m.set(op.option_id, new Set())
+      m.get(op.option_id)!.add(op.platform_id)
+    }
+    return m
+  }, [catalog])
+
+  /** All options visible for the current platform + tier, respecting
+   *  option_mode and catalog_option_platforms restrictions. */
   const visibleOptionsByGroup = useMemo(() => {
     const by = new Map<string, CatalogOption[]>()
     if (!catalog) return by
     for (const o of catalog.options) {
       if (includedOnly && tier && !o.included_in_tier_ids.includes(tier.id)) continue
+      if (platform) {
+        const restricted = optionPlatformMap.get(o.id)
+        if (restricted && restricted.size > 0 && !restricted.has(platform.id)) continue
+      }
       if (!by.has(o.group_id)) by.set(o.group_id, [])
       by.get(o.group_id)!.push(o)
     }
     return by
-  }, [catalog, includedOnly, tier])
+  }, [catalog, includedOnly, tier, platform, optionPlatformMap])
 
   /** Groups with at least one visible option — empties are hidden. */
   const availableGroups = useMemo(

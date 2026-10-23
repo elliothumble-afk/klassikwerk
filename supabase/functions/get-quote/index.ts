@@ -24,7 +24,7 @@ Deno.serve(async (req) => {
       .from('quotes')
       .select(`
         id, version, price_cents, status, notes, pdf_url, token,
-        created_at, approved_at,
+        platform_id, created_at, approved_at,
         lead:leads(customer:customers(full_name, email)),
         builder:builders(id, name, legal_name, slug),
         platform:catalog_platforms(name, chassis, years),
@@ -42,6 +42,28 @@ Deno.serve(async (req) => {
       admin.from('quote_options').select('option_id, price_cents_at_selection, catalog_options(name, code, group_id)').eq('quote_id', quote.id),
     ])
     if (qoRes.error) throw qoRes.error
+
+    // Filter stored quote_options by platform restriction so a renamed
+    // or re-platformed catalog doesn't leak irrelevant rows into /q.
+    const qoRows = (qoRes.data as any[]) ?? []
+    const optionIds = qoRows.map(r => r.option_id)
+    let visibleQuoteOptions = qoRows
+    if (optionIds.length > 0) {
+      const platsRes = await admin
+        .from('catalog_option_platforms')
+        .select('option_id, platform_id')
+        .in('option_id', optionIds)
+      if (platsRes.error) throw platsRes.error
+      const restricted = new Map<string, Set<string>>()
+      for (const r of platsRes.data ?? []) {
+        if (!restricted.has(r.option_id)) restricted.set(r.option_id, new Set())
+        restricted.get(r.option_id)!.add(r.platform_id)
+      }
+      visibleQuoteOptions = qoRows.filter(r => {
+        const s = restricted.get(r.option_id)
+        return !s || s.size === 0 || s.has(quote.platform_id)
+      })
+    }
 
     // Log a viewed event (best-effort; dedupe per hour)
     try {
@@ -62,7 +84,7 @@ Deno.serve(async (req) => {
       quote,
       brand: brandRes.data,
       terms: termsRes.data,
-      quote_options: qoRes.data,
+      quote_options: visibleQuoteOptions,
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
   } catch (e) {
     return new Response(JSON.stringify({ error: (e as Error).message }), {

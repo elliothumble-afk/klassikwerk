@@ -104,6 +104,8 @@ function defaultTerms(builderId: string): BuilderTerms {
     currency: 'usd',
     payment_mode: 'none',
     option_mode: 'priced',
+    fx_rate: 1.27,
+    kit_markup: 1,
     quote_validity_days: 30,
     quote_intro_copy: null,
     brochure_url: null,

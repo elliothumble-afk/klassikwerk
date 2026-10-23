@@ -171,8 +171,8 @@ Deno.serve(async (req) => {
     if (builderRes.error) throw builderRes.error
     const builder = builderRes.data as any
 
-    if (builder.catalog_source !== 'connect') {
-      throw new Error(`Builder ${builder.slug} is manual, not connect.`)
+    if (builder.catalog_source !== 'connect' && builder.catalog_source !== 'shopify') {
+      throw new Error(`Builder ${builder.slug} is ${builder.catalog_source}, not a synced source.`)
     }
 
     // Open a sync_runs row in `running` state so the UI shows live state.
@@ -182,6 +182,29 @@ Deno.serve(async (req) => {
     }).select('id').single()
     if (runIns.error) throw runIns.error
     runId = (runIns.data as any).id
+
+    // ────────────────────────────────────────────────────────────
+    // Shopify branch — no feed JSON; walks /pages/models-range +
+    // /collections/<slug>/products.json. Brand / terms / contract
+    // stay manual (not touched by this sync).
+    // ────────────────────────────────────────────────────────────
+    if (builder.catalog_source === 'shopify') {
+      const shopifyCounts = await syncShopify(admin, builder)
+      const nowIso = new Date().toISOString()
+      await admin.from('sync_runs').update({
+        status: 'success',
+        finished_at: nowIso,
+        counts: shopifyCounts,
+      }).eq('id', runId!)
+      await admin.from('builders').update({
+        last_synced_at: nowIso,
+        last_sync_status: 'success',
+        last_sync_error: null,
+      }).eq('id', builderId)
+      return new Response(JSON.stringify({ ok: true, counts: shopifyCounts, run_id: runId }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
 
     // ────────────────────────────────────────────────────────────
     // Load the feed
@@ -501,3 +524,533 @@ Deno.serve(async (req) => {
     })
   }
 })
+
+// ──────────────────────────────────────────────────────────────────
+// Shopify sync
+//
+// Discovery lives in /pages/models-range. Each vehicle sits in a
+//   <div class="product-item_container model-item">
+// block with
+//   <h4 class="shop-title">…</h4>  (model name)
+//   <h5>DESIGNED TO FIT YEAR …</h5>  (year range)
+//   <a class="con-btn" href="/collections/…">EXTERIOR PARTS</a>  (×N)
+// We group collections into platforms by the h4 heading and into
+// exterior / interior / alloy-wheels groups by the anchor text,
+// not by slug. Many of Chelsea's hrefs are Shopify URL aliases that
+// 301 to a different canonical collection; the canonical handle is
+// read from <link rel="canonical"> and products.json is fetched on
+// *that* handle so we don't hit the empty alias.
+// ──────────────────────────────────────────────────────────────────
+
+interface ShopifyProductVariant {
+  id: number
+  title: string
+  sku: string | null
+  price: string
+  available: boolean
+}
+interface ShopifyProductImage { src: string }
+interface ShopifyProduct {
+  handle: string
+  title: string
+  variants: ShopifyProductVariant[]
+  images: ShopifyProductImage[]
+}
+
+const SHOPIFY_CATEGORIES = ['exterior', 'interior', 'alloy-wheels'] as const
+type ShopifyCategory = typeof SHOPIFY_CATEGORIES[number]
+const UA = 'Mozilla/5.0 (compatible; HumbleHouseSync/1.0)'
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+/** Fetch with throttling + exponential backoff on 429. */
+async function shopifyFetch(url: string, maxRetries = 5): Promise<Response> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const r = await fetch(url, { headers: { 'User-Agent': UA }, redirect: 'follow' })
+    if (r.status !== 429) return r
+    // Shopify may send Retry-After; otherwise exponential backoff 1,2,4,8,16s.
+    const retryAfter = Number(r.headers.get('Retry-After')) || Math.pow(2, attempt)
+    await sleep(retryAfter * 1000)
+  }
+  return fetch(url, { headers: { 'User-Agent': UA }, redirect: 'follow' })
+}
+
+function stripTags(s: string): string {
+  return s.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
+}
+
+function slugify(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
+/** "DESIGNED TO FIT YEAR 2020 ONWARDS" → "2020-onwards"; empty if none. */
+function yearSlug(text: string): string {
+  if (!text) return ''
+  const stripped = text.replace(/designed\s+to\s+fit\s+year/i, '').trim()
+  return slugify(stripped)
+}
+
+/** "DESIGNED TO FIT YEAR 2020 ONWARDS" → "2020–present"; ""s untouched. */
+function yearsDisplay(text: string): string {
+  if (!text) return '—'
+  const t = text.replace(/designed\s+to\s+fit\s+year/i, '').trim()
+  // Normalize ONWARDS/PRESENT to "present"
+  return t.replace(/\s+ONWARDS/i, '–present').replace(/\s+PRESENT/i, '–present').replace(/\s*-\s*/g, '–')
+}
+
+/** Canonical casing for vehicle makes. Only the make is rewritten;
+ *  the rest of the heading (model name, trim text) is left as-is so
+ *  tokens like "JL" or "G350/400" aren't lower-cased. */
+const MAKE_CANONICAL: ReadonlyArray<[RegExp, string]> = [
+  [/^MERCEDES-BENZ\b/i,  'Mercedes-Benz'],
+  [/^MERCEDES\b/i,       'Mercedes'],
+  [/^LAND\s+ROVER\b/i,   'Land Rover'],
+  [/^RANGE\s+ROVER\b/i,  'Range Rover'],
+  [/^INEOS\b/i,          'Ineos'],
+  [/^JEEP\b/i,           'Jeep'],
+  [/^TOYOTA\b/i,         'Toyota'],
+  [/^FORD\b/i,           'Ford'],
+  [/^BMW\b/i,            'BMW'],
+]
+
+function normalizeMake(name: string): string {
+  for (const [re, canonical] of MAKE_CANONICAL) {
+    if (re.test(name)) return name.replace(re, canonical)
+  }
+  return name
+}
+
+function anchorTextToCategory(text: string): ShopifyCategory | null {
+  const up = text.toUpperCase()
+  if (up.includes('EXTERIOR')) return 'exterior'
+  if (up.includes('INTERIOR')) return 'interior'
+  if (up.includes('ALLOY') || up.includes('WHEEL')) return 'alloy-wheels'
+  return null
+}
+
+interface DiscoveredVehicle {
+  name: string
+  years: string          // display
+  slug: string           // slugified name + years for stable platform id
+  hrefs: Partial<Record<ShopifyCategory, string>>
+}
+
+function discoverVehiclesFromModels(html: string): DiscoveredVehicle[] {
+  // Split on the vehicle block marker. The first chunk is the page header; drop it.
+  const parts = html.split(/<div\s+class="product-item_container\s+model-item"/i).slice(1)
+  const out: DiscoveredVehicle[] = []
+  for (const part of parts) {
+    // The block technically extends until the next product-item_container, but
+    // because we already split, each `part` begins at one vehicle and ends
+    // where the splitter cut it. The content of interest (heading + buttons)
+    // sits at the top of the part.
+    const h4 = /<h4[^>]*class="shop-title"[^>]*>([\s\S]*?)<\/h4>/i.exec(part)
+    if (!h4) continue
+    const rawName = stripTags(h4[1])
+    const name = normalizeMake(rawName)
+    if (!name) continue
+    const h5 = /<h5[^>]*>([\s\S]*?)<\/h5>/i.exec(part)
+    const yearsRaw = h5 ? stripTags(h5[1]) : ''
+
+    const hrefs: Partial<Record<ShopifyCategory, string>> = {}
+    const anchorRe = /<a[^>]*class="con-btn"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi
+    let m: RegExpExecArray | null
+    while ((m = anchorRe.exec(part)) !== null) {
+      const href = m[1]
+      if (!href.startsWith('/collections/')) continue
+      const label = stripTags(m[2])
+      const cat = anchorTextToCategory(label)
+      if (!cat) continue
+      if (!hrefs[cat]) hrefs[cat] = href
+    }
+
+    if (Object.keys(hrefs).length === 0) continue
+    const slug = slugify(`${name}-${yearSlug(yearsRaw)}`)
+    out.push({ name, years: yearsDisplay(yearsRaw), slug, hrefs })
+  }
+  return out
+}
+
+async function resolveCanonicalCollection(baseUrl: string, href: string): Promise<string | null> {
+  const url = href.startsWith('http') ? href : `${baseUrl}${href}`
+  const r = await shopifyFetch(url)
+  if (!r.ok) return null
+  const html = await r.text()
+  const canonMatch = /<link[^>]+rel=["']canonical["'][^>]*href=["']([^"']+)["']/i.exec(html)
+  const canonicalUrl = canonMatch ? canonMatch[1] : r.url
+  const match = /\/collections\/([a-z0-9][a-z0-9-]*)/i.exec(canonicalUrl)
+  return match ? match[1] : null
+}
+
+async function syncShopify(admin: ReturnType<typeof createClient>, builder: any) {
+  // Rows upserted during this run are stamped with updated_at >
+  // syncStartedAt; anything synced+active that wasn't touched is stale.
+  const syncStartedAt = new Date().toISOString()
+
+  const baseUrl = (builder.catalog_source_url || '').replace(/\/$/, '')
+  if (!baseUrl) throw new Error('builder.catalog_source_url is not set')
+
+  // ─── Models range → vehicle structure ──────────────────────────────
+  const pageRes = await shopifyFetch(`${baseUrl}/pages/models-range`)
+  if (!pageRes.ok) throw new Error(`models-range HTTP ${pageRes.status}`)
+  const html = await pageRes.text()
+  const vehicles = discoverVehiclesFromModels(html)
+
+  // ─── Pricing multipliers from builder_terms ────────────────────────
+  const termsRes = await admin.from('builder_terms')
+    .select('fx_rate, kit_markup')
+    .eq('builder_id', builder.id)
+    .single()
+  if (termsRes.error) throw termsRes.error
+  const fx = Number((termsRes.data as any).fx_rate ?? 1)
+  const markup = Number((termsRes.data as any).kit_markup ?? 1)
+
+  // ─── Upsert three shared option groups ─────────────────────────────
+  const groupMeta: Record<ShopifyCategory, { slug: string; name: string; sort: number }> = {
+    exterior: { slug: 'shopify-exterior', name: 'Exterior', sort: 10 },
+    interior: { slug: 'shopify-interior', name: 'Interior', sort: 20 },
+    'alloy-wheels': { slug: 'shopify-alloy-wheels', name: 'Alloy wheels', sort: 30 },
+  }
+  const groupIdByCat = new Map<ShopifyCategory, string>()
+  for (const cat of SHOPIFY_CATEGORIES) {
+    const meta = groupMeta[cat]
+    const ins = await admin.from('catalog_option_groups').upsert({
+      builder_id: builder.id,
+      slug: meta.slug,
+      name: meta.name,
+      selection: 'multi',
+      required: false,
+      platform_id: null,
+      sort: meta.sort,
+      active: true,
+      synced: true,
+      external_id: `shopify:group:${cat}`,
+    }, { onConflict: 'builder_id,external_id' }).select('id').single()
+    if (ins.error) throw ins.error
+    groupIdByCat.set(cat, (ins.data as any).id)
+  }
+
+  // ─── Resolve canonicals + build platform set ───────────────────────
+  interface ResolvedVehicle {
+    vehicle: DiscoveredVehicle
+    canonicals: Partial<Record<ShopifyCategory, string>>
+  }
+  const resolved: ResolvedVehicle[] = []
+  for (const v of vehicles) {
+    const canonicals: Partial<Record<ShopifyCategory, string>> = {}
+    for (const cat of SHOPIFY_CATEGORIES) {
+      const href = v.hrefs[cat]
+      if (!href) continue
+      const canonical = await resolveCanonicalCollection(baseUrl, href)
+      if (canonical) canonicals[cat] = canonical
+    }
+    if (Object.keys(canonicals).length > 0) resolved.push({ vehicle: v, canonicals })
+  }
+
+  // ─── Upsert platforms ──────────────────────────────────────────────
+  const platformIdByVehicle = new Map<string, string>()  // v.slug → id
+  const seenPlatformExternalIds = new Set<string>()
+  for (const { vehicle } of resolved) {
+    const externalId = `shopify:platform:${vehicle.slug}`
+    const ins = await admin.from('catalog_platforms').upsert({
+      builder_id: builder.id,
+      slug: vehicle.slug,
+      name: vehicle.name,
+      chassis: vehicle.slug,
+      years: vehicle.years,
+      sort: 0,
+      active: true,
+      synced: true,
+      external_id: externalId,
+    }, { onConflict: 'builder_id,external_id' }).select('id').single()
+    if (ins.error) throw ins.error
+    platformIdByVehicle.set(vehicle.slug, (ins.data as any).id)
+    seenPlatformExternalIds.add(externalId)
+  }
+
+  // ─── Walk every (vehicle, category) collection and dedupe products ─
+  //
+  // A single product (one SKU / one Shopify handle) frequently sits in
+  // several vehicle collections — e.g. a wheel fits all three Defenders.
+  // We keep ONE catalog_options row per Shopify product and link it to
+  // every platform it belongs to via catalog_option_platforms. Group
+  // priority is alloy-wheels > interior > exterior so a wheel that
+  // appears in both an exterior and an alloy-wheels collection ends up
+  // under Alloy wheels.
+  const CATEGORY_PRIORITY: Record<ShopifyCategory, number> = {
+    exterior: 0,
+    interior: 1,
+    'alloy-wheels': 2,
+  }
+  interface CollectedOption {
+    external_id: string
+    slug: string
+    name: string
+    code: string | null
+    kit_sku: string | null
+    price_cents: number
+    swatch_image_url: string | null
+    active: boolean
+    group_id: string
+    group_priority: number
+    platform_ids: Set<string>
+  }
+  const byExternalId = new Map<string, CollectedOption>()
+  const perPlatform: Record<string, { options: number }> = {}
+  let totalVariantsSplit = 0
+
+  for (const { vehicle, canonicals } of resolved) {
+    perPlatform[vehicle.slug] = { options: 0 }
+    const platformId = platformIdByVehicle.get(vehicle.slug)!
+
+    for (const cat of SHOPIFY_CATEGORIES) {
+      const canonicalSlug = canonicals[cat]
+      if (!canonicalSlug) continue
+      const groupId = groupIdByCat.get(cat)!
+
+      let page = 1
+      while (page <= 10) {
+        const url = `${baseUrl}/collections/${canonicalSlug}/products.json?limit=250&page=${page}`
+        await sleep(100)
+        const r = await shopifyFetch(url)
+        if (!r.ok) {
+          if (r.status === 404) break
+          throw new Error(`${url} HTTP ${r.status}`)
+        }
+        const body = await r.json() as { products: ShopifyProduct[] }
+        const products = body.products ?? []
+        if (products.length === 0) break
+
+        for (const product of products) {
+          const variants = product.variants ?? []
+          if (variants.length === 0) continue
+          const isMulti = variants.length > 1
+          if (isMulti) totalVariantsSplit += variants.length
+
+          for (const variant of variants) {
+            const suffix = isMulti ? `-${variant.id}` : ''
+            // external_id does NOT include the vehicle — one row per
+            // (product.handle, variant.id), shared across platforms.
+            const externalId = `shopify:option:${product.handle}${suffix}`
+            const slug = slugify(`shopify-${product.handle}${suffix}`)
+            const name = isMulti ? `${product.title} — ${variant.title}` : product.title
+            const priceGbp = Number(variant.price ?? 0)
+            const priceCents = Math.round(priceGbp * fx * markup * 100)
+            const image = (product.images ?? [])[0]?.src ?? null
+            const sku = variant.sku && variant.sku.trim() ? variant.sku.trim() : null
+            // Shopify "360° Tour" interior listings have no SKU and a
+            // zero price — syncing them active would spam the editor
+            // with "Set a price" warnings. Honour available + priced + skued.
+            const active = Boolean(variant.available) && priceCents > 0 && Boolean(sku)
+            const priority = CATEGORY_PRIORITY[cat]
+
+            const existing = byExternalId.get(externalId)
+            if (!existing || priority > existing.group_priority) {
+              byExternalId.set(externalId, {
+                external_id: externalId,
+                slug,
+                name,
+                code: sku,
+                kit_sku: sku,
+                price_cents: priceCents,
+                swatch_image_url: image,
+                active,
+                group_id: groupId,
+                group_priority: priority,
+                platform_ids: new Set<string>(existing?.platform_ids ?? []),
+              })
+            }
+            byExternalId.get(externalId)!.platform_ids.add(platformId)
+            perPlatform[vehicle.slug].options += 1
+          }
+        }
+        if (products.length < 250) break
+        page += 1
+      }
+    }
+  }
+
+  // ─── Disambiguate shared titles ────────────────────────────────────
+  // Some Shopify stores publish several products with identical `title`
+  // but different handles (e.g. the same wheel style in 20"/22"/23", or
+  // duplicate listings with a trailing "-1"). For each title-collision
+  // group, strip the longest common prefix/suffix across the handles
+  // and append whatever's left to each name so operators can tell them
+  // apart in the configurator.
+  function commonPrefix(parts: string[][]): number {
+    if (parts.length === 0) return 0
+    let p = 0
+    while (p < parts[0].length && parts.every(a => a[p] === parts[0][p])) p++
+    return p
+  }
+  function commonSuffix(parts: string[][], prefixLen: number): number {
+    if (parts.length === 0) return 0
+    let s = 0
+    while (true) {
+      const positions = parts.map(a => a.length - 1 - s)
+      if (positions.some(pos => pos < prefixLen)) break
+      const char = parts[0][positions[0]]
+      if (!parts.every((a, i) => a[positions[i]] === char)) break
+      s++
+    }
+    return s
+  }
+  const groupsByName = new Map<string, string[]>()
+  for (const [extId, o] of byExternalId) {
+    const arr = groupsByName.get(o.name) ?? []
+    arr.push(extId)
+    groupsByName.set(o.name, arr)
+  }
+  for (const [_name, extIds] of groupsByName) {
+    if (extIds.length <= 1) continue
+    const options = extIds.map(e => byExternalId.get(e)!)
+    const handles = extIds.map(e => e.replace(/^shopify:option:/, '').replace(/-\d+$/, ''))
+    const partsList = handles.map(h => h.split('-'))
+    const pre = commonPrefix(partsList)
+    const suf = commonSuffix(partsList, pre)
+
+    // If handles disambiguate the group, use their differing middle.
+    // Otherwise fall back to SKU — strip the longest common prefix/suffix
+    // across SKUs so the hint is the distinguishing fragment, not the
+    // whole code. Never surface "variant N" to a customer.
+    const skuParts = options.map(o => (o.kit_sku ?? '').split(/[-_\s]+/).filter(Boolean))
+    const skuPre = commonPrefix(skuParts)
+    const skuSuf = commonSuffix(skuParts, skuPre)
+
+    const titleCaseTok = (t: string): string => {
+      if (/^\d+$/.test(t)) return `${t}"`
+      return t[0] ? t[0].toUpperCase() + t.slice(1) : t
+    }
+
+    for (let i = 0; i < extIds.length; i++) {
+      const middle = partsList[i].slice(pre, partsList[i].length - suf)
+      let hint: string
+      if (middle.length > 0) {
+        hint = middle.map(titleCaseTok).join(' ')
+      } else {
+        const skuMiddle = skuParts[i].slice(skuPre, skuParts[i].length - skuSuf)
+        if (skuMiddle.length > 0) {
+          hint = skuMiddle.join('-').toUpperCase()
+        } else if (options[i].kit_sku) {
+          // Last resort — show the full SKU, which is unique in Shopify.
+          hint = options[i].kit_sku as string
+        } else {
+          // No SKU and handles collide: show the handle tail.
+          hint = partsList[i].slice(-2).map(titleCaseTok).join(' ')
+        }
+      }
+      options[i].name = `${options[i].name} (${hint})`
+    }
+  }
+
+  // ─── Bulk upsert the deduped options (chunked for URL limits) ──────
+  const allRows = Array.from(byExternalId.values()).map(o => ({
+    builder_id: builder.id,
+    group_id: o.group_id,
+    slug: o.slug,
+    name: o.name,
+    code: o.code,
+    kit_sku: o.kit_sku,
+    price_cents: o.price_cents,
+    included_in_tier_ids: [],
+    swatch_image_url: o.swatch_image_url,
+    sort: 0,
+    active: o.active,
+    synced: true,
+    external_id: o.external_id,
+  }))
+  const upsertedIdByExternal = new Map<string, string>()
+  const CHUNK = 100
+  for (let i = 0; i < allRows.length; i += CHUNK) {
+    const chunk = allRows.slice(i, i + CHUNK)
+    const ins = await admin.from('catalog_options')
+      .upsert(chunk, { onConflict: 'builder_id,external_id' })
+      .select('id, external_id')
+    if (ins.error) throw ins.error
+    for (const row of ins.data as unknown as { id: string; external_id: string }[]) {
+      upsertedIdByExternal.set(row.external_id, row.id)
+    }
+  }
+
+  // ─── Rebuild catalog_option_platforms links for the upserted set ───
+  const allOptionIds = Array.from(upsertedIdByExternal.values())
+  for (let i = 0; i < allOptionIds.length; i += CHUNK) {
+    const chunk = allOptionIds.slice(i, i + CHUNK)
+    const del = await admin.from('catalog_option_platforms').delete().in('option_id', chunk)
+    if (del.error) throw del.error
+  }
+  const allLinks: { option_id: string; platform_id: string }[] = []
+  for (const o of byExternalId.values()) {
+    const optionId = upsertedIdByExternal.get(o.external_id)
+    if (!optionId) continue
+    for (const pid of o.platform_ids) allLinks.push({ option_id: optionId, platform_id: pid })
+  }
+  for (let i = 0; i < allLinks.length; i += CHUNK) {
+    const chunk = allLinks.slice(i, i + CHUNK)
+    const ins = await admin.from('catalog_option_platforms').insert(chunk)
+    if (ins.error) throw ins.error
+  }
+
+  const totalUpserted = allRows.length
+
+  // ─── Deactivate stale rows via updated_at (survives URL-length limits) ─
+  // Anything synced + still-active that wasn't touched this run is stale.
+  const platformsMissing = await admin.from('catalog_platforms')
+    .update({ active: false })
+    .eq('builder_id', builder.id)
+    .eq('synced', true)
+    .eq('active', true)
+    .lt('updated_at', syncStartedAt)
+    .select('id')
+
+  const optionsMissing = await admin.from('catalog_options')
+    .update({ active: false })
+    .eq('builder_id', builder.id)
+    .eq('synced', true)
+    .eq('active', true)
+    .lt('updated_at', syncStartedAt)
+    .select('id')
+
+  // Per-platform report: count UNIQUE options linked to each vehicle,
+  // not raw hits across collections.
+  const platformIdToVehicleLabel = new Map<string, string>()
+  for (const { vehicle } of resolved) {
+    platformIdToVehicleLabel.set(
+      platformIdByVehicle.get(vehicle.slug)!,
+      `${vehicle.name} (${vehicle.years})`
+    )
+  }
+  const perPlatformNamed: Record<string, number> = {}
+  for (const label of platformIdToVehicleLabel.values()) perPlatformNamed[label] = 0
+  for (const o of byExternalId.values()) {
+    if (!o.active) continue
+    for (const pid of o.platform_ids) {
+      const label = platformIdToVehicleLabel.get(pid)
+      if (label) perPlatformNamed[label] += 1
+    }
+  }
+
+  const inactiveZeroOrNoSku = allRows.filter(r => !r.active).length
+
+  return {
+    source: 'shopify',
+    vehicles_discovered: vehicles.length,
+    vehicles_with_canonical: resolved.length,
+    platforms: resolved.length,
+    option_groups: SHOPIFY_CATEGORIES.length,
+    options: {
+      unique_products: byExternalId.size,
+      upserted: totalUpserted,
+      deactivated: optionsMissing.data?.length ?? 0,
+      inactive_zero_price_or_no_sku: inactiveZeroOrNoSku,
+      variants_split: totalVariantsSplit,
+    },
+    platforms_deactivated: platformsMissing.data?.length ?? 0,
+    per_platform: perPlatformNamed,
+    fx_rate: fx,
+    kit_markup: markup,
+  }
+}

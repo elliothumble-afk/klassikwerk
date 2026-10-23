@@ -31,6 +31,7 @@ export const catalogOptionSchema = z.object({
   included_in_tier_ids: z.array(z.string().uuid()),
   sort: z.coerce.number().int().min(0),
   active: z.boolean(),
+  sold_as_set: z.boolean(),
 })
 
 export type PlatformForm = z.infer<typeof platformSchema>

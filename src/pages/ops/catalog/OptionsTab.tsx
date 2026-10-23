@@ -133,6 +133,7 @@ function optionFormToDb(data: CatalogOptionForm, builderId: string) {
     included_in_tier_ids: data.included_in_tier_ids,
     sort: data.sort,
     active: data.active,
+    sold_as_set: data.sold_as_set,
   }
 }
 
@@ -400,8 +401,9 @@ function OptionEditForm({ option, tiers, platforms, onSave, onCancel, saving }: 
           included_in_tier_ids: option.included_in_tier_ids,
           sort: option.sort,
           active: option.active,
+          sold_as_set: option.sold_as_set ?? false,
         }
-      : { price: 0, included_in_tier_ids: [], sort: 0, active: true },
+      : { price: 0, included_in_tier_ids: [], sort: 0, active: true, sold_as_set: false },
   })
 
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(
@@ -520,6 +522,13 @@ function OptionEditForm({ option, tiers, platforms, onSave, onCancel, saving }: 
               <input {...register('active')} type="checkbox" className="rounded" />
               Active
             </label>
+            <label
+              className="flex items-center gap-2 text-sm cursor-pointer"
+              title="Price IS the price of a set of 4 — do not multiply by qty"
+            >
+              <input {...register('sold_as_set')} type="checkbox" className="rounded" />
+              Sold as set of 4
+            </label>
             <div>
               <label className="text-xs text-[var(--color-muted)] mb-1 block">Sort</label>
               <input {...register('sort')} type="number" className={`${inputClass} w-20`} />
@@ -560,13 +569,14 @@ interface GroupSectionProps {
   saving: boolean
   onSave: (data: CatalogOptionForm, platformIds: string[], id?: string, groupId?: string) => Promise<void>
   onToggleActive: (o: OptionWithPlatforms) => void
+  onToggleAllowQuantity: (g: OptionGroup) => void
   onDragEnd: (event: DragEndEvent, groupId: string) => void
   onSwatchUpload: (id: string, url: string) => void
 }
 
 function GroupSection({
   group, options, tiers, platforms,
-  editingId, setEditingId, saving, onSave, onToggleActive, onDragEnd, onSwatchUpload,
+  editingId, setEditingId, saving, onSave, onToggleActive, onToggleAllowQuantity, onDragEnd, onSwatchUpload,
 }: GroupSectionProps) {
   const sensors = useSensors(useSensor(PointerSensor))
   const addingToThisGroup = editingId === `new-${group.id}`
@@ -574,11 +584,28 @@ function GroupSection({
   return (
     <div className="mb-6 bg-[var(--color-surface)] rounded-[var(--radius-lg)] border border-[var(--color-border)]">
       <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border)]">
-        <div>
+        <div className="flex items-center gap-3">
           <span className="text-sm font-medium">{group.name}</span>
-          <span className="ml-2 text-xs text-[var(--color-muted)]">
+          <span className="text-xs text-[var(--color-muted)]">
             {group.selection} · {group.required ? 'required' : 'optional'}
           </span>
+          <button
+            onClick={() => onToggleAllowQuantity(group)}
+            disabled={group.synced}
+            title={
+              group.synced
+                ? 'Synced groups: quantity is managed by the sync'
+                : group.allow_quantity
+                  ? 'Click to disable Set of 4 / Set of 5 chooser'
+                  : 'Click to enable Set of 4 / Set of 5 chooser (for wheels etc.)'
+            }
+            className={`flex items-center gap-1 text-xs transition disabled:opacity-50 disabled:cursor-not-allowed ${
+              group.allow_quantity ? 'text-[var(--color-success)]' : 'text-[var(--color-muted)]'
+            } hover:text-[var(--color-foreground)]`}
+          >
+            {group.allow_quantity ? <ToggleRight size={14} /> : <ToggleLeft size={14} />}
+            Set-of qty
+          </button>
         </div>
         <button
           onClick={() => setEditingId(`new-${group.id}`)}
@@ -725,6 +752,29 @@ export function OptionsTab() {
     onSettled: () => qc.invalidateQueries({ queryKey: OPTIONS_KEY }),
   })
 
+  const GROUPS_KEY = groupsKey(selected?.id)
+  const allowQuantityMutation = useMutation({
+    mutationFn: async (group: OptionGroup) => {
+      const { error } = await supabase
+        .from('catalog_option_groups')
+        .update({ allow_quantity: !group.allow_quantity })
+        .eq('id', group.id)
+      if (error) throw error
+    },
+    onMutate: async (group) => {
+      await qc.cancelQueries({ queryKey: GROUPS_KEY })
+      const prev = qc.getQueryData<OptionGroup[]>(GROUPS_KEY)
+      qc.setQueryData<OptionGroup[]>(GROUPS_KEY, old =>
+        old?.map(g => g.id === group.id ? { ...g, allow_quantity: !g.allow_quantity } : g)
+      )
+      return { prev }
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev) qc.setQueryData(GROUPS_KEY, ctx.prev)
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: GROUPS_KEY }),
+  })
+
   const toggleMutation = useMutation({
     mutationFn: async (option: OptionWithPlatforms) => {
       const { error } = await supabase
@@ -814,6 +864,7 @@ export function OptionsTab() {
           saving={saving}
           onSave={handleSave}
           onToggleActive={o => toggleMutation.mutate(o)}
+          onToggleAllowQuantity={g => allowQuantityMutation.mutate(g)}
           onDragEnd={handleDragEnd}
           onSwatchUpload={handleSwatchUpload}
         />

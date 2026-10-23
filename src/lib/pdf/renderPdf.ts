@@ -57,7 +57,7 @@ export async function renderQuotePdfToStorage(quoteId: string): Promise<string> 
     supabase.from('builder_terms').select('*').eq('builder_id', quote.builder_id).maybeSingle(),
     supabase.from('catalog_platforms').select('*').eq('id', quote.platform_id).single(),
     supabase.from('catalog_tiers').select('*').eq('id', quote.tier_id).single(),
-    supabase.from('quote_options').select('option_id, price_cents_at_selection').eq('quote_id', quote.id),
+    supabase.from('quote_options').select('option_id, price_cents_at_selection, quantity').eq('quote_id', quote.id),
   ])
   if (builderRes.error) throw builderRes.error
   if (brandRes.error) throw brandRes.error
@@ -71,7 +71,7 @@ export async function renderQuotePdfToStorage(quoteId: string): Promise<string> 
   const terms = termsRes.data as TermsLike
   const platform = platformRes.data as PlatformLike
   const tier = tierRes.data as TierLike
-  const qoRows = qoRes.data as { option_id: string; price_cents_at_selection: number }[]
+  const qoRows = qoRes.data as { option_id: string; price_cents_at_selection: number; quantity: number }[]
 
   const optionIds = qoRows.map(o => o.option_id)
   const options: OptionLineForPdf[] = []
@@ -79,7 +79,7 @@ export async function renderQuotePdfToStorage(quoteId: string): Promise<string> 
     const [optsRes, platsRes] = await Promise.all([
       supabase
         .from('catalog_options')
-        .select('id, name, code, group_id, swatch_image_url, included_in_tier_ids')
+        .select('id, name, code, group_id, swatch_image_url, included_in_tier_ids, sold_as_set')
         .in('id', optionIds),
       supabase
         .from('catalog_option_platforms')
@@ -97,7 +97,7 @@ export async function renderQuotePdfToStorage(quoteId: string): Promise<string> 
     const groupById = new Map(
       (groupsRes.data ?? []).map(g => [g.id as string, { name: g.name as string, sort: g.sort as number }])
     )
-    const priceByOption = new Map(qoRows.map(r => [r.option_id, r.price_cents_at_selection]))
+    const qoByOption = new Map(qoRows.map(r => [r.option_id, r]))
     // option → platform restriction map
     const restricted = new Map<string, Set<string>>()
     for (const r of platsRes.data ?? []) {
@@ -108,13 +108,16 @@ export async function renderQuotePdfToStorage(quoteId: string): Promise<string> 
       // Skip options that are platform-restricted but not to this quote's platform.
       const r = restricted.get(o.id)
       if (r && r.size > 0 && !r.has(quote.platform_id)) continue
+      const row = qoByOption.get(o.id)
       options.push({
         group_name: groupById.get(o.group_id)?.name ?? 'Option',
         group_sort: groupById.get(o.group_id)?.sort ?? 0,
         name: o.name,
         code: o.code,
         swatch_image_url: o.swatch_image_url,
-        price_cents_at_selection: priceByOption.get(o.id) ?? 0,
+        price_cents_at_selection: row?.price_cents_at_selection ?? 0,
+        quantity: row?.quantity ?? 1,
+        sold_as_set: (o as { sold_as_set?: boolean }).sold_as_set ?? false,
         included: (o.included_in_tier_ids ?? []).includes(quote.tier_id),
       })
     }
@@ -172,7 +175,7 @@ export async function renderContractPdfToStorage(buildId: string): Promise<strin
     supabase.from('builder_brand').select('*').eq('builder_id', build.builder_id).maybeSingle(),
     supabase.from('catalog_platforms').select('*').eq('id', build.platform_id).single(),
     supabase.from('catalog_tiers').select('*').eq('id', build.tier_id).single(),
-    supabase.from('build_options').select('option_id, price_cents_at_selection').eq('build_id', build.id),
+    supabase.from('build_options').select('option_id, price_cents_at_selection, quantity').eq('build_id', build.id),
   ])
   if (tplRes.error) throw tplRes.error
   if (termsRes.error) throw termsRes.error
@@ -187,11 +190,11 @@ export async function renderContractPdfToStorage(buildId: string): Promise<strin
   const platform = platformRes.data as PlatformLike
   const terms = termsRes.data as TermsLike | null
 
-  const buildOpts = buildOptsRes.data ?? []
+  const buildOpts = (buildOptsRes.data ?? []) as { option_id: string; price_cents_at_selection: number; quantity: number }[]
   const optionIds = buildOpts.map(bo => bo.option_id)
   let configurationTable = '| Group | Choice |\n| --- | --- |'
   if (optionIds.length) {
-    const optsRes = await supabase.from('catalog_options').select('id, name, code, group_id').in('id', optionIds)
+    const optsRes = await supabase.from('catalog_options').select('id, name, code, group_id, sold_as_set').in('id', optionIds)
     if (optsRes.error) throw optsRes.error
     const groupIds = Array.from(new Set((optsRes.data ?? []).map(o => o.group_id)))
     const groupsRes = await supabase.from('catalog_option_groups').select('id, name').in('id', groupIds)
@@ -199,9 +202,17 @@ export async function renderContractPdfToStorage(buildId: string): Promise<strin
     const groupName = new Map<string, string>(
       (groupsRes.data ?? []).map(g => [g.id as string, g.name as string])
     )
+    const qtyByOption = new Map(buildOpts.map(bo => [bo.option_id, bo.quantity ?? 1]))
     const rows = (optsRes.data ?? []).map(o => {
       const grp = groupName.get(o.group_id) ?? 'Option'
-      return `| ${grp} | ${o.name}${o.code ? ` (${o.code})` : ''} |`
+      const qty = qtyByOption.get(o.id) ?? 1
+      const soldAsSet = (o as { sold_as_set?: boolean }).sold_as_set ?? false
+      const qtyLabel = soldAsSet
+        ? ' — Set of 4'
+        : qty === 5 ? ' — Set of 5 incl. spare'
+        : qty === 4 ? ' — Set of 4'
+        : ''
+      return `| ${grp} | ${o.name}${o.code ? ` (${o.code})` : ''}${qtyLabel} |`
     })
     configurationTable = ['| Group | Choice |', '| --- | --- |', ...rows].join('\n')
   }

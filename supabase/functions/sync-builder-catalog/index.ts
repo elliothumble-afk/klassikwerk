@@ -728,6 +728,9 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
       active: true,
       synced: true,
       external_id: `shopify:group:${cat}`,
+      // Wheels are sold as sets. Only the alloy-wheels group opts in
+      // to the Set-of-4 / Set-of-5 chooser; the other two stay at qty 1.
+      allow_quantity: cat === 'alloy-wheels',
     }, { onConflict: 'builder_id,external_id' }).select('id').single()
     if (ins.error) throw ins.error
     groupIdByCat.set(cat, (ins.data as any).id)
@@ -794,6 +797,7 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     price_cents: number
     swatch_image_url: string | null
     active: boolean
+    sold_as_set: boolean
     group_id: string
     group_priority: number
     platform_ids: Set<string>
@@ -846,6 +850,10 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
             // with "Set a price" warnings. Honour available + priced + skued.
             const active = Boolean(variant.available) && priceCents > 0 && Boolean(sku)
             const priority = CATEGORY_PRIORITY[cat]
+            // Alloy-wheel kit SKUs end in -KIT (e.g. WACTF1258M1R-KIT).
+            // Their price IS the kit price, not the per-wheel price —
+            // so we must NOT multiply by four in the quote editor.
+            const soldAsSet = cat === 'alloy-wheels' && !!sku && /-KIT$/i.test(sku)
 
             const existing = byExternalId.get(externalId)
             if (!existing || priority > existing.group_priority) {
@@ -858,6 +866,7 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
                 price_cents: priceCents,
                 swatch_image_url: image,
                 active,
+                sold_as_set: soldAsSet,
                 group_id: groupId,
                 group_priority: priority,
                 platform_ids: new Set<string>(existing?.platform_ids ?? []),
@@ -904,6 +913,25 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     arr.push(extId)
     groupsByName.set(o.name, arr)
   }
+  // Only accept a handle-based disambiguator when the differing middle
+  // is short and reads like a size / finish / colour. Anything longer
+  // or more generic ("Rs Forged Alloy Wheels Sale", "2023 Present Kahna R Hard Spare Wheel")
+  // leaks product-page junk into the catalog, so we fall through to SKU.
+  const SIZE_RE = /^\d{2,3}(?:-?inch)?$/i
+  const FINISH_WORDS = new Set([
+    'forged', 'chrome', 'gloss', 'matte', 'matt', 'satin', 'polished',
+    'brushed', 'anodised', 'anodized', 'painted',
+  ])
+  const COLOUR_WORDS = new Set([
+    'black', 'silver', 'white', 'red', 'blue', 'green', 'grey', 'gray',
+    'tan', 'brown', 'copper', 'bronze', 'gold', 'carbon', 'hyper', 'deep',
+    'olive',
+  ])
+  const isCleanToken = (t: string): boolean => {
+    const l = t.toLowerCase()
+    return SIZE_RE.test(l) || FINISH_WORDS.has(l) || COLOUR_WORDS.has(l)
+  }
+
   for (const [_name, extIds] of groupsByName) {
     if (extIds.length <= 1) continue
     const options = extIds.map(e => byExternalId.get(e)!)
@@ -912,10 +940,6 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     const pre = commonPrefix(partsList)
     const suf = commonSuffix(partsList, pre)
 
-    // If handles disambiguate the group, use their differing middle.
-    // Otherwise fall back to SKU — strip the longest common prefix/suffix
-    // across SKUs so the hint is the distinguishing fragment, not the
-    // whole code. Never surface "variant N" to a customer.
     const skuParts = options.map(o => (o.kit_sku ?? '').split(/[-_\s]+/).filter(Boolean))
     const skuPre = commonPrefix(skuParts)
     const skuSuf = commonSuffix(skuParts, skuPre)
@@ -927,21 +951,29 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
 
     for (let i = 0; i < extIds.length; i++) {
       const middle = partsList[i].slice(pre, partsList[i].length - suf)
-      let hint: string
-      if (middle.length > 0) {
+      let hint: string | null = null
+
+      // 1) Clean handle middle: ≤2 tokens, all look like size/finish/colour.
+      if (middle.length >= 1 && middle.length <= 2 && middle.every(isCleanToken)) {
         hint = middle.map(titleCaseTok).join(' ')
-      } else {
-        const skuMiddle = skuParts[i].slice(skuPre, skuParts[i].length - skuSuf)
-        if (skuMiddle.length > 0) {
-          hint = skuMiddle.join('-').toUpperCase()
-        } else if (options[i].kit_sku) {
-          // Last resort — show the full SKU, which is unique in Shopify.
-          hint = options[i].kit_sku as string
-        } else {
-          // No SKU and handles collide: show the handle tail.
-          hint = partsList[i].slice(-2).map(titleCaseTok).join(' ')
-        }
       }
+
+      // 2) SKU-based disambiguator: differing middle of the SKU tokens.
+      if (hint === null) {
+        const skuMiddle = skuParts[i].slice(skuPre, skuParts[i].length - skuSuf)
+        if (skuMiddle.length > 0) hint = skuMiddle.join('-').toUpperCase()
+      }
+
+      // 3) Full SKU — unique in Shopify by construction.
+      if (hint === null && options[i].kit_sku) hint = options[i].kit_sku as string
+
+      // 4) Last resort: a short handle tail — only if there is literally
+      //    no SKU to show.
+      if (hint === null) {
+        const tail = partsList[i].slice(-2)
+        hint = tail.map(titleCaseTok).join(' ')
+      }
+
       options[i].name = `${options[i].name} (${hint})`
     }
   }
@@ -959,11 +991,12 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     swatch_image_url: o.swatch_image_url,
     sort: 0,
     active: o.active,
+    sold_as_set: o.sold_as_set,
     synced: true,
     external_id: o.external_id,
   }))
   const upsertedIdByExternal = new Map<string, string>()
-  const CHUNK = 100
+  const CHUNK = 50
   for (let i = 0; i < allRows.length; i += CHUNK) {
     const chunk = allRows.slice(i, i + CHUNK)
     const ins = await admin.from('catalog_options')
@@ -975,15 +1008,25 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     }
   }
 
-  // ─── Rebuild catalog_option_platforms links for the upserted set ───
-  const allOptionIds = Array.from(upsertedIdByExternal.values())
-  for (let i = 0; i < allOptionIds.length; i += CHUNK) {
-    const chunk = allOptionIds.slice(i, i + CHUNK)
-    const del = await admin.from('catalog_option_platforms').delete().in('option_id', chunk)
-    if (del.error) throw del.error
-  }
+  // ─── Rebuild catalog_option_platforms for ALL synced options ───────
+  // Wipe every link row owned by this builder's synced options and
+  // re-insert only the links this run observed. An option is therefore
+  // linked exactly to the vehicles whose collections it actually
+  // appeared in on this run — no accumulation from prior syncs.
+  //
+  // We used to iterate chunked `.delete().in('option_id', chunk)` calls
+  // but Cloudflare flaked on some of them for large catalogs, leaving
+  // stale rows behind. A single server-side DELETE via rpc is
+  // atomic and immune to URL-size issues.
+  const sweep = await admin.rpc('clear_synced_option_platforms', { target_builder: builder.id })
+  if (sweep.error) throw sweep.error
   const allLinks: { option_id: string; platform_id: string }[] = []
   for (const o of byExternalId.values()) {
+    // Only link ACTIVE options to platforms. Options we're marking
+    // inactive this run (zero-price, no-SKU, or variant.available=false)
+    // get no platform links, so they can't surface in the configurator
+    // via a stale join.
+    if (!o.active) continue
     const optionId = upsertedIdByExternal.get(o.external_id)
     if (!optionId) continue
     for (const pid of o.platform_ids) allLinks.push({ option_id: optionId, platform_id: pid })

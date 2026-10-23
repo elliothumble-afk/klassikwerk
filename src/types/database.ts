@@ -498,6 +498,7 @@ export type Database = {
           quote_id: string
           option_id: string
           price_cents_at_selection: number
+          quantity: number
           created_at: string
         }
         Insert: {
@@ -505,12 +506,14 @@ export type Database = {
           quote_id: string
           option_id: string
           price_cents_at_selection: number
+          quantity?: number
           created_at?: string
         }
         Update: {
           quote_id?: string
           option_id?: string
           price_cents_at_selection?: number
+          quantity?: number
         }
         Relationships: []
       }
@@ -634,6 +637,7 @@ export type Database = {
           build_id: string
           option_id: string
           price_cents_at_selection: number
+          quantity: number
           created_at: string
         }
         Insert: {
@@ -641,12 +645,14 @@ export type Database = {
           build_id: string
           option_id: string
           price_cents_at_selection: number
+          quantity?: number
           created_at?: string
         }
         Update: {
           build_id?: string
           option_id?: string
           price_cents_at_selection?: number
+          quantity?: number
         }
         Relationships: []
       }
@@ -833,6 +839,7 @@ export type Database = {
           selection: 'single' | 'multi'
           required: boolean
           sort: number
+          allow_quantity: boolean
           created_at: string
           updated_at: string
         }
@@ -845,6 +852,7 @@ export type Database = {
           selection?: 'single' | 'multi'
           required?: boolean
           sort?: number
+          allow_quantity?: boolean
           created_at?: string
           updated_at?: string
         }
@@ -856,6 +864,7 @@ export type Database = {
           selection?: 'single' | 'multi'
           required?: boolean
           sort?: number
+          allow_quantity?: boolean
           updated_at?: string
         }
         Relationships: []
@@ -873,6 +882,7 @@ export type Database = {
           swatch_image_url: string | null
           sort: number
           active: boolean
+          sold_as_set: boolean
           created_at: string
           updated_at: string
         }
@@ -888,6 +898,7 @@ export type Database = {
           swatch_image_url?: string | null
           sort?: number
           active?: boolean
+          sold_as_set?: boolean
           created_at?: string
           updated_at?: string
         }
@@ -902,6 +913,7 @@ export type Database = {
           swatch_image_url?: string | null
           sort?: number
           active?: boolean
+          sold_as_set?: boolean
           updated_at?: string
         }
         Relationships: []

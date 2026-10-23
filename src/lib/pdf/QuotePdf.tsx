@@ -284,26 +284,43 @@ export function QuotePdf(input: QuotePdfInput) {
           grouped.map(([groupName, items]) => (
             <View key={groupName} wrap={false}>
               <Text style={styles.h3}>{groupName}</Text>
-              {items.map((o, i) => (
-                <View key={i} style={styles.optionRow}>
-                  {o.swatch_image_url ? (
-                    <Image src={o.swatch_image_url} style={styles.swatch} />
-                  ) : (
-                    <View style={styles.swatch} />
-                  )}
-                  <View style={styles.optionTextWrap}>
-                    <Text style={styles.optionName}>{o.name}</Text>
-                    {o.code ? <Text style={styles.optionCode}>{o.code}</Text> : null}
+              {items.map((o, i) => {
+                const qty = o.quantity ?? 1
+                // Kit SKUs: price IS the kit price → do not multiply.
+                const effectiveQty = o.sold_as_set ? 1 : qty
+                const extended = o.price_cents_at_selection * effectiveQty
+                const qtyLabel = o.sold_as_set
+                  ? 'Set of 4'
+                  : qty === 5 ? 'Set of 5 incl. spare'
+                  : qty === 4 ? 'Set of 4'
+                  : null
+                return (
+                  <View key={i} style={styles.optionRow}>
+                    {o.swatch_image_url ? (
+                      <Image src={o.swatch_image_url} style={styles.swatch} />
+                    ) : (
+                      <View style={styles.swatch} />
+                    )}
+                    <View style={styles.optionTextWrap}>
+                      <Text style={styles.optionName}>{o.name}</Text>
+                      {qtyLabel ? (
+                        <Text style={styles.optionCode}>
+                          {qtyLabel}{o.code ? ` · ${o.code}` : ''}
+                        </Text>
+                      ) : o.code ? (
+                        <Text style={styles.optionCode}>{o.code}</Text>
+                      ) : null}
+                    </View>
+                    <Text style={styles.optionPrice}>
+                      {o.included
+                        ? 'Included'
+                        : extended > 0
+                          ? `+ ${money(extended, currency)}`
+                          : 'Included'}
+                    </Text>
                   </View>
-                  <Text style={styles.optionPrice}>
-                    {o.included
-                      ? 'Included'
-                      : o.price_cents_at_selection > 0
-                        ? `+ ${money(o.price_cents_at_selection, currency)}`
-                        : 'Included'}
-                  </Text>
-                </View>
-              ))}
+                )
+              })}
             </View>
           ))
         )}

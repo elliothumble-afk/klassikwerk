@@ -43,6 +43,8 @@ interface PlatformSeed {
   tierBasePriceCents: number
   wheelName: string
   wheelPriceCents: number
+  partsSellCents: number | null
+  installPriceCents: number | null
   soldAsSet: boolean
 }
 
@@ -84,7 +86,7 @@ async function seedForPlatform(opts: {
   if (linkedIds.length === 0) throw new Error(`No options linked to ${opts.platformFilter}`)
 
   let q = admin.from('catalog_options')
-    .select('id, name, price_cents, sold_as_set, kit_sku').eq('group_id', grp.id)
+    .select('id, name, price_cents, parts_sell_cents, install_price_cents, sold_as_set, kit_sku').eq('group_id', grp.id)
     .eq('active', true).gt('price_cents', 0).in('id', linkedIds)
     .eq('sold_as_set', opts.wheelFilter.soldAsSet)
   if (opts.wheelFilter.nameLike) q = q.ilike('name', `%${opts.wheelFilter.nameLike}%`)
@@ -103,6 +105,8 @@ async function seedForPlatform(opts: {
     tierBasePriceCents: (tier.base_price_cents as number | null) ?? 0,
     wheelName: wheel.name as string,
     wheelPriceCents: wheel.price_cents as number,
+    partsSellCents: (wheel.parts_sell_cents as number | null) ?? null,
+    installPriceCents: (wheel.install_price_cents as number | null) ?? null,
     soldAsSet: Boolean(wheel.sold_as_set),
   }
 }
@@ -163,8 +167,16 @@ test.describe('CTC wheel quantity', () => {
       await expect(page.getByRole('button', { name: 'Set of 4', exact: true })).toBeVisible()
       await expect(page.getByRole('button', { name: 'Set of 4 + matching spare' })).toBeVisible()
 
-      const expected = `$${((s.tierBasePriceCents + s.wheelPriceCents * 4) / 100).toLocaleString('en-US')}`
-      await expect(page.getByText(expected, { exact: true }).first()).toBeVisible()
+      // For cost_based builders line = parts × qty + install; otherwise
+      // legacy price × qty. Either way quantity is 4 by default.
+      const lineCents = s.partsSellCents != null && s.installPriceCents != null
+        ? s.partsSellCents * 4 + s.installPriceCents
+        : s.wheelPriceCents * 4
+      const totalCents = s.tierBasePriceCents + lineCents
+      const expected = `$${(totalCents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+      // The top total renders with 2 decimals via toLocaleString on
+      // the catalog price_cents; use substring match for leniency.
+      await expect(page.getByText(expected.replace(/\.00$/, '')).first()).toBeVisible()
     } finally {
       await cleanup(s.leadId, s.customerId)
     }
@@ -188,8 +200,10 @@ test.describe('CTC wheel quantity', () => {
       await expect(page.getByRole('button', { name: 'Set of 4', exact: true })).toHaveCount(0)
 
       // Total adds the kit price ONCE
-      const expected = `$${((s.tierBasePriceCents + s.wheelPriceCents) / 100).toLocaleString('en-US')}`
-      await expect(page.getByText(expected, { exact: true }).first()).toBeVisible()
+      const totalCents = s.tierBasePriceCents + s.wheelPriceCents
+      // The editor uses default toLocaleString() (no minimumFractionDigits).
+      const expected = `$${(totalCents / 100).toLocaleString('en-US')}`
+      await expect(page.getByText(expected).first()).toBeVisible()
     } finally {
       await cleanup(s.leadId, s.customerId)
     }

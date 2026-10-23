@@ -18,6 +18,7 @@ import { BuilderWizard } from '@/pages/ops/builders/BuilderWizard'
 import { BrandEdit } from '@/pages/ops/builders/BrandEdit'
 import { TermsEdit } from '@/pages/ops/builders/TermsEdit'
 import { ContractEdit } from '@/pages/ops/builders/ContractEdit'
+import { CostingEdit } from '@/pages/ops/builders/CostingEdit'
 import { BuildsList } from '@/pages/ops/builds/BuildsList'
 import { BuildDetail } from '@/pages/ops/builds/BuildDetail'
 import { LeadsBoard } from '@/pages/ops/leads/LeadsBoard'
@@ -108,6 +109,7 @@ export function App() {
                   },
                   { path: 'builders/:id/brand', element: <BrandEdit /> },
                   { path: 'builders/:id/terms', element: <TermsEdit /> },
+                  { path: 'builders/:id/costing', element: <CostingEdit /> },
                   { path: 'builders/:id/contract', element: <ContractEdit /> },
                   {
                     path: 'settings/zoho',

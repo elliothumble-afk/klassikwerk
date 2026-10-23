@@ -23,7 +23,7 @@ import {
   ToggleLeft, ToggleRight, Upload, Image,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
-import type { CatalogOption, Tier, Platform, OptionGroup } from '@/types/database'
+import type { CatalogOption, Tier, Platform, OptionGroup, CatalogCategory, Origin } from '@/types/database'
 import { catalogOptionSchema, type CatalogOptionForm } from '@/schemas/catalog'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorState } from '@/components/ui/ErrorState'
@@ -117,13 +117,48 @@ function useOptionGroups(builderId?: string) {
   })
 }
 
+function useCategories(builderId?: string) {
+  return useQuery({
+    queryKey: ['catalog', 'categories', builderId ?? 'none'],
+    enabled: Boolean(builderId),
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('catalog_categories')
+        .select('*')
+        .eq('builder_id', builderId!)
+        .order('sort')
+      if (error) throw error
+      return data as CatalogCategory[]
+    },
+  })
+}
+
+function useOrigins(builderId?: string) {
+  return useQuery({
+    queryKey: ['catalog', 'origins', builderId ?? 'none'],
+    enabled: Boolean(builderId),
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('origins')
+        .select('*')
+        .eq('builder_id', builderId!)
+        .order('sort')
+      if (error) throw error
+      return data as Origin[]
+    },
+  })
+}
+
 function formatPrice(cents: number) {
   if (cents === 0) return 'Included'
   return `+$${(cents / 100).toLocaleString()}`
 }
 
-// Convert CatalogOptionForm dollars → DB cents payload
-function optionFormToDb(data: CatalogOptionForm, builderId: string) {
+// Convert CatalogOptionForm dollars → DB cents payload. Mark
+// category_locked whenever ops picks a category explicitly, so the
+// next sync won't overwrite it.
+function optionFormToDb(data: CatalogOptionForm, builderId: string, originalCategoryId: string | null | undefined) {
+  const categoryChanged = (data.category_id ?? null) !== (originalCategoryId ?? null)
   return {
     builder_id: builderId,
     slug: data.slug,
@@ -134,6 +169,9 @@ function optionFormToDb(data: CatalogOptionForm, builderId: string) {
     sort: data.sort,
     active: data.active,
     sold_as_set: data.sold_as_set,
+    category_id: data.category_id,
+    origin_id: data.origin_id,
+    category_locked: categoryChanged || (data.category_id != null),
   }
 }
 
@@ -378,12 +416,14 @@ interface EditFormProps {
   groupId: string
   tiers: Tier[]
   platforms: Platform[]
+  categories: CatalogCategory[]
+  origins: Origin[]
   onSave: (data: CatalogOptionForm, platformIds: string[], id?: string) => Promise<void>
   onCancel: () => void
   saving: boolean
 }
 
-function OptionEditForm({ option, tiers, platforms, onSave, onCancel, saving }: EditFormProps) {
+function OptionEditForm({ option, tiers, platforms, categories, origins, onSave, onCancel, saving }: EditFormProps) {
   const {
     register,
     handleSubmit,
@@ -402,8 +442,10 @@ function OptionEditForm({ option, tiers, platforms, onSave, onCancel, saving }: 
           sort: option.sort,
           active: option.active,
           sold_as_set: option.sold_as_set ?? false,
+          category_id: option.category_id ?? '',
+          origin_id: option.origin_id ?? '',
         }
-      : { price: 0, included_in_tier_ids: [], sort: 0, active: true, sold_as_set: false },
+      : { price: 0, included_in_tier_ids: [], sort: 0, active: true, sold_as_set: false, category_id: '', origin_id: '' },
   })
 
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(
@@ -517,6 +559,25 @@ function OptionEditForm({ option, tiers, platforms, onSave, onCancel, saving }: 
             </div>
           </div>
 
+          {categories.length > 0 && (
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="text-xs text-[var(--color-muted)] mb-1 block">Category</label>
+                <select {...register('category_id')} className={inputClass}>
+                  <option value="">— uncategorised —</option>
+                  {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-[var(--color-muted)] mb-1 block">Origin override (optional)</label>
+                <select {...register('origin_id')} className={inputClass}>
+                  <option value="">— use category default —</option>
+                  {origins.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                </select>
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center gap-4">
             <label className="flex items-center gap-2 text-sm cursor-pointer">
               <input {...register('active')} type="checkbox" className="rounded" />
@@ -564,6 +625,8 @@ interface GroupSectionProps {
   options: OptionWithPlatforms[]
   tiers: Tier[]
   platforms: Platform[]
+  categories: CatalogCategory[]
+  origins: Origin[]
   editingId: string | 'new' | null
   setEditingId: (id: string | 'new' | null) => void
   saving: boolean
@@ -575,7 +638,7 @@ interface GroupSectionProps {
 }
 
 function GroupSection({
-  group, options, tiers, platforms,
+  group, options, tiers, platforms, categories, origins,
   editingId, setEditingId, saving, onSave, onToggleActive, onToggleAllowQuantity, onDragEnd, onSwatchUpload,
 }: GroupSectionProps) {
   const sensors = useSensors(useSensor(PointerSensor))
@@ -654,6 +717,8 @@ function GroupSection({
                         groupId={group.id}
                         tiers={tiers}
                         platforms={platforms}
+                        categories={categories}
+                        origins={origins}
                         onSave={onSave}
                         onCancel={() => setEditingId(null)}
                         saving={saving}
@@ -675,6 +740,8 @@ function GroupSection({
                       groupId={group.id}
                       tiers={tiers}
                       platforms={platforms}
+                      categories={categories}
+                      origins={origins}
                       onSave={(data, platIds, id) => onSave(data, platIds, id, group.id)}
                       onCancel={() => setEditingId(null)}
                       saving={saving}
@@ -700,6 +767,8 @@ export function OptionsTab() {
   const { data: tiers = [], isLoading: loadingTiers } = useTiers(selected?.id)
   const { data: platforms = [], isLoading: loadingPlatforms } = usePlatforms(selected?.id)
   const { data: groups = [], isLoading: loadingGroups } = useOptionGroups(selected?.id)
+  const { data: categories = [] } = useCategories(selected?.id)
+  const { data: origins = [] } = useOrigins(selected?.id)
 
   const [editingId, setEditingId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -712,18 +781,23 @@ export function OptionsTab() {
       platformIds,
       id,
       groupId,
+      originalCategoryId,
     }: {
       data: CatalogOptionForm
       platformIds: string[]
       id?: string
       groupId?: string
+      originalCategoryId?: string | null
     }) => {
       if (!selected) throw new Error('No builder selected')
-      const payload = optionFormToDb(data, selected.id)
+      const payload = optionFormToDb(data, selected.id, originalCategoryId)
       if (id) {
         const { builder_id: _bid, ...update } = payload
         const { error } = await supabase.from('catalog_options').update(update).eq('id', id)
         if (error) throw error
+        // Trigger a reprice so the editor reflects the new category/
+        // origin immediately for cost_based builders.
+        await supabase.rpc('reprice_builder', { target_builder: selected.id })
 
         await supabase.from('catalog_option_platforms').delete().eq('option_id', id)
         if (platformIds.length > 0) {
@@ -833,7 +907,8 @@ export function OptionsTab() {
     groupId?: string
   ) {
     setSaving(true)
-    await saveMutation.mutateAsync({ data, platformIds, id, groupId })
+    const original = id ? options?.find(o => o.id === id)?.category_id ?? null : null
+    await saveMutation.mutateAsync({ data, platformIds, id, groupId, originalCategoryId: original })
     setSaving(false)
     setEditingId(null)
   }
@@ -859,6 +934,8 @@ export function OptionsTab() {
           options={(options ?? []).filter(o => o.group_id === group.id)}
           tiers={tiers}
           platforms={platforms}
+          categories={categories}
+          origins={origins}
           editingId={editingId}
           setEditingId={setEditingId}
           saving={saving}

@@ -214,6 +214,78 @@ suffices.
 in the three URLs and the token. The feed must match the schema in
 `sync-builder-catalog/index.ts`; use the ECD fixture as a template.
 
+### Cost-based pricing (Phase 5)
+
+Shopify-synced builders can opt into a full cost model instead of the
+`web × fx × markup` shortcut by setting `builder_terms.pricing_mode =
+'cost_based'`. Chelsea Truck Company is the first to use it.
+
+**Per-option formula** (all in USD cents, rounded at the end):
+
+```
+retail      = web_price × fx_rate
+kit_cost    = retail × (1 − trade_discount_pct)
+freight     = category.freight_cents
+duty        = kit_cost × category.hts_duty_pct
+tariff      = kit_cost × origin.tariff_pct
+s232        = category.name = 'Alloy wheels'
+                 ? kit_cost × aluminium_share_pct × origin.s232_aluminium_pct
+                 : 0
+fees        = kit_cost × mpf_pct + brokerage_cents / items_per_shipment
+parts_sell  = retail  + freight + duty + tariff + s232 + fees
+landed_cost = kit_cost + freight + duty + tariff + s232 + fees
+labour      = install_hours × labour_rate + paint_hours × paint_rate
+install     = labour + paint_materials_cents
+price_cents = parts_sell + install
+```
+
+Origin = option override, else the category's `default_origin_id`.
+Quantity on a wheel line multiplies **parts** only, not labour (one
+install visit, four wheels). Options with `sold_as_set = true` price
+once regardless of quantity.
+
+**Where the inputs live.** All in `/ops/builders/:id/costing`:
+
+- **Terms** — fx_rate, trade_discount_pct, labour_rate_cents,
+  paint_rate_cents, partner_shop_rate_cents, mpf_pct, brokerage_cents,
+  items_per_shipment, aluminium_share_pct, hh_fee_pct.
+- **Categories** — one row per part family. Install/paint hours, paint
+  materials, freight, HTS duty %, default origin, Shopify filter-tags
+  that the sync matches against.
+- **Origins** — per country: additional tariff %, Section 232 aluminium
+  % (applies to wheels only).
+
+Saving any tab calls `reprice_builder(builder_id)` which rewrites
+`catalog_options.price_cents`, `parts_sell_cents`, `install_price_cents`
+and `landed_cost_cents` for every option. The sync calls it too, after
+the Shopify upsert. **Already-sent quotes** are immune: the editor
+snapshots the costs into `quote_options` at save time
+(`parts_sell_cents`, `landed_cost_cents`, `labour_cents`,
+`materials_cents`, `partner_cost_cents`), and those columns are what
+the margin panel, PDF and `/q` page read.
+
+**Calibrating a category from a real job.** Build a vehicle in the
+chosen category, note:
+1. the shop labour hours you billed (install + paint),
+2. actual paint materials spent,
+3. actual outbound freight you paid.
+Set those three on the category row and Save & reprice. For a new
+origin (new country shipping parts to the US), add the row with
+`tariff_pct` from HTS and `s232_aluminium_pct` from the current 232
+derivative-duty table; the next reprice flows the change into every
+affected option.
+
+**Margin panel.** On the quote editor (ops only, cost_based builders)
+you see sale price, parts landed, partner labour + materials, HH fee at
+`hh_fee_pct`, and gross margin after HH in `$` and `%` — red < 20%,
+amber < 25%, green otherwise. The same math feeds the dashboard "avg
+margin after HH" tile across sent + approved quotes.
+
+**Simple-mode builders stay simple.** KlassikWerk and ECD keep
+`pricing_mode = 'simple'`. For those, `price_cents` is written by hand
+(or by the Connect feed) and quantity multiplies the whole line.
+Nothing in Phase 5 changes their numbers.
+
 ### Quote and contract PDFs
 
 Both PDFs are rendered **client-side** with

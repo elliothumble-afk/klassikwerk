@@ -20,10 +20,10 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import {
   GripVertical, Plus, Pencil, Check, X,
-  ToggleLeft, ToggleRight, Upload, Image,
+  ToggleLeft, ToggleRight, Upload, Image, DollarSign,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
-import type { CatalogOption, Tier, Platform, OptionGroup, CatalogCategory, Origin } from '@/types/database'
+import type { CatalogOption, Tier, Platform, OptionGroup, CatalogCategory, Origin, BuilderTerms } from '@/types/database'
 import { catalogOptionSchema, type CatalogOptionForm } from '@/schemas/catalog'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorState } from '@/components/ui/ErrorState'
@@ -133,6 +133,19 @@ function useCategories(builderId?: string) {
   })
 }
 
+function useBuilderTerms(builderId?: string) {
+  return useQuery({
+    queryKey: ['builder-terms', builderId ?? 'none'],
+    enabled: Boolean(builderId),
+    queryFn: async () => {
+      const { data, error } = await supabase.from('builder_terms')
+        .select('*').eq('builder_id', builderId!).maybeSingle()
+      if (error) throw error
+      return data as BuilderTerms | null
+    },
+  })
+}
+
 function useOrigins(builderId?: string) {
   return useQuery({
     queryKey: ['catalog', 'origins', builderId ?? 'none'],
@@ -147,6 +160,127 @@ function useOrigins(builderId?: string) {
       return data as Origin[]
     },
   })
+}
+
+// ─── Cost drawer ──────────────────────────────────────────────────────────────
+// Per-option breakdown for cost_based builders. Mirrors the Catalog
+// sheet in docs/seeds/CTC-Build-House-Costing.xlsx row-for-row so an
+// ops user can audit how the final price was reached.
+
+interface CostDrawerProps {
+  option: CatalogOption
+  category: CatalogCategory | null
+  origin: Origin | null
+  terms: BuilderTerms
+  onClose: () => void
+}
+
+function CostDrawer({ option, category, origin, terms, onClose }: CostDrawerProps) {
+  const money = (c: number) => `$${c.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  const pct = (p: number) => `${(p * 100).toFixed(2)}%`
+
+  const webPriceGbp = (option.web_price_cents ?? 0) / 100
+  const retail = webPriceGbp * Number(terms.fx_rate)
+  const kitCost = retail * (1 - Number(terms.trade_discount_pct))
+  const freight = (category?.freight_cents ?? 0) / 100
+  const dutyPct = Number(category?.hts_duty_pct ?? 0)
+  const duty = kitCost * dutyPct
+  const tariffPct = Number(origin?.tariff_pct ?? 0)
+  const tariff = kitCost * tariffPct
+  const s232Pct = Number(origin?.s232_aluminium_pct ?? 0)
+  const isWheels = category?.name === 'Alloy wheels'
+  const s232 = isWheels ? kitCost * Number(terms.aluminium_share_pct) * s232Pct : 0
+  const mpf = kitCost * Number(terms.mpf_pct)
+  const brokeragePer = (terms.brokerage_cents / 100) / Math.max(1, terms.items_per_shipment)
+  const fees = mpf + brokeragePer
+  const landed = kitCost + freight + duty + tariff + s232 + fees
+  const partsSell = retail + freight + duty + tariff + s232 + fees
+  const installH = Number(category?.install_hours ?? 0)
+  const paintH = Number(category?.paint_hours ?? 0)
+  const labour = installH * (terms.labour_rate_cents / 100) + paintH * (terms.paint_rate_cents / 100)
+  const materials = (category?.paint_materials_cents ?? 0) / 100
+  const install = labour + materials
+  const total = partsSell + install
+
+  const rows: { label: string; detail?: string; value: string; strong?: boolean; muted?: boolean }[] = [
+    { label: 'Web price', detail: `£${webPriceGbp.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, value: `× fx ${terms.fx_rate}`, muted: true },
+    { label: 'Retail USD', value: money(retail) },
+    { label: 'Kit cost', detail: `× (1 − ${pct(Number(terms.trade_discount_pct))})`, value: money(kitCost) },
+    { label: 'Freight', detail: category?.name ?? '—', value: money(freight) },
+    { label: 'HTS duty', detail: pct(dutyPct), value: money(duty) },
+    { label: 'Tariff', detail: `${origin?.name ?? '—'} · ${pct(tariffPct)}`, value: money(tariff) },
+    {
+      label: 'Section 232 (aluminium)',
+      detail: isWheels ? `${pct(Number(terms.aluminium_share_pct))} × ${pct(s232Pct)}` : 'wheels only',
+      value: money(s232),
+      muted: !isWheels,
+    },
+    { label: 'MPF + brokerage', detail: `MPF ${pct(Number(terms.mpf_pct))} + $${brokeragePer.toFixed(2)}/item`, value: money(fees) },
+    { label: 'Landed cost', detail: 'kit + freight + duty + tariff + 232 + fees', value: money(landed), strong: true },
+    { label: 'Parts sell', detail: 'retail + landing', value: money(partsSell), strong: true },
+    { label: 'Labour', detail: `${installH}h × $${terms.labour_rate_cents/100} + ${paintH}h × $${terms.paint_rate_cents/100}`, value: money(labour) },
+    { label: 'Paint materials', value: money(materials) },
+    { label: 'Install price', detail: 'labour + materials', value: money(install), strong: true },
+    { label: 'Final price', detail: 'parts sell + install', value: money(total), strong: true },
+  ]
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex justify-end bg-black/40 backdrop-blur-sm"
+      onClick={onClose}
+      role="dialog"
+      aria-modal
+      aria-label={`Cost breakdown for ${option.name}`}
+    >
+      <div
+        className="w-full sm:w-[480px] h-full bg-[var(--color-surface)] shadow-2xl overflow-y-auto"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--color-border)]">
+          <div>
+            <div className="text-xs uppercase tracking-wide text-[var(--color-muted)]">Cost breakdown</div>
+            <div className="text-sm font-medium mt-0.5">{option.name}</div>
+            <div className="text-xs text-[var(--color-muted)] font-mono">{option.code ?? '—'}</div>
+          </div>
+          <button
+            onClick={onClose}
+            className="h-7 w-7 rounded-full hover:bg-[var(--color-border)] inline-flex items-center justify-center"
+            aria-label="Close"
+          >
+            <X size={14} />
+          </button>
+        </div>
+
+        {!category ? (
+          <div className="p-5 text-sm text-[var(--color-muted)]">
+            No category assigned — set one in the option's edit form.
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+            <tbody>
+              {rows.map(r => (
+                <tr
+                  key={r.label}
+                  className={`border-b border-[var(--color-border)] last:border-0 ${
+                    r.strong ? 'bg-[var(--color-surface-raised)]' : ''
+                  }`}
+                >
+                  <td className={`py-2 pl-5 pr-2 ${r.muted ? 'text-[var(--color-muted)]' : ''}`}>
+                    <div className={r.strong ? 'font-medium' : ''}>{r.label}</div>
+                    {r.detail && <div className="text-[11px] text-[var(--color-muted)] mt-0.5">{r.detail}</div>}
+                  </td>
+                  <td className={`py-2 pr-5 text-right font-mono tabular-nums ${r.strong ? 'font-medium' : r.muted ? 'text-[var(--color-muted)]' : ''}`}>
+                    {r.value}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>,
+    document.body,
+  )
 }
 
 function formatPrice(cents: number) {
@@ -308,12 +442,14 @@ interface OptionRowProps {
   option: OptionWithPlatforms
   tiers: Tier[]
   platforms: Platform[]
+  costBased: boolean
   onEdit: (o: OptionWithPlatforms) => void
   onToggleActive: (o: OptionWithPlatforms) => void
   onSwatchUpload: (id: string, url: string) => void
+  onOpenCost: (o: OptionWithPlatforms) => void
 }
 
-function OptionRow({ option, tiers, platforms, onEdit, onToggleActive, onSwatchUpload }: OptionRowProps) {
+function OptionRow({ option, tiers, platforms, costBased, onEdit, onToggleActive, onSwatchUpload, onOpenCost }: OptionRowProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: option.id })
 
@@ -394,6 +530,19 @@ function OptionRow({ option, tiers, platforms, onEdit, onToggleActive, onSwatchU
           {option.active ? <ToggleRight size={16} /> : <ToggleLeft size={16} />}
           {option.active ? 'Active' : 'Off'}
         </button>
+      </td>
+
+      <td className="py-3 pr-2 w-8">
+        {costBased && (
+          <button
+            onClick={() => onOpenCost(option)}
+            className="text-[var(--color-muted)] hover:text-[var(--color-accent)] transition"
+            aria-label="Cost breakdown"
+            title="Cost breakdown"
+          >
+            <DollarSign size={13} />
+          </button>
+        )}
       </td>
 
       <td className="py-3 pr-4 w-8">
@@ -478,7 +627,7 @@ function OptionEditForm({ option, tiers, platforms, categories, origins, onSave,
 
   return (
     <tr className="border-b border-[var(--color-border)] bg-[var(--color-accent-light)]">
-      <td colSpan={9} className="py-4 px-4">
+      <td colSpan={10} className="py-4 px-4">
         <form
           onSubmit={handleSubmit(d => onSave(d, selectedPlatforms, option?.id))}
           className="space-y-3"
@@ -627,6 +776,7 @@ interface GroupSectionProps {
   platforms: Platform[]
   categories: CatalogCategory[]
   origins: Origin[]
+  costBased: boolean
   editingId: string | 'new' | null
   setEditingId: (id: string | 'new' | null) => void
   saving: boolean
@@ -635,11 +785,12 @@ interface GroupSectionProps {
   onToggleAllowQuantity: (g: OptionGroup) => void
   onDragEnd: (event: DragEndEvent, groupId: string) => void
   onSwatchUpload: (id: string, url: string) => void
+  onOpenCost: (o: OptionWithPlatforms) => void
 }
 
 function GroupSection({
-  group, options, tiers, platforms, categories, origins,
-  editingId, setEditingId, saving, onSave, onToggleActive, onToggleAllowQuantity, onDragEnd, onSwatchUpload,
+  group, options, tiers, platforms, categories, origins, costBased,
+  editingId, setEditingId, saving, onSave, onToggleActive, onToggleAllowQuantity, onDragEnd, onSwatchUpload, onOpenCost,
 }: GroupSectionProps) {
   const sensors = useSensors(useSensor(PointerSensor))
   const addingToThisGroup = editingId === `new-${group.id}`
@@ -696,6 +847,7 @@ function GroupSection({
                 <th className="text-left py-2 pr-3 text-xs font-medium text-[var(--color-muted)]">Included in</th>
                 <th className="text-left py-2 pr-3 text-xs font-medium text-[var(--color-muted)]">Platforms</th>
                 <th className="text-left py-2 pr-3 text-xs font-medium text-[var(--color-muted)]">Status</th>
+                <th className="text-left py-2 pr-2 w-8" />
                 <th className="text-left py-2 pr-4 w-8" />
               </tr>
             </thead>
@@ -729,9 +881,11 @@ function GroupSection({
                         option={option}
                         tiers={tiers}
                         platforms={platforms}
+                        costBased={costBased}
                         onEdit={o => setEditingId(o.id)}
                         onToggleActive={onToggleActive}
                         onSwatchUpload={onSwatchUpload}
+                        onOpenCost={onOpenCost}
                       />
                     )
                   )}
@@ -769,8 +923,11 @@ export function OptionsTab() {
   const { data: groups = [], isLoading: loadingGroups } = useOptionGroups(selected?.id)
   const { data: categories = [] } = useCategories(selected?.id)
   const { data: origins = [] } = useOrigins(selected?.id)
+  const { data: terms } = useBuilderTerms(selected?.id)
+  const costBased = terms?.pricing_mode === 'cost_based'
 
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [costOptionId, setCostOptionId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
   const isLoading = loadingOptions || loadingTiers || loadingPlatforms || loadingGroups
@@ -925,6 +1082,10 @@ export function OptionsTab() {
     return <ErrorState message={(optionsError as Error).message} retry={refetch} />
   }
 
+  const costOption = costOptionId
+    ? (options ?? []).find(o => o.id === costOptionId) ?? null
+    : null
+
   return (
     <div>
       {groups.map(group => (
@@ -936,6 +1097,7 @@ export function OptionsTab() {
           platforms={platforms}
           categories={categories}
           origins={origins}
+          costBased={costBased}
           editingId={editingId}
           setEditingId={setEditingId}
           saving={saving}
@@ -944,6 +1106,7 @@ export function OptionsTab() {
           onToggleAllowQuantity={g => allowQuantityMutation.mutate(g)}
           onDragEnd={handleDragEnd}
           onSwatchUpload={handleSwatchUpload}
+          onOpenCost={o => setCostOptionId(o.id)}
         />
       ))}
 
@@ -951,6 +1114,21 @@ export function OptionsTab() {
         <EmptyState
           title="No option groups"
           description="Option groups are seeded automatically."
+        />
+      )}
+
+      {costOption && terms && (
+        <CostDrawer
+          option={costOption}
+          category={categories.find(c => c.id === costOption.category_id) ?? null}
+          origin={
+            origins.find(o => o.id === costOption.origin_id) ??
+            (costOption.category_id
+              ? origins.find(o => o.id === categories.find(c => c.id === costOption.category_id)?.default_origin_id) ?? null
+              : null)
+          }
+          terms={terms}
+          onClose={() => setCostOptionId(null)}
         />
       )}
     </div>

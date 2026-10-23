@@ -906,28 +906,43 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
   }
   for (const [_name, extIds] of groupsByName) {
     if (extIds.length <= 1) continue
+    const options = extIds.map(e => byExternalId.get(e)!)
     const handles = extIds.map(e => e.replace(/^shopify:option:/, '').replace(/-\d+$/, ''))
     const partsList = handles.map(h => h.split('-'))
     const pre = commonPrefix(partsList)
     const suf = commonSuffix(partsList, pre)
+
+    // If handles disambiguate the group, use their differing middle.
+    // Otherwise fall back to SKU — strip the longest common prefix/suffix
+    // across SKUs so the hint is the distinguishing fragment, not the
+    // whole code. Never surface "variant N" to a customer.
+    const skuParts = options.map(o => (o.kit_sku ?? '').split(/[-_\s]+/).filter(Boolean))
+    const skuPre = commonPrefix(skuParts)
+    const skuSuf = commonSuffix(skuParts, skuPre)
+
+    const titleCaseTok = (t: string): string => {
+      if (/^\d+$/.test(t)) return `${t}"`
+      return t[0] ? t[0].toUpperCase() + t.slice(1) : t
+    }
+
     for (let i = 0; i < extIds.length; i++) {
       const middle = partsList[i].slice(pre, partsList[i].length - suf)
       let hint: string
-      if (middle.length === 0) {
-        // Handles are prefix/suffix identical — must differ by a numeric
-        // tail stripped above (e.g. "-max" vs "-max-1"). Use the tail.
-        const rawTail = extIds[i].match(/-(\d+)$/)?.[1]
-        hint = rawTail ? `copy ${rawTail}` : `variant ${i + 1}`
+      if (middle.length > 0) {
+        hint = middle.map(titleCaseTok).join(' ')
       } else {
-        // Title-case the differing tokens for readability.
-        hint = middle.map(t => {
-          const asNum = /^\d+$/.test(t) ? `${t}"` : null
-          if (asNum) return asNum
-          return t[0] ? t[0].toUpperCase() + t.slice(1) : t
-        }).join(' ')
+        const skuMiddle = skuParts[i].slice(skuPre, skuParts[i].length - skuSuf)
+        if (skuMiddle.length > 0) {
+          hint = skuMiddle.join('-').toUpperCase()
+        } else if (options[i].kit_sku) {
+          // Last resort — show the full SKU, which is unique in Shopify.
+          hint = options[i].kit_sku as string
+        } else {
+          // No SKU and handles collide: show the handle tail.
+          hint = partsList[i].slice(-2).map(titleCaseTok).join(' ')
+        }
       }
-      const existing = byExternalId.get(extIds[i])!
-      existing.name = `${existing.name} (${hint})`
+      options[i].name = `${options[i].name} (${hint})`
     }
   }
 

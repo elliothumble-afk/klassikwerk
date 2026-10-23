@@ -986,7 +986,7 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     external_id: o.external_id,
   }))
   const upsertedIdByExternal = new Map<string, string>()
-  const CHUNK = 100
+  const CHUNK = 50
   for (let i = 0; i < allRows.length; i += CHUNK) {
     const chunk = allRows.slice(i, i + CHUNK)
     const ins = await admin.from('catalog_options')
@@ -998,15 +998,25 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     }
   }
 
-  // ─── Rebuild catalog_option_platforms links for the upserted set ───
-  const allOptionIds = Array.from(upsertedIdByExternal.values())
-  for (let i = 0; i < allOptionIds.length; i += CHUNK) {
-    const chunk = allOptionIds.slice(i, i + CHUNK)
-    const del = await admin.from('catalog_option_platforms').delete().in('option_id', chunk)
-    if (del.error) throw del.error
-  }
+  // ─── Rebuild catalog_option_platforms for ALL synced options ───────
+  // Wipe every link row owned by this builder's synced options and
+  // re-insert only the links this run observed. An option is therefore
+  // linked exactly to the vehicles whose collections it actually
+  // appeared in on this run — no accumulation from prior syncs.
+  //
+  // We used to iterate chunked `.delete().in('option_id', chunk)` calls
+  // but Cloudflare flaked on some of them for large catalogs, leaving
+  // stale rows behind. A single server-side DELETE via rpc is
+  // atomic and immune to URL-size issues.
+  const sweep = await admin.rpc('clear_synced_option_platforms', { target_builder: builder.id })
+  if (sweep.error) throw sweep.error
   const allLinks: { option_id: string; platform_id: string }[] = []
   for (const o of byExternalId.values()) {
+    // Only link ACTIVE options to platforms. Options we're marking
+    // inactive this run (zero-price, no-SKU, or variant.available=false)
+    // get no platform links, so they can't surface in the configurator
+    // via a stale join.
+    if (!o.active) continue
     const optionId = upsertedIdByExternal.get(o.external_id)
     if (!optionId) continue
     for (const pid of o.platform_ids) allLinks.push({ option_id: optionId, platform_id: pid })

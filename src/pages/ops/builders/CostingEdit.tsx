@@ -94,6 +94,8 @@ function TermsTab({ builderId, reprice }: { builderId: string; reprice: () => Pr
         labour_rate_cents: draft.labour_rate_cents,
         paint_rate_cents: draft.paint_rate_cents,
         partner_shop_rate_cents: draft.partner_shop_rate_cents,
+        in_house_labour_cost_cents: draft.in_house_labour_cost_cents,
+        default_labour_source: draft.default_labour_source,
         mpf_pct: draft.mpf_pct,
         brokerage_cents: draft.brokerage_cents,
         items_per_shipment: draft.items_per_shipment,
@@ -145,6 +147,18 @@ function TermsTab({ builderId, reprice }: { builderId: string; reprice: () => Pr
           {num('labour_rate_cents', 'Billed labour $/hr', 100)}
           {num('paint_rate_cents', 'Billed paint $/hr', 100)}
           {num('partner_shop_rate_cents', 'Partner shop cost $/hr (internal)', 100)}
+          {num('in_house_labour_cost_cents', 'In-house labour cost $/hr (internal)', 100)}
+          <div>
+            <label className="text-xs text-[var(--color-muted)] mb-1 block">Default labour source</label>
+            <select
+              value={d.default_labour_source ?? 'partner_shop'}
+              onChange={e => setDraft({ ...d, default_labour_source: e.target.value as 'in_house' | 'partner_shop' })}
+              className="h-9 w-full px-3 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] text-sm"
+            >
+              <option value="partner_shop">Partner shop</option>
+              <option value="in_house">In-house</option>
+            </select>
+          </div>
           {num('mpf_pct', 'MPF (0.003464)')}
           {num('brokerage_cents', 'Brokerage $ per shipment', 100)}
           {num('items_per_shipment', 'Items per shipment')}

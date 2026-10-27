@@ -79,7 +79,7 @@ export function QuoteEditor() {
           .eq('builder_id', builderId).order('sort'),
         supabase.from('catalog_options').select('*').eq('builder_id', builderId).eq('active', true).order('sort'),
         supabase.from('builder_terms')
-          .select('option_mode, pricing_mode, partner_shop_rate_cents, hh_fee_pct, labour_rate_cents, paint_rate_cents')
+          .select('option_mode, pricing_mode, partner_shop_rate_cents, in_house_labour_cost_cents, default_labour_source, hh_fee_pct, labour_rate_cents, paint_rate_cents')
           .eq('builder_id', builderId).maybeSingle(),
       ])
       if (plat.error) throw plat.error
@@ -101,7 +101,7 @@ export function QuoteEditor() {
         optionPlatforms = (op.data ?? []) as typeof optionPlatforms
       }
 
-      const tData = terms.data as (Pick<BuilderTerms, 'option_mode' | 'pricing_mode' | 'partner_shop_rate_cents' | 'hh_fee_pct' | 'labour_rate_cents' | 'paint_rate_cents'> | null)
+      const tData = terms.data as (Pick<BuilderTerms, 'option_mode' | 'pricing_mode' | 'partner_shop_rate_cents' | 'in_house_labour_cost_cents' | 'default_labour_source' | 'hh_fee_pct' | 'labour_rate_cents' | 'paint_rate_cents'> | null)
       const optionMode = tData?.option_mode ?? 'priced'
       const pricingMode = tData?.pricing_mode ?? 'simple'
 
@@ -132,6 +132,8 @@ export function QuoteEditor() {
         optionMode: optionMode as 'included_only' | 'priced',
         pricingMode: pricingMode as 'simple' | 'cost_based',
         partnerShopRateCents: tData?.partner_shop_rate_cents ?? 11000,
+        inHouseLabourCostCents: tData?.in_house_labour_cost_cents ?? 6500,
+        defaultLabourSource: (tData?.default_labour_source ?? 'partner_shop') as 'in_house' | 'partner_shop',
         labourRateCents: tData?.labour_rate_cents ?? 20000,
         paintRateCents: tData?.paint_rate_cents ?? 20000,
         hhFeePct: Number(tData?.hh_fee_pct ?? 0.05),
@@ -149,6 +151,11 @@ export function QuoteEditor() {
   const [finishByOption, setFinishByOption] = useState<Record<string, string>>({})
   const [finishNoteByOption, setFinishNoteByOption] = useState<Record<string, string>>({})
   const [notes, setNotes] = useState<string>('')
+  // Labour source for the margin panel. Default = builder_terms
+  // default_labour_source; overridden by quote.labour_source once a
+  // quote has been saved. Explicit state here so a flip in the editor
+  // immediately updates the margin numbers and the save flow.
+  const [labourSource, setLabourSource] = useState<'in_house' | 'partner_shop' | null>(null)
 
   useEffect(() => {
     if (existing) {
@@ -174,6 +181,7 @@ export function QuoteEditor() {
         setFinishByOption(fin)
         setFinishNoteByOption(finNote)
       }
+      if (existing.labour_source) setLabourSource(existing.labour_source)
     } else if (lead?.platform_interest_id && !platformId) {
       setPlatformId(lead.platform_interest_id)
     }
@@ -182,6 +190,12 @@ export function QuoteEditor() {
 
   const platform = useMemo(() => catalog?.platforms.find(p => p.id === platformId) ?? null, [catalog, platformId])
   const tier = useMemo(() => catalog?.tiers.find(t => t.id === tierId) ?? null, [catalog, tierId])
+
+  // Effective labour source for margin calc + snapshot. State wins
+  // if the operator has picked one; otherwise fall back to the quote
+  // record (loaded above) or the builder default.
+  const effectiveLabourSource: 'in_house' | 'partner_shop' =
+    labourSource ?? existing?.labour_source ?? catalog?.defaultLabourSource ?? 'partner_shop'
 
   const includedOnly = catalog?.optionMode === 'included_only'
 
@@ -316,8 +330,15 @@ export function QuoteEditor() {
       (Number(cat?.install_hours ?? 0)) * catalog.labourRateCents
       + paintH * catalog.paintRateCents
     )
+    // "partner_cost_cents" is the operator's cost of labour at the
+    // chosen source rate — kept as a single column so dashboard math
+    // doesn't need to know which rate was picked. The quote's
+    // labour_source documents the pick for display.
+    const sourceRate = effectiveLabourSource === 'in_house'
+      ? catalog.inHouseLabourCostCents
+      : catalog.partnerShopRateCents
     const partnerCost = Math.round(
-      (Number(cat?.install_hours ?? 0) + paintH) * catalog.partnerShopRateCents
+      (Number(cat?.install_hours ?? 0) + paintH) * sourceRate
     )
     return {
       parts_sell_cents: partsSell,
@@ -361,6 +382,9 @@ export function QuoteEditor() {
     if (!tier || !catalog || catalog.pricingMode !== 'cost_based') return null
     const categoryById = new Map(catalog.categories.map(c => [c.id, c]))
     let landed = 0, labour = 0, materials = 0
+    const sourceRate = effectiveLabourSource === 'in_house'
+      ? catalog.inHouseLabourCostCents
+      : catalog.partnerShopRateCents
     for (const optId of Object.values(selection).flat()) {
       const opt = catalog.options.find(o => o.id === optId)
       if (!opt) continue
@@ -371,7 +395,7 @@ export function QuoteEditor() {
       if (cat) {
         const paintH = fin?.current.paint_hours_override ?? Number(cat.paint_hours)
         const mats   = fin?.current.materials_cents_override ?? cat.paint_materials_cents
-        labour    += (Number(cat.install_hours) + paintH) * catalog.partnerShopRateCents
+        labour    += (Number(cat.install_hours) + paintH) * sourceRate
         materials += mats
       }
     }
@@ -382,7 +406,7 @@ export function QuoteEditor() {
     const marginPct = sale > 0 ? grossAfter / sale : 0
     return { sale, landed, labour, materials, hhFee, grossBefore, grossAfter, marginPct }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selection, quantities, finishByOption, catalog, tier, total])
+  }, [selection, quantities, finishByOption, catalog, tier, total, effectiveLabourSource])
 
   function toggleOption(group: OptionGroup, optionId: string) {
     setSelection(prev => {
@@ -416,7 +440,7 @@ export function QuoteEditor() {
       if (existing) {
         const { error: upErr } = await supabase
           .from('quotes')
-          .update({ platform_id: platformId, tier_id: tierId, price_cents: total, notes })
+          .update({ platform_id: platformId, tier_id: tierId, price_cents: total, notes, labour_source: effectiveLabourSource })
           .eq('id', existing.id)
         if (upErr) throw upErr
         await supabase.from('quote_options').delete().eq('quote_id', existing.id)
@@ -459,6 +483,7 @@ export function QuoteEditor() {
         price_cents: total,
         status: 'draft',
         notes,
+        labour_source: effectiveLabourSource,
       }).select('id').single()
       if (q.error) throw q.error
       const quoteId = (q.data as { id: string }).id
@@ -537,6 +562,7 @@ export function QuoteEditor() {
         price_cents: existing.price_cents,
         status: 'draft',
         notes: existing.notes,
+        labour_source: existing.labour_source,
       }).select('id').single()
       if (insQuote.error) throw insQuote.error
       const newQuoteId = (insQuote.data as { id: string }).id
@@ -956,11 +982,35 @@ export function QuoteEditor() {
           const money = (c: number) => `$${(c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
           return (
             <div className="mt-4 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm">
-              <div className="text-xs uppercase tracking-wide text-[var(--color-muted)] mb-2">Margin · ops only</div>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-xs uppercase tracking-wide text-[var(--color-muted)]">Margin · ops only</div>
+                <div className="flex gap-1" role="group" aria-label="Labour source">
+                  {(['in_house','partner_shop'] as const).map(src => (
+                    <button
+                      key={src}
+                      type="button"
+                      disabled={readOnly}
+                      onClick={() => setLabourSource(src)}
+                      className={`text-[11px] px-2 py-1 rounded border transition ${
+                        effectiveLabourSource === src
+                          ? 'border-[var(--color-accent)] bg-[var(--color-accent)] text-white'
+                          : 'border-[var(--color-border)] text-[var(--color-muted)] hover:border-[var(--color-accent)]'
+                      } disabled:opacity-50`}
+                    >
+                      {src === 'in_house' ? 'In-house' : 'Partner shop'}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
                 <div><div className="text-[var(--color-muted)]">Sale price</div><div className="text-sm">{money(m.sale)}</div></div>
                 <div><div className="text-[var(--color-muted)]">Parts landed</div><div className="text-sm">{money(m.landed)}</div></div>
-                <div><div className="text-[var(--color-muted)]">Partner labour + materials</div><div className="text-sm">{money(m.labour + m.materials)}</div></div>
+                <div>
+                  <div className="text-[var(--color-muted)]">
+                    Labour cost + materials {effectiveLabourSource === 'in_house' ? '(in-house)' : '(partner shop)'}
+                  </div>
+                  <div className="text-sm">{money(m.labour + m.materials)}</div>
+                </div>
                 <div><div className="text-[var(--color-muted)]">HH fee</div><div className="text-sm">{money(m.hhFee)}</div></div>
               </div>
               <div className="mt-3 flex items-end justify-between pt-3 border-t border-[var(--color-border)]">

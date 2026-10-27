@@ -294,6 +294,8 @@ export type Database = {
           aluminium_share_pct: number
           hh_fee_pct: number
           pricing_mode: 'simple' | 'cost_based'
+          in_house_labour_cost_cents: number
+          default_labour_source: 'in_house' | 'partner_shop'
           created_at: string
           updated_at: string
         }
@@ -322,6 +324,8 @@ export type Database = {
           aluminium_share_pct?: number
           hh_fee_pct?: number
           pricing_mode?: 'simple' | 'cost_based'
+          in_house_labour_cost_cents?: number
+          default_labour_source?: 'in_house' | 'partner_shop'
           created_at?: string
           updated_at?: string
         }
@@ -349,6 +353,8 @@ export type Database = {
           aluminium_share_pct?: number
           hh_fee_pct?: number
           pricing_mode?: 'simple' | 'cost_based'
+          in_house_labour_cost_cents?: number
+          default_labour_source?: 'in_house' | 'partner_shop'
           updated_at?: string
         }
         Relationships: []
@@ -623,6 +629,7 @@ export type Database = {
           approved_at: string | null
           notes: string | null
           token: string
+          labour_source: 'in_house' | 'partner_shop' | null
           created_at: string
           updated_at: string
         }
@@ -640,6 +647,7 @@ export type Database = {
           approved_at?: string | null
           notes?: string | null
           token?: string
+          labour_source?: 'in_house' | 'partner_shop' | null
           created_at?: string
           updated_at?: string
         }
@@ -656,6 +664,7 @@ export type Database = {
           approved_at?: string | null
           notes?: string | null
           token?: string
+          labour_source?: 'in_house' | 'partner_shop' | null
           updated_at?: string
         }
         Relationships: []

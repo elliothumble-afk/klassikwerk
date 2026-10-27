@@ -119,6 +119,8 @@ function defaultTerms(builderId: string): BuilderTerms {
     aluminium_share_pct: 0.40,
     hh_fee_pct: 0.05,
     pricing_mode: 'simple',
+    in_house_labour_cost_cents: 6500,
+    default_labour_source: 'partner_shop',
     synced: false,
     external_id: null,
     created_at: '',

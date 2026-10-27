@@ -1012,7 +1012,7 @@ export function OptionsTab() {
   const [costOptionId, setCostOptionId] = useState<string | null>(null)
 
   const [filters, setFilters] = useState<Filters>({
-    platformId: '', groupId: '', search: '', activeOnly: false, manualOnly: false, missingPriceOnly: false,
+    platformId: '', groupId: '', search: '', activeOnly: true, manualOnly: false, missingPriceOnly: false,
   })
   const { collapsed, toggle: toggleCollapse } = useCollapseState(selected?.id)
 
@@ -1027,7 +1027,11 @@ export function OptionsTab() {
       if (filters.manualOnly && o.synced) return false
       if (filters.missingPriceOnly && o.price_cents > 0) return false
       if (filters.platformId) {
-        if (o.platform_ids.length > 0 && !o.platform_ids.includes(filters.platformId)) return false
+        // Strict: only options with a link row to the selected
+        // platform match. "Universal" (no-link) rows show up only
+        // under "All platforms" so stale orphans can't impersonate
+        // a universal row.
+        if (!o.platform_ids.includes(filters.platformId)) return false
       }
       if (filters.groupId && o.group_id !== filters.groupId) return false
       if (needle) {

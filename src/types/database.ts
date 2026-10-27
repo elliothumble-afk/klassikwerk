@@ -284,6 +284,18 @@ export type Database = {
           quote_validity_days: number
           quote_intro_copy: string | null
           brochure_url: string | null
+          trade_discount_pct: number
+          labour_rate_cents: number
+          paint_rate_cents: number
+          partner_shop_rate_cents: number
+          mpf_pct: number
+          brokerage_cents: number
+          items_per_shipment: number
+          aluminium_share_pct: number
+          hh_fee_pct: number
+          pricing_mode: 'simple' | 'cost_based'
+          in_house_labour_cost_cents: number
+          default_labour_source: 'in_house' | 'partner_shop'
           created_at: string
           updated_at: string
         }
@@ -302,6 +314,18 @@ export type Database = {
           quote_validity_days?: number
           quote_intro_copy?: string | null
           brochure_url?: string | null
+          trade_discount_pct?: number
+          labour_rate_cents?: number
+          paint_rate_cents?: number
+          partner_shop_rate_cents?: number
+          mpf_pct?: number
+          brokerage_cents?: number
+          items_per_shipment?: number
+          aluminium_share_pct?: number
+          hh_fee_pct?: number
+          pricing_mode?: 'simple' | 'cost_based'
+          in_house_labour_cost_cents?: number
+          default_labour_source?: 'in_house' | 'partner_shop'
           created_at?: string
           updated_at?: string
         }
@@ -319,6 +343,156 @@ export type Database = {
           quote_validity_days?: number
           quote_intro_copy?: string | null
           brochure_url?: string | null
+          trade_discount_pct?: number
+          labour_rate_cents?: number
+          paint_rate_cents?: number
+          partner_shop_rate_cents?: number
+          mpf_pct?: number
+          brokerage_cents?: number
+          items_per_shipment?: number
+          aluminium_share_pct?: number
+          hh_fee_pct?: number
+          pricing_mode?: 'simple' | 'cost_based'
+          in_house_labour_cost_cents?: number
+          default_labour_source?: 'in_house' | 'partner_shop'
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      catalog_categories: {
+        Row: {
+          id: string
+          builder_id: string
+          name: string
+          install_hours: number
+          paint_hours: number
+          paint_materials_cents: number
+          freight_cents: number
+          hts_duty_pct: number
+          default_origin_id: string | null
+          shopify_tags: string[]
+          sort: number
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          builder_id: string
+          name: string
+          install_hours?: number
+          paint_hours?: number
+          paint_materials_cents?: number
+          freight_cents?: number
+          hts_duty_pct?: number
+          default_origin_id?: string | null
+          shopify_tags?: string[]
+          sort?: number
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          name?: string
+          install_hours?: number
+          paint_hours?: number
+          paint_materials_cents?: number
+          freight_cents?: number
+          hts_duty_pct?: number
+          default_origin_id?: string | null
+          shopify_tags?: string[]
+          sort?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      catalog_finish_sets: {
+        Row: {
+          id: string
+          builder_id: string
+          name: string
+          applies_to_category_ids: string[]
+          sort: number
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          builder_id: string
+          name: string
+          applies_to_category_ids?: string[]
+          sort?: number
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          name?: string
+          applies_to_category_ids?: string[]
+          sort?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      catalog_finishes: {
+        Row: {
+          id: string
+          finish_set_id: string
+          name: string
+          paint_hours_override: number | null
+          materials_cents_override: number | null
+          sort: number
+          active: boolean
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          finish_set_id: string
+          name: string
+          paint_hours_override?: number | null
+          materials_cents_override?: number | null
+          sort?: number
+          active?: boolean
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          name?: string
+          paint_hours_override?: number | null
+          materials_cents_override?: number | null
+          sort?: number
+          active?: boolean
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      origins: {
+        Row: {
+          id: string
+          builder_id: string
+          name: string
+          tariff_pct: number
+          s232_aluminium_pct: number
+          notes: string | null
+          sort: number
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          builder_id: string
+          name: string
+          tariff_pct?: number
+          s232_aluminium_pct?: number
+          notes?: string | null
+          sort?: number
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          name?: string
+          tariff_pct?: number
+          s232_aluminium_pct?: number
+          notes?: string | null
+          sort?: number
           updated_at?: string
         }
         Relationships: []
@@ -455,6 +629,7 @@ export type Database = {
           approved_at: string | null
           notes: string | null
           token: string
+          labour_source: 'in_house' | 'partner_shop' | null
           created_at: string
           updated_at: string
         }
@@ -472,6 +647,7 @@ export type Database = {
           approved_at?: string | null
           notes?: string | null
           token?: string
+          labour_source?: 'in_house' | 'partner_shop' | null
           created_at?: string
           updated_at?: string
         }
@@ -488,6 +664,7 @@ export type Database = {
           approved_at?: string | null
           notes?: string | null
           token?: string
+          labour_source?: 'in_house' | 'partner_shop' | null
           updated_at?: string
         }
         Relationships: []
@@ -499,6 +676,12 @@ export type Database = {
           option_id: string
           price_cents_at_selection: number
           quantity: number
+          parts_sell_cents: number | null
+          landed_cost_cents: number | null
+          labour_cents: number | null
+          materials_cents: number | null
+          partner_cost_cents: number | null
+          finish_note: string | null
           created_at: string
         }
         Insert: {
@@ -507,6 +690,12 @@ export type Database = {
           option_id: string
           price_cents_at_selection: number
           quantity?: number
+          parts_sell_cents?: number | null
+          landed_cost_cents?: number | null
+          labour_cents?: number | null
+          materials_cents?: number | null
+          partner_cost_cents?: number | null
+          finish_note?: string | null
           created_at?: string
         }
         Update: {
@@ -514,6 +703,29 @@ export type Database = {
           option_id?: string
           price_cents_at_selection?: number
           quantity?: number
+          parts_sell_cents?: number | null
+          landed_cost_cents?: number | null
+          labour_cents?: number | null
+          materials_cents?: number | null
+          partner_cost_cents?: number | null
+          finish_note?: string | null
+        }
+        Relationships: []
+      }
+      quote_option_finishes: {
+        Row: {
+          quote_option_id: string
+          finish_set_id: string
+          finish_id: string
+        }
+        Insert: {
+          quote_option_id: string
+          finish_set_id: string
+          finish_id: string
+        }
+        Update: {
+          finish_set_id?: string
+          finish_id?: string
         }
         Relationships: []
       }
@@ -883,6 +1095,17 @@ export type Database = {
           sort: number
           active: boolean
           sold_as_set: boolean
+          category_id: string | null
+          origin_id: string | null
+          web_price_cents: number | null
+          source_currency: string
+          category_locked: boolean
+          parts_sell_cents: number | null
+          install_price_cents: number | null
+          landed_cost_cents: number | null
+          manual_parts_sell_cents: number | null
+          auto_add_with_group_id: string | null
+          cost_cents: number | null
           created_at: string
           updated_at: string
         }
@@ -899,6 +1122,17 @@ export type Database = {
           sort?: number
           active?: boolean
           sold_as_set?: boolean
+          category_id?: string | null
+          origin_id?: string | null
+          category_locked?: boolean
+          web_price_cents?: number | null
+          source_currency?: string
+          parts_sell_cents?: number | null
+          install_price_cents?: number | null
+          landed_cost_cents?: number | null
+          manual_parts_sell_cents?: number | null
+          auto_add_with_group_id?: string | null
+          cost_cents?: number | null
           created_at?: string
           updated_at?: string
         }
@@ -914,6 +1148,17 @@ export type Database = {
           sort?: number
           active?: boolean
           sold_as_set?: boolean
+          category_id?: string | null
+          origin_id?: string | null
+          category_locked?: boolean
+          web_price_cents?: number | null
+          source_currency?: string
+          parts_sell_cents?: number | null
+          install_price_cents?: number | null
+          landed_cost_cents?: number | null
+          manual_parts_sell_cents?: number | null
+          auto_add_with_group_id?: string | null
+          cost_cents?: number | null
           updated_at?: string
         }
         Relationships: []
@@ -983,6 +1228,14 @@ export type Database = {
         Args: Record<PropertyKey, never>
         Returns: string
       }
+      reprice_builder: {
+        Args: { target_builder: string }
+        Returns: number
+      }
+      clear_synced_option_platforms: {
+        Args: { target_builder: string }
+        Returns: number
+      }
     }
     Enums: Record<string, never>
     CompositeTypes: Record<string, never>
@@ -1012,6 +1265,52 @@ export type Customer = Database['public']['Tables']['customers']['Row']
 export type Lead = Database['public']['Tables']['leads']['Row']
 export type Quote = Database['public']['Tables']['quotes']['Row']
 export type QuoteOption = Database['public']['Tables']['quote_options']['Row']
+export interface Origin {
+  id: string
+  builder_id: string
+  name: string
+  tariff_pct: number
+  s232_aluminium_pct: number
+  notes: string | null
+  sort: number
+  created_at: string
+  updated_at: string
+}
+export interface CatalogCategory {
+  id: string
+  builder_id: string
+  name: string
+  install_hours: number
+  paint_hours: number
+  paint_materials_cents: number
+  freight_cents: number
+  hts_duty_pct: number
+  default_origin_id: string | null
+  shopify_tags: string[]
+  sort: number
+  created_at: string
+  updated_at: string
+}
+export interface CatalogFinishSet {
+  id: string
+  builder_id: string
+  name: string
+  applies_to_category_ids: string[]
+  sort: number
+  created_at: string
+  updated_at: string
+}
+export interface CatalogFinish {
+  id: string
+  finish_set_id: string
+  name: string
+  paint_hours_override: number | null
+  materials_cents_override: number | null
+  sort: number
+  active: boolean
+  created_at: string
+  updated_at: string
+}
 export type QuoteEvent = Database['public']['Tables']['quote_events']['Row']
 export type ZohoSyncLog = Database['public']['Tables']['zoho_sync_log']['Row']
 export type SyncRun = Database['public']['Tables']['sync_runs']['Row']

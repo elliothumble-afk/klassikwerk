@@ -55,13 +55,24 @@ export interface OptionLineForPdf {
   name: string
   code: string | null
   swatch_image_url: string | null
-  /** Unit price. Multiply by `quantity` for the extended line price,
-   *  unless `sold_as_set` is true — then price_cents_at_selection
-   *  already is the set price and quantity is 1. */
+  /** Unit price. For cost_based builders the extended line price is
+   *  parts_sell × quantity + install_price (labour isn't multiplied).
+   *  Otherwise it's price_cents_at_selection × quantity, except when
+   *  sold_as_set is true — then quantity stays 1. */
   price_cents_at_selection: number
   quantity: number
   sold_as_set: boolean
   included: boolean
+  /** Cost-based pricing split. If present, line = parts × qty + install;
+   *  otherwise fall back to legacy price_cents × qty behaviour. */
+  parts_sell_cents: number | null
+  install_price_cents: number | null
+  finish_names: string[]
+  finish_note: string | null
+}
+
+export interface PdfPricingMode {
+  mode: 'simple' | 'cost_based'
 }
 
 export interface CustomerLike {
@@ -83,6 +94,7 @@ export interface QuotePdfInput {
   options: OptionLineForPdf[]
   customer: CustomerLike | null
   customer_phone: string | null
+  pricing_mode: 'simple' | 'cost_based'
 }
 
 export interface ContractPdfInput {

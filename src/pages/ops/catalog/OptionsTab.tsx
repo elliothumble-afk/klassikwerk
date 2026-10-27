@@ -20,10 +20,10 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import {
   GripVertical, Plus, Pencil, Check, X,
-  ToggleLeft, ToggleRight, Upload, Image,
+  ToggleLeft, ToggleRight, Upload, Image, DollarSign,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
-import type { CatalogOption, Tier, Platform, OptionGroup } from '@/types/database'
+import type { CatalogOption, Tier, Platform, OptionGroup, CatalogCategory, Origin, BuilderTerms } from '@/types/database'
 import { catalogOptionSchema, type CatalogOptionForm } from '@/schemas/catalog'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorState } from '@/components/ui/ErrorState'
@@ -117,23 +117,209 @@ function useOptionGroups(builderId?: string) {
   })
 }
 
+function useCategories(builderId?: string) {
+  return useQuery({
+    queryKey: ['catalog', 'categories', builderId ?? 'none'],
+    enabled: Boolean(builderId),
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('catalog_categories')
+        .select('*')
+        .eq('builder_id', builderId!)
+        .order('sort')
+      if (error) throw error
+      return data as CatalogCategory[]
+    },
+  })
+}
+
+function useBuilderTerms(builderId?: string) {
+  return useQuery({
+    queryKey: ['builder-terms', builderId ?? 'none'],
+    enabled: Boolean(builderId),
+    queryFn: async () => {
+      const { data, error } = await supabase.from('builder_terms')
+        .select('*').eq('builder_id', builderId!).maybeSingle()
+      if (error) throw error
+      return data as BuilderTerms | null
+    },
+  })
+}
+
+function useOrigins(builderId?: string) {
+  return useQuery({
+    queryKey: ['catalog', 'origins', builderId ?? 'none'],
+    enabled: Boolean(builderId),
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('origins')
+        .select('*')
+        .eq('builder_id', builderId!)
+        .order('sort')
+      if (error) throw error
+      return data as Origin[]
+    },
+  })
+}
+
+// ─── Cost drawer ──────────────────────────────────────────────────────────────
+// Per-option breakdown for cost_based builders. Mirrors the Catalog
+// sheet in docs/seeds/CTC-Build-House-Costing.xlsx row-for-row so an
+// ops user can audit how the final price was reached.
+
+interface CostDrawerProps {
+  option: CatalogOption
+  category: CatalogCategory | null
+  origin: Origin | null
+  terms: BuilderTerms
+  onClose: () => void
+}
+
+function CostDrawer({ option, category, origin, terms, onClose }: CostDrawerProps) {
+  const money = (c: number) => `$${c.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  const pct = (p: number) => `${(p * 100).toFixed(2)}%`
+
+  const webPriceGbp = (option.web_price_cents ?? 0) / 100
+  const retail = webPriceGbp * Number(terms.fx_rate)
+  const kitCost = retail * (1 - Number(terms.trade_discount_pct))
+  const freight = (category?.freight_cents ?? 0) / 100
+  const dutyPct = Number(category?.hts_duty_pct ?? 0)
+  const duty = kitCost * dutyPct
+  const tariffPct = Number(origin?.tariff_pct ?? 0)
+  const tariff = kitCost * tariffPct
+  const s232Pct = Number(origin?.s232_aluminium_pct ?? 0)
+  const isWheels = category?.name === 'Alloy wheels'
+  const s232 = isWheels ? kitCost * Number(terms.aluminium_share_pct) * s232Pct : 0
+  const mpf = kitCost * Number(terms.mpf_pct)
+  const brokeragePer = (terms.brokerage_cents / 100) / Math.max(1, terms.items_per_shipment)
+  const fees = mpf + brokeragePer
+  const landed = kitCost + freight + duty + tariff + s232 + fees
+  const partsSell = retail + freight + duty + tariff + s232 + fees
+  const installH = Number(category?.install_hours ?? 0)
+  const paintH = Number(category?.paint_hours ?? 0)
+  const labour = installH * (terms.labour_rate_cents / 100) + paintH * (terms.paint_rate_cents / 100)
+  const materials = (category?.paint_materials_cents ?? 0) / 100
+  const install = labour + materials
+  const total = partsSell + install
+
+  const rows: { label: string; detail?: string; value: string; strong?: boolean; muted?: boolean }[] = [
+    { label: 'Web price', detail: `£${webPriceGbp.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, value: `× fx ${terms.fx_rate}`, muted: true },
+    { label: 'Retail USD', value: money(retail) },
+    { label: 'Kit cost', detail: `× (1 − ${pct(Number(terms.trade_discount_pct))})`, value: money(kitCost) },
+    { label: 'Freight', detail: category?.name ?? '—', value: money(freight) },
+    { label: 'HTS duty', detail: pct(dutyPct), value: money(duty) },
+    { label: 'Tariff', detail: `${origin?.name ?? '—'} · ${pct(tariffPct)}`, value: money(tariff) },
+    {
+      label: 'Section 232 (aluminium)',
+      detail: isWheels ? `${pct(Number(terms.aluminium_share_pct))} × ${pct(s232Pct)}` : 'wheels only',
+      value: money(s232),
+      muted: !isWheels,
+    },
+    { label: 'MPF + brokerage', detail: `MPF ${pct(Number(terms.mpf_pct))} + $${brokeragePer.toFixed(2)}/item`, value: money(fees) },
+    { label: 'Landed cost', detail: 'kit + freight + duty + tariff + 232 + fees', value: money(landed), strong: true },
+    { label: 'Parts sell', detail: 'retail + landing', value: money(partsSell), strong: true },
+    { label: 'Labour', detail: `${installH}h × $${terms.labour_rate_cents/100} + ${paintH}h × $${terms.paint_rate_cents/100}`, value: money(labour) },
+    { label: 'Paint materials', value: money(materials) },
+    { label: 'Install price', detail: 'labour + materials', value: money(install), strong: true },
+    { label: 'Final price', detail: 'parts sell + install', value: money(total), strong: true },
+  ]
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex justify-end bg-black/40 backdrop-blur-sm"
+      onClick={onClose}
+      role="dialog"
+      aria-modal
+      aria-label={`Cost breakdown for ${option.name}`}
+    >
+      <div
+        className="w-full sm:w-[480px] h-full bg-[var(--color-surface)] shadow-2xl overflow-y-auto"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--color-border)]">
+          <div>
+            <div className="text-xs uppercase tracking-wide text-[var(--color-muted)]">Cost breakdown</div>
+            <div className="text-sm font-medium mt-0.5">{option.name}</div>
+            <div className="text-xs text-[var(--color-muted)] font-mono">{option.code ?? '—'}</div>
+          </div>
+          <button
+            onClick={onClose}
+            className="h-7 w-7 rounded-full hover:bg-[var(--color-border)] inline-flex items-center justify-center"
+            aria-label="Close"
+          >
+            <X size={14} />
+          </button>
+        </div>
+
+        {!category ? (
+          <div className="p-5 text-sm text-[var(--color-muted)]">
+            No category assigned — set one in the option's edit form.
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+            <tbody>
+              {rows.map(r => (
+                <tr
+                  key={r.label}
+                  className={`border-b border-[var(--color-border)] last:border-0 ${
+                    r.strong ? 'bg-[var(--color-surface-raised)]' : ''
+                  }`}
+                >
+                  <td className={`py-2 pl-5 pr-2 ${r.muted ? 'text-[var(--color-muted)]' : ''}`}>
+                    <div className={r.strong ? 'font-medium' : ''}>{r.label}</div>
+                    {r.detail && <div className="text-[11px] text-[var(--color-muted)] mt-0.5">{r.detail}</div>}
+                  </td>
+                  <td className={`py-2 pr-5 text-right font-mono tabular-nums ${r.strong ? 'font-medium' : r.muted ? 'text-[var(--color-muted)]' : ''}`}>
+                    {r.value}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
 function formatPrice(cents: number) {
   if (cents === 0) return 'Included'
   return `+$${(cents / 100).toLocaleString()}`
 }
 
-// Convert CatalogOptionForm dollars → DB cents payload
-function optionFormToDb(data: CatalogOptionForm, builderId: string) {
+// Convert CatalogOptionForm dollars → DB cents payload. Mark
+// category_locked whenever ops picks a category explicitly, so the
+// next sync won't overwrite it.
+function optionFormToDb(
+  data: CatalogOptionForm,
+  builderId: string,
+  originalCategoryId: string | null | undefined,
+  opts: { costBased: boolean; synced: boolean },
+) {
+  const categoryChanged = (data.category_id ?? null) !== (originalCategoryId ?? null)
+  const cents = Math.round(data.price * 100)
+  // For cost_based manual options, the entered Price IS the parts
+  // sell. reprice_builder recomputes price_cents on top of category
+  // labour. For synced + simple-mode we keep the legacy semantics.
+  const costBasedManual = opts.costBased && !opts.synced
   return {
     builder_id: builderId,
     slug: data.slug,
     name: data.name,
     code: data.code ?? null,
-    price_cents: Math.round(data.price * 100),
+    price_cents: costBasedManual ? 0 : cents,
+    manual_parts_sell_cents: costBasedManual ? cents : null,
     included_in_tier_ids: data.included_in_tier_ids,
     sort: data.sort,
     active: data.active,
     sold_as_set: data.sold_as_set,
+    category_id: data.category_id,
+    origin_id: data.origin_id,
+    category_locked: categoryChanged || (data.category_id != null),
+    // cost_cents only applies to cost_based manual options. For simple
+    // mode and synced rows it stays null — the catalog admin ignores it.
+    cost_cents: costBasedManual && data.cost != null ? Math.round(data.cost * 100) : null,
   }
 }
 
@@ -270,12 +456,14 @@ interface OptionRowProps {
   option: OptionWithPlatforms
   tiers: Tier[]
   platforms: Platform[]
+  costBased: boolean
   onEdit: (o: OptionWithPlatforms) => void
   onToggleActive: (o: OptionWithPlatforms) => void
   onSwatchUpload: (id: string, url: string) => void
+  onOpenCost: (o: OptionWithPlatforms) => void
 }
 
-function OptionRow({ option, tiers, platforms, onEdit, onToggleActive, onSwatchUpload }: OptionRowProps) {
+function OptionRow({ option, tiers, platforms, costBased, onEdit, onToggleActive, onSwatchUpload, onOpenCost }: OptionRowProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: option.id })
 
@@ -308,6 +496,11 @@ function OptionRow({ option, tiers, platforms, onEdit, onToggleActive, onSwatchU
       <td className="py-3 pr-3 text-sm font-medium">{option.name}</td>
       <td className="py-3 pr-3 text-sm text-[var(--color-muted)] font-mono text-xs">{option.code ?? '—'}</td>
       <td className="py-3 pr-3 text-sm text-[var(--color-muted)]">{formatPrice(option.price_cents)}</td>
+      {costBased && (
+        <td className="py-3 pr-3 text-sm text-[var(--color-muted)]">
+          {option.cost_cents == null ? '—' : `$${(option.cost_cents / 100).toLocaleString()}`}
+        </td>
+      )}
 
       <td className="py-3 pr-3">
         <div className="flex gap-1.5 flex-wrap">
@@ -358,6 +551,19 @@ function OptionRow({ option, tiers, platforms, onEdit, onToggleActive, onSwatchU
         </button>
       </td>
 
+      <td className="py-3 pr-2 w-8">
+        {costBased && (
+          <button
+            onClick={() => onOpenCost(option)}
+            className="text-[var(--color-muted)] hover:text-[var(--color-accent)] transition"
+            aria-label="Cost breakdown"
+            title="Cost breakdown"
+          >
+            <DollarSign size={13} />
+          </button>
+        )}
+      </td>
+
       <td className="py-3 pr-4 w-8">
         <button
           onClick={() => onEdit(option)}
@@ -378,12 +584,23 @@ interface EditFormProps {
   groupId: string
   tiers: Tier[]
   platforms: Platform[]
+  categories: CatalogCategory[]
+  origins: Origin[]
+  costBased: boolean
   onSave: (data: CatalogOptionForm, platformIds: string[], id?: string) => Promise<void>
   onCancel: () => void
   saving: boolean
 }
 
-function OptionEditForm({ option, tiers, platforms, onSave, onCancel, saving }: EditFormProps) {
+function OptionEditForm({ option, tiers, platforms, categories, origins, costBased, onSave, onCancel, saving }: EditFormProps) {
+  // For cost_based manual options the Price field means parts sell;
+  // that lives in manual_parts_sell_cents. Otherwise fall back to the
+  // computed price_cents.
+  const defaultPrice = option
+    ? (costBased && !option.synced
+        ? (option.manual_parts_sell_cents ?? 0) / 100
+        : option.price_cents / 100)
+    : 0
   const {
     register,
     handleSubmit,
@@ -397,13 +614,16 @@ function OptionEditForm({ option, tiers, platforms, onSave, onCancel, saving }: 
           slug: option.slug,
           name: option.name,
           code: option.code ?? '',
-          price: option.price_cents / 100,
+          price: defaultPrice,
           included_in_tier_ids: option.included_in_tier_ids,
           sort: option.sort,
           active: option.active,
           sold_as_set: option.sold_as_set ?? false,
+          category_id: option.category_id ?? '',
+          origin_id: option.origin_id ?? '',
+          cost: option.cost_cents == null ? null : option.cost_cents / 100,
         }
-      : { price: 0, included_in_tier_ids: [], sort: 0, active: true, sold_as_set: false },
+      : { price: 0, included_in_tier_ids: [], sort: 0, active: true, sold_as_set: false, category_id: '', origin_id: '', cost: null },
   })
 
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(
@@ -436,7 +656,7 @@ function OptionEditForm({ option, tiers, platforms, onSave, onCancel, saving }: 
 
   return (
     <tr className="border-b border-[var(--color-border)] bg-[var(--color-accent-light)]">
-      <td colSpan={9} className="py-4 px-4">
+      <td colSpan={11} className="py-4 px-4">
         <form
           onSubmit={handleSubmit(d => onSave(d, selectedPlatforms, option?.id))}
           className="space-y-3"
@@ -457,7 +677,9 @@ function OptionEditForm({ option, tiers, platforms, onSave, onCancel, saving }: 
               <input {...register('code')} className={inputClass} placeholder="MB-359" />
             </div>
             <div>
-              <label className="text-xs text-[var(--color-muted)] mb-1 block">Price</label>
+              <label className="text-xs text-[var(--color-muted)] mb-1 block">
+                {costBased && !option?.synced ? 'Parts sell $' : 'Price'}
+              </label>
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-[var(--color-muted)] pointer-events-none select-none">
                   $
@@ -473,6 +695,29 @@ function OptionEditForm({ option, tiers, platforms, onSave, onCancel, saving }: 
               </div>
               {errors.price && <p className="text-xs text-[var(--color-danger)] mt-1">{errors.price.message}</p>}
             </div>
+            {costBased && !option?.synced && (
+              <div>
+                <label
+                  className="text-xs text-[var(--color-muted)] mb-1 block"
+                  title="Operator cost per unit. Blank = assume cost equals sell price (zero margin on parts)."
+                >
+                  Cost $ (optional)
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-[var(--color-muted)] pointer-events-none select-none">
+                    $
+                  </span>
+                  <input
+                    {...register('cost')}
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    className={`${inputClass} pl-7`}
+                    placeholder="(blank)"
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -516,6 +761,25 @@ function OptionEditForm({ option, tiers, platforms, onSave, onCancel, saving }: 
               </div>
             </div>
           </div>
+
+          {categories.length > 0 && (
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="text-xs text-[var(--color-muted)] mb-1 block">Category</label>
+                <select {...register('category_id')} className={inputClass}>
+                  <option value="">— uncategorised —</option>
+                  {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-[var(--color-muted)] mb-1 block">Origin override (optional)</label>
+                <select {...register('origin_id')} className={inputClass}>
+                  <option value="">— use category default —</option>
+                  {origins.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                </select>
+              </div>
+            </div>
+          )}
 
           <div className="flex items-center gap-4">
             <label className="flex items-center gap-2 text-sm cursor-pointer">
@@ -564,6 +828,9 @@ interface GroupSectionProps {
   options: OptionWithPlatforms[]
   tiers: Tier[]
   platforms: Platform[]
+  categories: CatalogCategory[]
+  origins: Origin[]
+  costBased: boolean
   editingId: string | 'new' | null
   setEditingId: (id: string | 'new' | null) => void
   saving: boolean
@@ -572,11 +839,12 @@ interface GroupSectionProps {
   onToggleAllowQuantity: (g: OptionGroup) => void
   onDragEnd: (event: DragEndEvent, groupId: string) => void
   onSwatchUpload: (id: string, url: string) => void
+  onOpenCost: (o: OptionWithPlatforms) => void
 }
 
 function GroupSection({
-  group, options, tiers, platforms,
-  editingId, setEditingId, saving, onSave, onToggleActive, onToggleAllowQuantity, onDragEnd, onSwatchUpload,
+  group, options, tiers, platforms, categories, origins, costBased,
+  editingId, setEditingId, saving, onSave, onToggleActive, onToggleAllowQuantity, onDragEnd, onSwatchUpload, onOpenCost,
 }: GroupSectionProps) {
   const sensors = useSensors(useSensor(PointerSensor))
   const addingToThisGroup = editingId === `new-${group.id}`
@@ -630,9 +898,11 @@ function GroupSection({
                 <th className="text-left py-2 pr-3 text-xs font-medium text-[var(--color-muted)]">Name</th>
                 <th className="text-left py-2 pr-3 text-xs font-medium text-[var(--color-muted)]">Code</th>
                 <th className="text-left py-2 pr-3 text-xs font-medium text-[var(--color-muted)]">Price</th>
+                {costBased && <th className="text-left py-2 pr-3 text-xs font-medium text-[var(--color-muted)]">Cost</th>}
                 <th className="text-left py-2 pr-3 text-xs font-medium text-[var(--color-muted)]">Included in</th>
                 <th className="text-left py-2 pr-3 text-xs font-medium text-[var(--color-muted)]">Platforms</th>
                 <th className="text-left py-2 pr-3 text-xs font-medium text-[var(--color-muted)]">Status</th>
+                <th className="text-left py-2 pr-2 w-8" />
                 <th className="text-left py-2 pr-4 w-8" />
               </tr>
             </thead>
@@ -654,6 +924,9 @@ function GroupSection({
                         groupId={group.id}
                         tiers={tiers}
                         platforms={platforms}
+                        categories={categories}
+                        origins={origins}
+                        costBased={costBased}
                         onSave={onSave}
                         onCancel={() => setEditingId(null)}
                         saving={saving}
@@ -664,9 +937,11 @@ function GroupSection({
                         option={option}
                         tiers={tiers}
                         platforms={platforms}
+                        costBased={costBased}
                         onEdit={o => setEditingId(o.id)}
                         onToggleActive={onToggleActive}
                         onSwatchUpload={onSwatchUpload}
+                        onOpenCost={onOpenCost}
                       />
                     )
                   )}
@@ -675,6 +950,9 @@ function GroupSection({
                       groupId={group.id}
                       tiers={tiers}
                       platforms={platforms}
+                      categories={categories}
+                      origins={origins}
+                      costBased={costBased}
                       onSave={(data, platIds, id) => onSave(data, platIds, id, group.id)}
                       onCancel={() => setEditingId(null)}
                       saving={saving}
@@ -700,8 +978,13 @@ export function OptionsTab() {
   const { data: tiers = [], isLoading: loadingTiers } = useTiers(selected?.id)
   const { data: platforms = [], isLoading: loadingPlatforms } = usePlatforms(selected?.id)
   const { data: groups = [], isLoading: loadingGroups } = useOptionGroups(selected?.id)
+  const { data: categories = [] } = useCategories(selected?.id)
+  const { data: origins = [] } = useOrigins(selected?.id)
+  const { data: terms } = useBuilderTerms(selected?.id)
+  const costBased = terms?.pricing_mode === 'cost_based'
 
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [costOptionId, setCostOptionId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
   const isLoading = loadingOptions || loadingTiers || loadingPlatforms || loadingGroups
@@ -712,18 +995,29 @@ export function OptionsTab() {
       platformIds,
       id,
       groupId,
+      originalCategoryId,
     }: {
       data: CatalogOptionForm
       platformIds: string[]
       id?: string
       groupId?: string
+      originalCategoryId?: string | null
     }) => {
       if (!selected) throw new Error('No builder selected')
-      const payload = optionFormToDb(data, selected.id)
+      const existing = id ? options?.find(o => o.id === id) : undefined
+      const payload = optionFormToDb(data, selected.id, originalCategoryId, {
+        costBased: Boolean(terms?.pricing_mode === 'cost_based'),
+        // New options are manual (synced=false) by default. The sync is
+        // the only thing that writes synced=true.
+        synced: existing?.synced ?? false,
+      })
       if (id) {
         const { builder_id: _bid, ...update } = payload
         const { error } = await supabase.from('catalog_options').update(update).eq('id', id)
         if (error) throw error
+        // Trigger a reprice so the editor reflects the new category/
+        // origin immediately for cost_based builders.
+        await supabase.rpc('reprice_builder', { target_builder: selected.id })
 
         await supabase.from('catalog_option_platforms').delete().eq('option_id', id)
         if (platformIds.length > 0) {
@@ -833,7 +1127,8 @@ export function OptionsTab() {
     groupId?: string
   ) {
     setSaving(true)
-    await saveMutation.mutateAsync({ data, platformIds, id, groupId })
+    const original = id ? options?.find(o => o.id === id)?.category_id ?? null : null
+    await saveMutation.mutateAsync({ data, platformIds, id, groupId, originalCategoryId: original })
     setSaving(false)
     setEditingId(null)
   }
@@ -850,6 +1145,10 @@ export function OptionsTab() {
     return <ErrorState message={(optionsError as Error).message} retry={refetch} />
   }
 
+  const costOption = costOptionId
+    ? (options ?? []).find(o => o.id === costOptionId) ?? null
+    : null
+
   return (
     <div>
       {groups.map(group => (
@@ -859,6 +1158,9 @@ export function OptionsTab() {
           options={(options ?? []).filter(o => o.group_id === group.id)}
           tiers={tiers}
           platforms={platforms}
+          categories={categories}
+          origins={origins}
+          costBased={costBased}
           editingId={editingId}
           setEditingId={setEditingId}
           saving={saving}
@@ -867,6 +1169,7 @@ export function OptionsTab() {
           onToggleAllowQuantity={g => allowQuantityMutation.mutate(g)}
           onDragEnd={handleDragEnd}
           onSwatchUpload={handleSwatchUpload}
+          onOpenCost={o => setCostOptionId(o.id)}
         />
       ))}
 
@@ -874,6 +1177,21 @@ export function OptionsTab() {
         <EmptyState
           title="No option groups"
           description="Option groups are seeded automatically."
+        />
+      )}
+
+      {costOption && terms && (
+        <CostDrawer
+          option={costOption}
+          category={categories.find(c => c.id === costOption.category_id) ?? null}
+          origin={
+            origins.find(o => o.id === costOption.origin_id) ??
+            (costOption.category_id
+              ? origins.find(o => o.id === categories.find(c => c.id === costOption.category_id)?.default_origin_id) ?? null
+              : null)
+          }
+          terms={terms}
+          onClose={() => setCostOptionId(null)}
         />
       )}
     </div>

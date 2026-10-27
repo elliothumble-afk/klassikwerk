@@ -57,7 +57,7 @@ export async function renderQuotePdfToStorage(quoteId: string): Promise<string> 
     supabase.from('builder_terms').select('*').eq('builder_id', quote.builder_id).maybeSingle(),
     supabase.from('catalog_platforms').select('*').eq('id', quote.platform_id).single(),
     supabase.from('catalog_tiers').select('*').eq('id', quote.tier_id).single(),
-    supabase.from('quote_options').select('option_id, price_cents_at_selection, quantity').eq('quote_id', quote.id),
+    supabase.from('quote_options').select('id, option_id, price_cents_at_selection, quantity, finish_note, quote_option_finishes(finish_set_id, finish_id, catalog_finish_sets(sort), catalog_finishes(name))').eq('quote_id', quote.id),
   ])
   if (builderRes.error) throw builderRes.error
   if (brandRes.error) throw brandRes.error
@@ -71,7 +71,8 @@ export async function renderQuotePdfToStorage(quoteId: string): Promise<string> 
   const terms = termsRes.data as TermsLike
   const platform = platformRes.data as PlatformLike
   const tier = tierRes.data as TierLike
-  const qoRows = qoRes.data as { option_id: string; price_cents_at_selection: number; quantity: number }[]
+  interface QoFinishRow { finish_set_id: string; finish_id: string; catalog_finish_sets: { sort: number } | null; catalog_finishes: { name: string } | null }
+  const qoRows = qoRes.data as unknown as { id: string; option_id: string; price_cents_at_selection: number; quantity: number; finish_note: string | null; quote_option_finishes: QoFinishRow[] }[]
 
   const optionIds = qoRows.map(o => o.option_id)
   const options: OptionLineForPdf[] = []
@@ -79,7 +80,7 @@ export async function renderQuotePdfToStorage(quoteId: string): Promise<string> 
     const [optsRes, platsRes] = await Promise.all([
       supabase
         .from('catalog_options')
-        .select('id, name, code, group_id, swatch_image_url, included_in_tier_ids, sold_as_set')
+        .select('id, name, code, group_id, swatch_image_url, included_in_tier_ids, sold_as_set, parts_sell_cents, install_price_cents')
         .in('id', optionIds),
       supabase
         .from('catalog_option_platforms')
@@ -109,6 +110,18 @@ export async function renderQuotePdfToStorage(quoteId: string): Promise<string> 
       const r = restricted.get(o.id)
       if (r && r.size > 0 && !r.has(quote.platform_id)) continue
       const row = qoByOption.get(o.id)
+      const oo = o as {
+        sold_as_set?: boolean
+        parts_sell_cents?: number | null
+        install_price_cents?: number | null
+      }
+      // Order finish names by their set's sort so the display is
+      // stable: "Interior colour, Interior pattern" not reversed.
+      const finishNames = ((row?.quote_option_finishes ?? [])
+        .slice()
+        .sort((a, b) => (a.catalog_finish_sets?.sort ?? 0) - (b.catalog_finish_sets?.sort ?? 0))
+        .map(r => r.catalog_finishes?.name)
+        .filter((v): v is string => !!v))
       options.push({
         group_name: groupById.get(o.group_id)?.name ?? 'Option',
         group_sort: groupById.get(o.group_id)?.sort ?? 0,
@@ -117,7 +130,11 @@ export async function renderQuotePdfToStorage(quoteId: string): Promise<string> 
         swatch_image_url: o.swatch_image_url,
         price_cents_at_selection: row?.price_cents_at_selection ?? 0,
         quantity: row?.quantity ?? 1,
-        sold_as_set: (o as { sold_as_set?: boolean }).sold_as_set ?? false,
+        sold_as_set: oo.sold_as_set ?? false,
+        parts_sell_cents: oo.parts_sell_cents ?? null,
+        install_price_cents: oo.install_price_cents ?? null,
+        finish_names: finishNames,
+        finish_note: row?.finish_note ?? null,
         included: (o.included_in_tier_ids ?? []).includes(quote.tier_id),
       })
     }
@@ -139,6 +156,7 @@ export async function renderQuotePdfToStorage(quoteId: string): Promise<string> 
     options,
     customer: (quote.lead?.customer ?? null) as CustomerLike | null,
     customer_phone: quote.lead?.phone ?? null,
+    pricing_mode: ((terms as unknown as { pricing_mode?: 'simple' | 'cost_based' })?.pricing_mode) ?? 'simple',
   }
 
   const [{ QuotePdf }, { registerBrandFonts }] = await Promise.all([
@@ -162,13 +180,13 @@ export async function renderQuotePdfToStorage(quoteId: string): Promise<string> 
 export async function renderContractPdfToStorage(buildId: string): Promise<string> {
   const buildRes = await supabase
     .from('builds')
-    .select('id, builder_id, platform_id, tier_id, customer_id, vehicle_id, price_cents')
+    .select('id, builder_id, platform_id, tier_id, customer_id, vehicle_id, price_cents, quote_id')
     .eq('id', buildId)
     .single()
   if (buildRes.error) throw buildRes.error
   const build = buildRes.data
 
-  const [tplRes, termsRes, builderRes, brandRes, platformRes, tierRes, buildOptsRes] = await Promise.all([
+  const [tplRes, termsRes, builderRes, brandRes, platformRes, tierRes, buildOptsRes, finishesSnapshotRes] = await Promise.all([
     supabase.from('contract_templates').select('*').eq('builder_id', build.builder_id).eq('is_current', true).single(),
     supabase.from('builder_terms').select('*').eq('builder_id', build.builder_id).maybeSingle(),
     supabase.from('builders').select('*, operator:operators(contact)').eq('id', build.builder_id).single(),
@@ -176,6 +194,11 @@ export async function renderContractPdfToStorage(buildId: string): Promise<strin
     supabase.from('catalog_platforms').select('*').eq('id', build.platform_id).single(),
     supabase.from('catalog_tiers').select('*').eq('id', build.tier_id).single(),
     supabase.from('build_options').select('option_id, price_cents_at_selection, quantity').eq('build_id', build.id),
+    // Finish snapshots live on quote_options; the contract carries
+    // them forward via builds.quote_id.
+    build.quote_id
+      ? supabase.from('quote_options').select('option_id, finish_note, quote_option_finishes(finish_set_id, catalog_finish_sets(sort), catalog_finishes(name))').eq('quote_id', build.quote_id)
+      : Promise.resolve({ data: [] as unknown[], error: null }),
   ])
   if (tplRes.error) throw tplRes.error
   if (termsRes.error) throw termsRes.error
@@ -184,6 +207,7 @@ export async function renderContractPdfToStorage(buildId: string): Promise<strin
   if (platformRes.error) throw platformRes.error
   if (tierRes.error) throw tierRes.error
   if (buildOptsRes.error) throw buildOptsRes.error
+  if ('error' in finishesSnapshotRes && finishesSnapshotRes.error) throw finishesSnapshotRes.error
 
   const builderRow = builderRes.data as unknown as BuilderLike & { operator: { contact: OperatorContact } | null }
   const brand = brandRes.data as BrandLike
@@ -203,6 +227,16 @@ export async function renderContractPdfToStorage(buildId: string): Promise<strin
       (groupsRes.data ?? []).map(g => [g.id as string, g.name as string])
     )
     const qtyByOption = new Map(buildOpts.map(bo => [bo.option_id, bo.quantity ?? 1]))
+    interface SnapRow { option_id: string; finish_note: string | null; quote_option_finishes: { catalog_finish_sets: { sort: number } | null; catalog_finishes: { name: string } | null }[] }
+    const finishByOption = new Map<string, { names: string[]; note: string | null }>()
+    for (const r of (finishesSnapshotRes.data ?? []) as unknown as SnapRow[]) {
+      const names = (r.quote_option_finishes ?? [])
+        .slice()
+        .sort((a, b) => (a.catalog_finish_sets?.sort ?? 0) - (b.catalog_finish_sets?.sort ?? 0))
+        .map(x => x.catalog_finishes?.name)
+        .filter((v): v is string => !!v)
+      finishByOption.set(r.option_id, { names, note: r.finish_note })
+    }
     const rows = (optsRes.data ?? []).map(o => {
       const grp = groupName.get(o.group_id) ?? 'Option'
       const qty = qtyByOption.get(o.id) ?? 1
@@ -212,7 +246,11 @@ export async function renderContractPdfToStorage(buildId: string): Promise<strin
         : qty === 5 ? ' — Set of 5 incl. spare'
         : qty === 4 ? ' — Set of 4'
         : ''
-      return `| ${grp} | ${o.name}${o.code ? ` (${o.code})` : ''}${qtyLabel} |`
+      const fin = finishByOption.get(o.id)
+      const parts: string[] = [...(fin?.names ?? [])]
+      if (fin?.note) parts.push(fin.note)
+      const finishLabel = parts.length ? ` — ${parts.join(', ')}` : ''
+      return `| ${grp} | ${o.name}${finishLabel}${o.code ? ` (${o.code})` : ''}${qtyLabel} |`
     })
     configurationTable = ['| Group | Choice |', '| --- | --- |', ...rows].join('\n')
   }

@@ -34,12 +34,25 @@ interface QuoteData {
     warranty_text: string | null
     quote_validity_days: number
     quote_intro_copy: string | null
+    pricing_mode?: 'simple' | 'cost_based'
   } | null
   quote_options: {
     option_id: string
     price_cents_at_selection: number
     quantity: number
-    catalog_options: { name: string; code: string | null; sold_as_set: boolean } | null
+    finish_note: string | null
+    catalog_options: {
+      name: string
+      code: string | null
+      sold_as_set: boolean
+      parts_sell_cents: number | null
+      install_price_cents: number | null
+    } | null
+    quote_option_finishes: {
+      finish_set_id: string
+      catalog_finish_sets: { sort: number } | null
+      catalog_finishes: { name: string } | null
+    }[]
   }[]
 }
 
@@ -178,17 +191,34 @@ export function QuoteView() {
                 const qty = qo.quantity ?? 1
                 const soldAsSet = qo.catalog_options?.sold_as_set ?? false
                 const effectiveQty = soldAsSet ? 1 : qty
-                const extended = qo.price_cents_at_selection * effectiveQty
+                const parts = qo.catalog_options?.parts_sell_cents
+                const install = qo.catalog_options?.install_price_cents
+                const costBased = parts != null && install != null
+                const extended = costBased
+                  ? parts * effectiveQty + install
+                  : qo.price_cents_at_selection * effectiveQty
                 const qtyLabel = soldAsSet
                   ? 'Set of 4'
                   : qty === 5 ? 'Set of 5 incl. spare'
                   : qty === 4 ? 'Set of 4'
                   : null
+                const finishNames = (qo.quote_option_finishes ?? [])
+                  .slice()
+                  .sort((a, b) => (a.catalog_finish_sets?.sort ?? 0) - (b.catalog_finish_sets?.sort ?? 0))
+                  .map(x => x.catalog_finishes?.name)
+                  .filter((v): v is string => !!v)
+                const finishBits: string[] = [...finishNames]
+                if (qo.finish_note) finishBits.push(qo.finish_note)
+                const finishLabel = finishBits.length ? finishBits.join(', ') : null
                 return (
                   <tr key={qo.option_id} className="border-b border-[var(--color-border)] last:border-0">
                     <td className="py-2 pr-3 text-[var(--color-muted)]">Option</td>
                     <td className="py-2 pr-3">
-                      <div>{qo.catalog_options?.name}{qo.catalog_options?.code ? ` · ${qo.catalog_options.code}` : ''}</div>
+                      <div>
+                        {qo.catalog_options?.name}
+                        {finishLabel ? ` — ${finishLabel}` : ''}
+                        {qo.catalog_options?.code ? ` · ${qo.catalog_options.code}` : ''}
+                      </div>
                       {qtyLabel && <div className="text-xs text-[var(--color-muted)]">{qtyLabel}</div>}
                     </td>
                     <td className="py-2 text-right">
@@ -199,6 +229,11 @@ export function QuoteView() {
               })}
             </tbody>
           </table>
+          {terms?.pricing_mode === 'cost_based' && quote_options.length > 0 && (
+            <p className="mt-3 text-xs text-[var(--color-muted)]">
+              Prices include import shipping, duties and fitting.
+            </p>
+          )}
         </div>
 
         {(terms?.payment_schedule?.length ?? 0) > 0 && (

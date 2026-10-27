@@ -40,6 +40,7 @@ interface QuoteData {
     option_id: string
     price_cents_at_selection: number
     quantity: number
+    finish_note: string | null
     catalog_options: {
       name: string
       code: string | null
@@ -47,6 +48,7 @@ interface QuoteData {
       parts_sell_cents: number | null
       install_price_cents: number | null
     } | null
+    finish: { name: string } | null
   }[]
 }
 
@@ -196,11 +198,18 @@ export function QuoteView() {
                   : qty === 5 ? 'Set of 5 incl. spare'
                   : qty === 4 ? 'Set of 4'
                   : null
+                const finishLabel = qo.finish?.name
+                  ? `${qo.finish.name}${qo.finish_note ? `, ${qo.finish_note}` : ''}`
+                  : null
                 return (
                   <tr key={qo.option_id} className="border-b border-[var(--color-border)] last:border-0">
                     <td className="py-2 pr-3 text-[var(--color-muted)]">Option</td>
                     <td className="py-2 pr-3">
-                      <div>{qo.catalog_options?.name}{qo.catalog_options?.code ? ` · ${qo.catalog_options.code}` : ''}</div>
+                      <div>
+                        {qo.catalog_options?.name}
+                        {finishLabel ? ` — ${finishLabel}` : ''}
+                        {qo.catalog_options?.code ? ` · ${qo.catalog_options.code}` : ''}
+                      </div>
                       {qtyLabel && <div className="text-xs text-[var(--color-muted)]">{qtyLabel}</div>}
                     </td>
                     <td className="py-2 text-right">

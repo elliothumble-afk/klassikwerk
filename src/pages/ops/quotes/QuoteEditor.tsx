@@ -107,12 +107,20 @@ export function QuoteEditor() {
 
       // Cost model inputs needed for the ops Margin panel.
       let categories: { id: string; install_hours: number; paint_hours: number; paint_materials_cents: number }[] = []
+      let finishSets: { id: string; name: string; applies_to_category_ids: string[]; sort: number }[] = []
+      let finishes: { id: string; finish_set_id: string; name: string; paint_hours_override: number | null; materials_cents_override: number | null; sort: number; active: boolean }[] = []
       if (pricingMode === 'cost_based') {
-        const cr = await supabase.from('catalog_categories')
-          .select('id, install_hours, paint_hours, paint_materials_cents')
-          .eq('builder_id', builderId)
+        const [cr, fsr, fr] = await Promise.all([
+          supabase.from('catalog_categories').select('id, install_hours, paint_hours, paint_materials_cents').eq('builder_id', builderId),
+          supabase.from('catalog_finish_sets').select('id, name, applies_to_category_ids, sort').eq('builder_id', builderId).order('sort'),
+          supabase.from('catalog_finishes').select('id, finish_set_id, name, paint_hours_override, materials_cents_override, sort, active').eq('active', true).order('sort'),
+        ])
         if (cr.error) throw cr.error
+        if (fsr.error) throw fsr.error
+        if (fr.error) throw fr.error
         categories = (cr.data ?? []) as typeof categories
+        finishSets = (fsr.data ?? []) as typeof finishSets
+        finishes = (fr.data ?? []) as typeof finishes
       }
 
       return {
@@ -124,8 +132,12 @@ export function QuoteEditor() {
         optionMode: optionMode as 'included_only' | 'priced',
         pricingMode: pricingMode as 'simple' | 'cost_based',
         partnerShopRateCents: tData?.partner_shop_rate_cents ?? 11000,
+        labourRateCents: tData?.labour_rate_cents ?? 20000,
+        paintRateCents: tData?.paint_rate_cents ?? 20000,
         hhFeePct: Number(tData?.hh_fee_pct ?? 0.05),
         categories,
+        finishSets,
+        finishes,
       }
     },
   })
@@ -134,6 +146,8 @@ export function QuoteEditor() {
   const [tierId, setTierId] = useState<string>('')
   const [selection, setSelection] = useState<Selection>({})
   const [quantities, setQuantities] = useState<Record<string, number>>({})
+  const [finishByOption, setFinishByOption] = useState<Record<string, string>>({})
+  const [finishNoteByOption, setFinishNoteByOption] = useState<Record<string, string>>({})
   const [notes, setNotes] = useState<string>('')
 
   useEffect(() => {
@@ -143,6 +157,8 @@ export function QuoteEditor() {
       setNotes(existing.notes ?? '')
       const sel: Selection = {}
       const qty: Record<string, number> = {}
+      const fin: Record<string, string> = {}
+      const finNote: Record<string, string> = {}
       // Need to map option_id → group_id; done once catalog is loaded
       if (catalog) {
         for (const qo of existing.quote_options) {
@@ -150,9 +166,13 @@ export function QuoteEditor() {
           if (!opt) continue
           sel[opt.group_id] = [...(sel[opt.group_id] ?? []), qo.option_id]
           qty[qo.option_id] = qo.quantity ?? 1
+          if (qo.finish_id) fin[qo.option_id] = qo.finish_id
+          if (qo.finish_note) finNote[qo.option_id] = qo.finish_note
         }
         setSelection(sel)
         setQuantities(qty)
+        setFinishByOption(fin)
+        setFinishNoteByOption(finNote)
       }
     } else if (lead?.platform_interest_id && !platformId) {
       setPlatformId(lead.platform_interest_id)
@@ -228,6 +248,52 @@ export function QuoteEditor() {
     return quantities[optionId] ?? 4
   }
 
+  // Finish set that applies to this option (via its category), if any.
+  // Finishes[] filtered to the set, sorted. The first finish is the
+  // default when nothing has been picked.
+  type FinishSetEntry = { set: NonNullable<typeof catalog>['finishSets'][number]; finishes: NonNullable<typeof catalog>['finishes'] }
+  const finishSetByCategoryId = useMemo(() => {
+    const m = new Map<string, FinishSetEntry>()
+    if (!catalog) return m
+    for (const fs of catalog.finishSets) {
+      const members = catalog.finishes
+        .filter(f => f.finish_set_id === fs.id)
+        .sort((a, b) => a.sort - b.sort)
+      for (const catId of fs.applies_to_category_ids) {
+        m.set(catId, { set: fs, finishes: members })
+      }
+    }
+    return m
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catalog])
+
+  function finishForOption(opt: CatalogOption) {
+    if (!opt.category_id) return null
+    const entry = finishSetByCategoryId.get(opt.category_id)
+    if (!entry || entry.finishes.length === 0) return null
+    const pickedId = finishByOption[opt.id]
+    const match = pickedId ? entry.finishes.find(f => f.id === pickedId) : undefined
+    const current = match ?? entry.finishes[0]
+    return { set: entry.set, finishes: entry.finishes, current }
+  }
+
+  // Install price for a given option with the current finish applied.
+  // Null-safe for simple-mode builders.
+  function installPriceForOption(opt: CatalogOption): number {
+    if (catalog?.pricingMode !== 'cost_based' || opt.install_price_cents == null) {
+      return opt.install_price_cents ?? 0
+    }
+    const fin = finishForOption(opt)
+    if (!fin) return opt.install_price_cents
+    const cat = catalog.categories.find(c => c.id === opt.category_id)
+    if (!cat) return opt.install_price_cents
+    const paintH = fin.current.paint_hours_override ?? Number(cat.paint_hours)
+    const materials = fin.current.materials_cents_override ?? cat.paint_materials_cents
+    const labour = Number(cat.install_hours) * catalog.labourRateCents
+      + paintH * catalog.paintRateCents
+    return Math.round(labour + materials)
+  }
+
   // Per-line cost snapshot. Captures the cost model at save time so a
   // sent quote never reprices when Terms or Categories change later.
   // Returns zeros when the builder isn't cost_based or data is missing
@@ -238,14 +304,21 @@ export function QuoteEditor() {
       return { parts_sell_cents: null, landed_cost_cents: null, labour_cents: null, materials_cents: null, partner_cost_cents: null }
     }
     const cat = opt.category_id ? catalog.categories.find(c => c.id === opt.category_id) : null
+    const fin = finishForOption(opt)
     const partsSell = (opt.parts_sell_cents ?? 0) * qty
     const landed    = (opt.landed_cost_cents ?? 0) * qty
-    // Labour billed to the customer (install_price_cents on the option
-    // is labour + paint materials — split them for the snapshot).
-    const materials = cat?.paint_materials_cents ?? 0
-    const labour    = (opt.install_price_cents ?? 0) - materials
-    const partnerHours = cat ? Number(cat.install_hours) + Number(cat.paint_hours) : 0
-    const partnerCost = Math.round(partnerHours * catalog.partnerShopRateCents)
+    // Labour / materials respect the picked finish override. Partner
+    // shop cost uses the SAME effective paint hours so margin tracks
+    // what the shop will actually bill.
+    const paintH = fin?.current.paint_hours_override ?? Number(cat?.paint_hours ?? 0)
+    const materials = fin?.current.materials_cents_override ?? (cat?.paint_materials_cents ?? 0)
+    const labour = Math.round(
+      (Number(cat?.install_hours ?? 0)) * catalog.labourRateCents
+      + paintH * catalog.paintRateCents
+    )
+    const partnerCost = Math.round(
+      (Number(cat?.install_hours ?? 0) + paintH) * catalog.partnerShopRateCents
+    )
     return {
       parts_sell_cents: partsSell,
       landed_cost_cents: landed,
@@ -256,14 +329,12 @@ export function QuoteEditor() {
   }
 
   // Per-line price in cents. For cost_based builders, quantity
-  // multiplies parts but NOT labour (install_price_cents). Everyone
-  // else keeps the legacy behaviour where price_cents × qty is the
-  // line price.
+  // multiplies parts but NOT labour (install_price_cents, with any
+  // finish override applied). Everyone else keeps the legacy behaviour
+  // where price_cents × qty is the line price.
   function lineCents(opt: CatalogOption, qty: number): number {
-    if (catalog?.pricingMode === 'cost_based'
-        && opt.parts_sell_cents != null
-        && opt.install_price_cents != null) {
-      return opt.parts_sell_cents * qty + opt.install_price_cents
+    if (catalog?.pricingMode === 'cost_based' && opt.parts_sell_cents != null) {
+      return opt.parts_sell_cents * qty + installPriceForOption(opt)
     }
     return opt.price_cents * qty
   }
@@ -295,10 +366,13 @@ export function QuoteEditor() {
       if (!opt) continue
       const qty = qtyFor(optId)
       const cat = opt.category_id ? categoryById.get(opt.category_id) : null
+      const fin = finishForOption(opt)
       landed += (opt.landed_cost_cents ?? 0) * qty
       if (cat) {
-        labour += (Number(cat.install_hours) + Number(cat.paint_hours)) * catalog.partnerShopRateCents
-        materials += cat.paint_materials_cents
+        const paintH = fin?.current.paint_hours_override ?? Number(cat.paint_hours)
+        const mats   = fin?.current.materials_cents_override ?? cat.paint_materials_cents
+        labour    += (Number(cat.install_hours) + paintH) * catalog.partnerShopRateCents
+        materials += mats
       }
     }
     const sale = total
@@ -308,7 +382,7 @@ export function QuoteEditor() {
     const marginPct = sale > 0 ? grossAfter / sale : 0
     return { sale, landed, labour, materials, hhFee, grossBefore, grossAfter, marginPct }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selection, quantities, catalog, tier, total])
+  }, [selection, quantities, finishByOption, catalog, tier, total])
 
   function toggleOption(group: OptionGroup, optionId: string) {
     setSelection(prev => {
@@ -350,11 +424,14 @@ export function QuoteEditor() {
           const opt = catalog!.options.find(o => o.id === optionId)!
           const included = opt.included_in_tier_ids.includes(tierId)
           const qty = qtyFor(optionId)
+          const fin = finishForOption(opt)
           return {
             quote_id: existing.id,
             option_id: optionId,
             price_cents_at_selection: included ? 0 : opt.price_cents,
             quantity: qty,
+            finish_id: fin?.current.id ?? null,
+            finish_note: finishNoteByOption[optionId]?.trim() || null,
             ...snapshotFor(optionId, qty),
           }
         })
@@ -390,11 +467,14 @@ export function QuoteEditor() {
         const opt = catalog!.options.find(o => o.id === optionId)!
         const included = opt.included_in_tier_ids.includes(tierId)
         const qty = qtyFor(optionId)
+        const fin = finishForOption(opt)
         return {
           quote_id: quoteId,
           option_id: optionId,
           price_cents_at_selection: included ? 0 : opt.price_cents,
           quantity: qty,
+          finish_id: fin?.current.id ?? null,
+          finish_note: finishNoteByOption[optionId]?.trim() || null,
           ...snapshotFor(optionId, qty),
         }
       })
@@ -473,6 +553,8 @@ export function QuoteEditor() {
         labour_cents: qo.labour_cents ?? null,
         materials_cents: qo.materials_cents ?? null,
         partner_cost_cents: qo.partner_cost_cents ?? null,
+        finish_id: qo.finish_id ?? null,
+        finish_note: qo.finish_note ?? null,
       }))
       if (copies.length) {
         const { error } = await supabase.from('quote_options').insert(copies)
@@ -736,6 +818,43 @@ export function QuoteEditor() {
                                 ))}
                               </div>
                             )}
+                            {active && (() => {
+                              const fin = finishForOption(opt)
+                              if (!fin) return null
+                              const currentId = finishByOption[opt.id] ?? fin.finishes[0]?.id
+                              return (
+                                <div className="pl-11 space-y-1.5">
+                                  <div className="text-[10px] uppercase tracking-wide text-[var(--color-muted)]">
+                                    {fin.set.name}
+                                  </div>
+                                  <div className="flex gap-1.5 flex-wrap">
+                                    {fin.finishes.map(f => (
+                                      <button
+                                        key={f.id}
+                                        type="button"
+                                        disabled={readOnly}
+                                        onClick={() => setFinishByOption(prev => ({ ...prev, [opt.id]: f.id }))}
+                                        className={`text-[11px] px-2 py-1 rounded-[var(--radius-sm)] border transition ${
+                                          currentId === f.id
+                                            ? 'border-[var(--color-accent)] bg-[var(--color-accent)] text-white'
+                                            : 'border-[var(--color-border)] text-[var(--color-muted)] hover:border-[var(--color-accent)]'
+                                        } disabled:opacity-50`}
+                                      >
+                                        {f.name}
+                                      </button>
+                                    ))}
+                                  </div>
+                                  <input
+                                    type="text"
+                                    disabled={readOnly}
+                                    value={finishNoteByOption[opt.id] ?? ''}
+                                    onChange={e => setFinishNoteByOption(prev => ({ ...prev, [opt.id]: e.target.value }))}
+                                    placeholder="Note (colour, paint code, …)"
+                                    className="h-7 w-full max-w-xs text-[11px] px-2 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] disabled:opacity-50"
+                                  />
+                                </div>
+                              )
+                            })()}
                           </div>
                         )
                       })}

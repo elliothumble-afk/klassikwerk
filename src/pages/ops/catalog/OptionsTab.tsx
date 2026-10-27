@@ -291,14 +291,25 @@ function formatPrice(cents: number) {
 // Convert CatalogOptionForm dollars → DB cents payload. Mark
 // category_locked whenever ops picks a category explicitly, so the
 // next sync won't overwrite it.
-function optionFormToDb(data: CatalogOptionForm, builderId: string, originalCategoryId: string | null | undefined) {
+function optionFormToDb(
+  data: CatalogOptionForm,
+  builderId: string,
+  originalCategoryId: string | null | undefined,
+  opts: { costBased: boolean; synced: boolean },
+) {
   const categoryChanged = (data.category_id ?? null) !== (originalCategoryId ?? null)
+  const cents = Math.round(data.price * 100)
+  // For cost_based manual options, the entered Price IS the parts
+  // sell. reprice_builder recomputes price_cents on top of category
+  // labour. For synced + simple-mode we keep the legacy semantics.
+  const costBasedManual = opts.costBased && !opts.synced
   return {
     builder_id: builderId,
     slug: data.slug,
     name: data.name,
     code: data.code ?? null,
-    price_cents: Math.round(data.price * 100),
+    price_cents: costBasedManual ? 0 : cents,
+    manual_parts_sell_cents: costBasedManual ? cents : null,
     included_in_tier_ids: data.included_in_tier_ids,
     sort: data.sort,
     active: data.active,
@@ -567,12 +578,21 @@ interface EditFormProps {
   platforms: Platform[]
   categories: CatalogCategory[]
   origins: Origin[]
+  costBased: boolean
   onSave: (data: CatalogOptionForm, platformIds: string[], id?: string) => Promise<void>
   onCancel: () => void
   saving: boolean
 }
 
-function OptionEditForm({ option, tiers, platforms, categories, origins, onSave, onCancel, saving }: EditFormProps) {
+function OptionEditForm({ option, tiers, platforms, categories, origins, costBased, onSave, onCancel, saving }: EditFormProps) {
+  // For cost_based manual options the Price field means parts sell;
+  // that lives in manual_parts_sell_cents. Otherwise fall back to the
+  // computed price_cents.
+  const defaultPrice = option
+    ? (costBased && !option.synced
+        ? (option.manual_parts_sell_cents ?? 0) / 100
+        : option.price_cents / 100)
+    : 0
   const {
     register,
     handleSubmit,
@@ -586,7 +606,7 @@ function OptionEditForm({ option, tiers, platforms, categories, origins, onSave,
           slug: option.slug,
           name: option.name,
           code: option.code ?? '',
-          price: option.price_cents / 100,
+          price: defaultPrice,
           included_in_tier_ids: option.included_in_tier_ids,
           sort: option.sort,
           active: option.active,
@@ -871,6 +891,7 @@ function GroupSection({
                         platforms={platforms}
                         categories={categories}
                         origins={origins}
+                        costBased={costBased}
                         onSave={onSave}
                         onCancel={() => setEditingId(null)}
                         saving={saving}
@@ -896,6 +917,7 @@ function GroupSection({
                       platforms={platforms}
                       categories={categories}
                       origins={origins}
+                      costBased={costBased}
                       onSave={(data, platIds, id) => onSave(data, platIds, id, group.id)}
                       onCancel={() => setEditingId(null)}
                       saving={saving}
@@ -947,7 +969,13 @@ export function OptionsTab() {
       originalCategoryId?: string | null
     }) => {
       if (!selected) throw new Error('No builder selected')
-      const payload = optionFormToDb(data, selected.id, originalCategoryId)
+      const existing = id ? options?.find(o => o.id === id) : undefined
+      const payload = optionFormToDb(data, selected.id, originalCategoryId, {
+        costBased: Boolean(terms?.pricing_mode === 'cost_based'),
+        // New options are manual (synced=false) by default. The sync is
+        // the only thing that writes synced=true.
+        synced: existing?.synced ?? false,
+      })
       if (id) {
         const { builder_id: _bid, ...update } = payload
         const { error } = await supabase.from('catalog_options').update(update).eq('id', id)

@@ -310,7 +310,12 @@ export function QuotePdf(input: QuotePdfInput) {
                       <View style={styles.swatch} />
                     )}
                     <View style={styles.optionTextWrap}>
-                      <Text style={styles.optionName}>{o.name}</Text>
+                      <Text style={styles.optionName}>
+                        {o.name}
+                        {o.finish_name
+                          ? ` — ${o.finish_name}${o.finish_note ? `, ${o.finish_note}` : ''}`
+                          : ''}
+                      </Text>
                       {qtyLabel ? (
                         <Text style={styles.optionCode}>
                           {qtyLabel}{o.code ? ` · ${o.code}` : ''}

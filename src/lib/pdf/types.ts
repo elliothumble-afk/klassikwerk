@@ -67,6 +67,8 @@ export interface OptionLineForPdf {
    *  otherwise fall back to legacy price_cents × qty behaviour. */
   parts_sell_cents: number | null
   install_price_cents: number | null
+  finish_name: string | null
+  finish_note: string | null
 }
 
 export interface PdfPricingMode {

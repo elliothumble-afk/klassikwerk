@@ -5,9 +5,9 @@ import { Check, Plus, Trash2 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { Spinner } from '@/components/ui/Spinner'
 import { ErrorState } from '@/components/ui/ErrorState'
-import type { Builder, BuilderTerms, CatalogCategory, Origin } from '@/types/database'
+import type { Builder, BuilderTerms, CatalogCategory, CatalogFinish, CatalogFinishSet, Origin } from '@/types/database'
 
-type Tab = 'terms' | 'categories' | 'origins'
+type Tab = 'terms' | 'categories' | 'origins' | 'finishes'
 
 export function CostingEdit() {
   const { id } = useParams<{ id: string }>()
@@ -44,7 +44,7 @@ export function CostingEdit() {
         <p className="text-sm text-[var(--color-muted)] mb-6">Cost model inputs for the price-at-run computation. Saving reprices the catalog.</p>
 
         <div className="flex gap-4 border-b border-[var(--color-border)] mb-6">
-          {(['terms','categories','origins'] as Tab[]).map(t => (
+          {(['terms','categories','origins','finishes'] as Tab[]).map(t => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -62,6 +62,7 @@ export function CostingEdit() {
         {tab === 'terms' && <TermsTab builderId={id!} reprice={reprice} />}
         {tab === 'categories' && <CategoriesTab builderId={id!} reprice={reprice} />}
         {tab === 'origins' && <OriginsTab builderId={id!} reprice={reprice} />}
+        {tab === 'finishes' && <FinishesTab builderId={id!} reprice={reprice} />}
 
         {status && <p className="mt-4 text-xs text-[var(--color-success)]">{status}</p>}
       </div>
@@ -394,6 +395,285 @@ function OriginsTab({ builderId, reprice }: { builderId: string; reprice: () => 
       >
         {save.isPending ? <Spinner size={13} /> : <Check size={13} />} Save & reprice
       </button>
+    </div>
+  )
+}
+
+// ─── Finishes ─────────────────────────────────────────────────────
+function FinishesTab({ builderId, reprice }: { builderId: string; reprice: () => Promise<void> }) {
+  const qc = useQueryClient()
+  const [newSetName, setNewSetName] = useState('')
+  const [draftFinishes, setDraftFinishes] = useState<Record<string, CatalogFinish>>({})
+  const [newFinishBySet, setNewFinishBySet] = useState<Record<string, string>>({})
+
+  const q = useQuery({
+    queryKey: ['costing', 'finishes', builderId],
+    queryFn: async () => {
+      const [sets, cats, finishes] = await Promise.all([
+        supabase.from('catalog_finish_sets').select('*').eq('builder_id', builderId).order('sort'),
+        supabase.from('catalog_categories').select('id, name').eq('builder_id', builderId).order('sort'),
+        supabase.from('catalog_finishes').select('*').order('sort'),
+      ])
+      if (sets.error) throw sets.error
+      if (cats.error) throw cats.error
+      if (finishes.error) throw finishes.error
+      return {
+        sets: (sets.data ?? []) as CatalogFinishSet[],
+        categories: (cats.data ?? []) as Pick<CatalogCategory, 'id' | 'name'>[],
+        finishes: (finishes.data ?? []) as CatalogFinish[],
+      }
+    },
+  })
+  useEffect(() => {
+    if (!q.data) return
+    const d: Record<string, CatalogFinish> = {}
+    for (const f of q.data.finishes) d[f.id] = { ...f }
+    setDraftFinishes(d)
+  }, [q.data])
+
+  const addSet = useMutation({
+    mutationFn: async () => {
+      const { error } = await supabase.from('catalog_finish_sets').insert({
+        builder_id: builderId,
+        name: newSetName.trim(),
+        applies_to_category_ids: [],
+        sort: (q.data?.sets.length ?? 0) * 10 + 10,
+      })
+      if (error) throw error
+      setNewSetName('')
+      qc.invalidateQueries({ queryKey: ['costing', 'finishes', builderId] })
+    },
+  })
+  const deleteSet = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from('catalog_finish_sets').delete().eq('id', id)
+      if (error) throw error
+      await reprice()
+      qc.invalidateQueries({ queryKey: ['costing', 'finishes', builderId] })
+    },
+  })
+  const saveSet = useMutation({
+    mutationFn: async (set: CatalogFinishSet) => {
+      const { error } = await supabase.from('catalog_finish_sets')
+        .update({ name: set.name, applies_to_category_ids: set.applies_to_category_ids })
+        .eq('id', set.id)
+      if (error) throw error
+      await reprice()
+      qc.invalidateQueries({ queryKey: ['costing', 'finishes', builderId] })
+    },
+  })
+  const addFinish = useMutation({
+    mutationFn: async (setId: string) => {
+      const name = (newFinishBySet[setId] ?? '').trim()
+      if (!name) return
+      const sortMax = Math.max(0, ...q.data!.finishes.filter(f => f.finish_set_id === setId).map(f => f.sort))
+      const { error } = await supabase.from('catalog_finishes').insert({
+        finish_set_id: setId, name, sort: sortMax + 10,
+      })
+      if (error) throw error
+      setNewFinishBySet(prev => ({ ...prev, [setId]: '' }))
+      qc.invalidateQueries({ queryKey: ['costing', 'finishes', builderId] })
+    },
+  })
+  const saveFinish = useMutation({
+    mutationFn: async (f: CatalogFinish) => {
+      const { error } = await supabase.from('catalog_finishes').update({
+        name: f.name,
+        paint_hours_override: f.paint_hours_override,
+        materials_cents_override: f.materials_cents_override,
+        active: f.active,
+      }).eq('id', f.id)
+      if (error) throw error
+      await reprice()
+      qc.invalidateQueries({ queryKey: ['costing', 'finishes', builderId] })
+    },
+  })
+  const deleteFinish = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from('catalog_finishes').delete().eq('id', id)
+      if (error) throw error
+      await reprice()
+      qc.invalidateQueries({ queryKey: ['costing', 'finishes', builderId] })
+    },
+  })
+
+  if (!q.data) return <Spinner size={16} className="text-[var(--color-muted)]" />
+
+  return (
+    <div className="space-y-6">
+      {q.data.sets.map(set => (
+        <FinishSetEditor
+          key={set.id}
+          set={set}
+          categories={q.data!.categories}
+          finishes={q.data!.finishes.filter(f => f.finish_set_id === set.id)}
+          draftFinishes={draftFinishes}
+          setDraftFinishes={setDraftFinishes}
+          onSaveSet={updated => saveSet.mutate(updated)}
+          onDeleteSet={() => deleteSet.mutate(set.id)}
+          onAddFinish={() => addFinish.mutate(set.id)}
+          newFinishName={newFinishBySet[set.id] ?? ''}
+          setNewFinishName={name => setNewFinishBySet(prev => ({ ...prev, [set.id]: name }))}
+          onSaveFinish={f => saveFinish.mutate(f)}
+          onDeleteFinish={id => deleteFinish.mutate(id)}
+        />
+      ))}
+      <div className="flex items-center gap-2">
+        <input
+          value={newSetName}
+          onChange={e => setNewSetName(e.target.value)}
+          placeholder="New finish set name"
+          className="h-9 px-3 w-64 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] text-sm"
+        />
+        <button
+          onClick={() => addSet.mutate()}
+          disabled={!newSetName.trim() || addSet.isPending}
+          className="h-9 px-3 rounded-[var(--radius-sm)] border border-[var(--color-border)] text-sm inline-flex items-center gap-1.5 disabled:opacity-50"
+        >
+          <Plus size={13} /> Add set
+        </button>
+      </div>
+    </div>
+  )
+}
+
+interface FinishSetEditorProps {
+  set: CatalogFinishSet
+  categories: Pick<CatalogCategory, 'id' | 'name'>[]
+  finishes: CatalogFinish[]
+  draftFinishes: Record<string, CatalogFinish>
+  setDraftFinishes: React.Dispatch<React.SetStateAction<Record<string, CatalogFinish>>>
+  onSaveSet: (updated: CatalogFinishSet) => void
+  onDeleteSet: () => void
+  onAddFinish: () => void
+  newFinishName: string
+  setNewFinishName: (name: string) => void
+  onSaveFinish: (f: CatalogFinish) => void
+  onDeleteFinish: (id: string) => void
+}
+
+function FinishSetEditor({
+  set, categories, finishes, draftFinishes, setDraftFinishes,
+  onSaveSet, onDeleteSet, onAddFinish, newFinishName, setNewFinishName, onSaveFinish, onDeleteFinish,
+}: FinishSetEditorProps) {
+  const [name, setName] = useState(set.name)
+  const [appliesTo, setAppliesTo] = useState<string[]>(set.applies_to_category_ids)
+  useEffect(() => { setName(set.name); setAppliesTo(set.applies_to_category_ids) }, [set])
+
+  function toggleCat(id: string) {
+    setAppliesTo(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
+  }
+
+  return (
+    <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <input
+          value={name} onChange={e => setName(e.target.value)}
+          className="h-8 px-3 w-56 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] text-sm font-medium"
+        />
+        <button
+          onClick={() => onSaveSet({ ...set, name, applies_to_category_ids: appliesTo })}
+          className="h-8 px-3 rounded-[var(--radius-sm)] border border-[var(--color-border)] text-xs inline-flex items-center gap-1 hover:bg-[var(--color-surface-raised)]"
+        >
+          <Check size={12} /> Save set
+        </button>
+        <button
+          onClick={onDeleteSet}
+          className="h-8 w-8 rounded-[var(--radius-sm)] text-[var(--color-muted)] hover:text-[var(--color-danger)] inline-flex items-center justify-center ml-auto"
+          aria-label="Delete set"
+        >
+          <Trash2 size={13} />
+        </button>
+      </div>
+
+      <div className="mb-3">
+        <div className="text-xs text-[var(--color-muted)] mb-1.5">Applies to categories</div>
+        <div className="flex flex-wrap gap-1.5">
+          {categories.map(c => {
+            const on = appliesTo.includes(c.id)
+            return (
+              <button
+                key={c.id}
+                onClick={() => toggleCat(c.id)}
+                className={`text-[11px] px-2 py-1 rounded border transition ${
+                  on ? 'border-[var(--color-accent)] bg-[var(--color-accent)] text-white'
+                     : 'border-[var(--color-border)] text-[var(--color-muted)] hover:border-[var(--color-accent)]'
+                }`}
+              >
+                {c.name}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-left text-[var(--color-muted)]">
+            <th className="pr-2 py-1">Finish</th>
+            <th className="pr-2 py-1 w-24">Paint hrs</th>
+            <th className="pr-2 py-1 w-28">Materials $</th>
+            <th className="pr-2 py-1 w-16">Active</th>
+            <th className="pr-2 py-1 w-20"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {finishes.map(f => {
+            const d = draftFinishes[f.id] ?? f
+            const upd = (patch: Partial<CatalogFinish>) =>
+              setDraftFinishes(prev => ({ ...prev, [f.id]: { ...d, ...patch } }))
+            const cls = 'h-7 px-2 w-full rounded-sm border border-[var(--color-border)] bg-[var(--color-surface)]'
+            const numCls = cls + ' text-right'
+            return (
+              <tr key={f.id} className="border-b border-[var(--color-border)]">
+                <td className="pr-2 py-1">
+                  <input className={cls} value={d.name} onChange={e => upd({ name: e.target.value })} />
+                </td>
+                <td className="pr-2 py-1">
+                  <input
+                    className={numCls} type="number" step="0.5" placeholder="(default)"
+                    value={d.paint_hours_override ?? ''}
+                    onChange={e => upd({ paint_hours_override: e.target.value === '' ? null : Number(e.target.value) })}
+                  />
+                </td>
+                <td className="pr-2 py-1">
+                  <input
+                    className={numCls} type="number" step="1" placeholder="(default)"
+                    value={d.materials_cents_override == null ? '' : d.materials_cents_override / 100}
+                    onChange={e => upd({ materials_cents_override: e.target.value === '' ? null : Math.round(Number(e.target.value) * 100) })}
+                  />
+                </td>
+                <td className="pr-2 py-1 text-center">
+                  <input type="checkbox" checked={d.active} onChange={e => upd({ active: e.target.checked })} />
+                </td>
+                <td className="pr-2 py-1 flex gap-1">
+                  <button onClick={() => onSaveFinish(d)} className="h-6 w-6 rounded hover:bg-[var(--color-surface-raised)] inline-flex items-center justify-center" aria-label="Save">
+                    <Check size={12} />
+                  </button>
+                  <button onClick={() => onDeleteFinish(f.id)} className="h-6 w-6 rounded text-[var(--color-muted)] hover:text-[var(--color-danger)] inline-flex items-center justify-center" aria-label="Delete">
+                    <Trash2 size={12} />
+                  </button>
+                </td>
+              </tr>
+            )
+          })}
+          <tr>
+            <td className="pr-2 py-1">
+              <input
+                className="h-7 px-2 w-full rounded-sm border border-[var(--color-border)] bg-[var(--color-surface)]"
+                placeholder="New finish name" value={newFinishName}
+                onChange={e => setNewFinishName(e.target.value)}
+              />
+            </td>
+            <td className="pr-2 py-1 text-[var(--color-muted)]" colSpan={3}>Blank overrides use the category defaults.</td>
+            <td className="pr-2 py-1">
+              <button onClick={onAddFinish} disabled={!newFinishName.trim()} className="h-6 w-6 rounded hover:bg-[var(--color-surface-raised)] text-[var(--color-accent)] disabled:opacity-40 inline-flex items-center justify-center" aria-label="Add">
+                <Plus size={12} />
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   )
 }

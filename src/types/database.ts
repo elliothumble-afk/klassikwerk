@@ -398,6 +398,66 @@ export type Database = {
         }
         Relationships: []
       }
+      catalog_finish_sets: {
+        Row: {
+          id: string
+          builder_id: string
+          name: string
+          applies_to_category_ids: string[]
+          sort: number
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          builder_id: string
+          name: string
+          applies_to_category_ids?: string[]
+          sort?: number
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          name?: string
+          applies_to_category_ids?: string[]
+          sort?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      catalog_finishes: {
+        Row: {
+          id: string
+          finish_set_id: string
+          name: string
+          paint_hours_override: number | null
+          materials_cents_override: number | null
+          sort: number
+          active: boolean
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          finish_set_id: string
+          name: string
+          paint_hours_override?: number | null
+          materials_cents_override?: number | null
+          sort?: number
+          active?: boolean
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          name?: string
+          paint_hours_override?: number | null
+          materials_cents_override?: number | null
+          sort?: number
+          active?: boolean
+          updated_at?: string
+        }
+        Relationships: []
+      }
       origins: {
         Row: {
           id: string
@@ -612,6 +672,8 @@ export type Database = {
           labour_cents: number | null
           materials_cents: number | null
           partner_cost_cents: number | null
+          finish_id: string | null
+          finish_note: string | null
           created_at: string
         }
         Insert: {
@@ -625,6 +687,8 @@ export type Database = {
           labour_cents?: number | null
           materials_cents?: number | null
           partner_cost_cents?: number | null
+          finish_id?: string | null
+          finish_note?: string | null
           created_at?: string
         }
         Update: {
@@ -637,6 +701,8 @@ export type Database = {
           labour_cents?: number | null
           materials_cents?: number | null
           partner_cost_cents?: number | null
+          finish_id?: string | null
+          finish_note?: string | null
         }
         Relationships: []
       }
@@ -1014,6 +1080,7 @@ export type Database = {
           parts_sell_cents: number | null
           install_price_cents: number | null
           landed_cost_cents: number | null
+          manual_parts_sell_cents: number | null
           created_at: string
           updated_at: string
         }
@@ -1038,6 +1105,7 @@ export type Database = {
           parts_sell_cents?: number | null
           install_price_cents?: number | null
           landed_cost_cents?: number | null
+          manual_parts_sell_cents?: number | null
           created_at?: string
           updated_at?: string
         }
@@ -1061,6 +1129,7 @@ export type Database = {
           parts_sell_cents?: number | null
           install_price_cents?: number | null
           landed_cost_cents?: number | null
+          manual_parts_sell_cents?: number | null
           updated_at?: string
         }
         Relationships: []
@@ -1190,6 +1259,26 @@ export interface CatalogCategory {
   default_origin_id: string | null
   shopify_tags: string[]
   sort: number
+  created_at: string
+  updated_at: string
+}
+export interface CatalogFinishSet {
+  id: string
+  builder_id: string
+  name: string
+  applies_to_category_ids: string[]
+  sort: number
+  created_at: string
+  updated_at: string
+}
+export interface CatalogFinish {
+  id: string
+  finish_set_id: string
+  name: string
+  paint_hours_override: number | null
+  materials_cents_override: number | null
+  sort: number
+  active: boolean
   created_at: string
   updated_at: string
 }

@@ -75,6 +75,9 @@ async function seed(): Promise<Seed> {
     if (target == null) continue
     await admin.from('catalog_options').update({ web_price_cents: target }).eq('id', row.id)
   }
+  // Pin the Body kit install_hours to the workbook value (24) in
+  // case category edits have drifted it. Reset afterwards in cleanup.
+  await admin.from('catalog_categories').update({ install_hours: 24 }).eq('builder_id', CTC_ID).eq('name', 'Body kit')
   await admin.rpc('reprice_builder', { target_builder: CTC_ID })
 
   // 2. Scratch customer + lead.
@@ -132,7 +135,11 @@ test('Phase 5 — Grenadier $44,312 scenario matches the workbook', async ({ pag
     await page.getByRole('button', { name: new RegExp(s.platformName, 'i') }).first().click()
     await page.getByRole('button', { name: new RegExp(s.tierName, 'i') }).first().click()
 
-    // Pick all four options. The wheel needs qty 5.
+    // Pick all four options. Picked finishes drive paint hours and
+    // materials for cost_based builders — body kit + leather need
+    // explicit choices to match the workbook (which was authored
+    // before finishes existed, so uses category defaults = full paint
+    // on body-kit, no paint on leather).
     for (const o of s.options) {
       const safe = o.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
       const tile = page.getByRole('button', { name: new RegExp(safe, 'i') }).first()
@@ -141,6 +148,16 @@ test('Phase 5 — Grenadier $44,312 scenario matches the workbook', async ({ pag
       if (o.sku === 'WAKRF9468M1F-1') {
         // Non-kit wheel — chips are visible; pick the "+ matching spare".
         await page.getByRole('button', { name: 'Set of 4 + matching spare' }).click()
+      }
+      if (o.sku === 'WAKMF9268M1F-KIT') {
+        // Body kit: pick "Body-colour paint" so the workbook's
+        // category defaults (24h install, 16h paint, $1,500 materials)
+        // apply — the first-chip default "No finish" would zero paint.
+        await page.getByRole('button', { name: 'Body-colour paint', exact: true }).click()
+      }
+      if (o.sku === 'LSCIC24SDWS3N') {
+        // Leather interior: pick "Black" (no overrides).
+        await page.getByRole('button', { name: 'Black', exact: true }).click()
       }
     }
 

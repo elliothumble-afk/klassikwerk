@@ -403,6 +403,33 @@ function CostDrawer({ option, category, origin, terms, onClose }: CostDrawerProp
   )
 }
 
+// ─── Column header row ──────────────────────────────────────────────────────
+// Lives above the virtualized list, inside the bordered container.
+// Mirrors every width in OptionRow so columns line up with the data
+// below. "Parts sell" labels the price column on cost_based builders;
+// simple-mode gets a plain "Price" label.
+
+function ColumnHeader({ costBased, showTierChips }: { costBased: boolean; showTierChips: boolean }) {
+  const cls = 'text-[10px] uppercase tracking-wide text-[var(--color-muted)] font-medium'
+  return (
+    <div className="flex items-center gap-3 px-4 h-9 border-b border-[var(--color-border)] bg-[var(--color-surface-raised)]/60">
+      {/* Thumbnail slot */}
+      <div className="w-9 shrink-0" />
+      {/* Option name + SKU */}
+      <div className={`min-w-0 flex-1 ${cls}`}>Option</div>
+      {costBased && <div className={`w-40 shrink-0 ${cls}`}>Category</div>}
+      <div className={`w-32 shrink-0 ${cls}`}>Platforms</div>
+      <div className={`w-28 shrink-0 text-right ${cls}`}>{costBased ? 'Parts sell' : 'Price'}</div>
+      {costBased && <div className={`w-24 shrink-0 text-right ${cls}`}>Cost</div>}
+      {showTierChips && <div className={`w-40 shrink-0 ${cls}`}>Tiers</div>}
+      <div className={`w-4 shrink-0 ${cls}`}>Active</div>
+      {/* Actions column — intentionally blank per the spec. */}
+      {costBased && <div className="w-[13px] shrink-0" />}
+      <div className="w-[13px] shrink-0" />
+    </div>
+  )
+}
+
 // ─── Virtualized list items ──────────────────────────────────────────────────
 
 type ListItem =
@@ -556,10 +583,14 @@ function OptionRow({
         )}
       </div>
 
-      {/* Cost column — only for cost_based manual rows. */}
+      {/* Cost column — only on cost_based builders. Manual rows show
+          the operator cost (or an em-dash when blank); synced rows
+          leave the cell empty since cost is derived server-side. */}
       {costBased && (
         <div className="w-24 shrink-0 text-right text-sm text-[var(--color-muted)]">
-          {isManual && costCents != null ? `$${(costCents / 100).toLocaleString('en-US')}` : '—'}
+          {isManual
+            ? (costCents == null ? '—' : `$${(costCents / 100).toLocaleString('en-US')}`)
+            : ''}
         </div>
       )}
 
@@ -1185,7 +1216,12 @@ export function OptionsTab() {
       {items.length === 0 ? (
         <EmptyState title="No options match these filters" description="Clear the filters above to see more." />
       ) : (
-        <div className="flex-1 min-h-0 border border-[var(--color-border)] rounded-[var(--radius-md)] overflow-hidden mt-3">
+        <div className="flex-1 min-h-0 border border-[var(--color-border)] rounded-[var(--radius-md)] overflow-hidden mt-3 flex flex-col">
+          <ColumnHeader
+            costBased={costBased}
+            showTierChips={showTierChips}
+          />
+          <div className="flex-1 min-h-0">
           <List
             rowCount={items.length}
             rowHeight={rowHeight}
@@ -1209,6 +1245,7 @@ export function OptionsTab() {
               onOpenCost: (o: OptionWithPlatforms) => setCostOptionId(o.id),
             }}
           />
+          </div>
         </div>
       )}
 

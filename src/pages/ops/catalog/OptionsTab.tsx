@@ -6,10 +6,10 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { List } from 'react-window'
 import {
   Pencil, Check, X, ToggleLeft, ToggleRight, Upload, Image,
-  ChevronDown, ChevronRight, Search, Plus,
+  ChevronDown, ChevronRight, Search, Plus, DollarSign,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
-import type { CatalogOption, Tier, Platform, OptionGroup, BuilderTerms } from '@/types/database'
+import type { CatalogOption, Tier, Platform, OptionGroup, BuilderTerms, CatalogCategory, Origin } from '@/types/database'
 import { catalogOptionSchema, type CatalogOptionForm } from '@/schemas/catalog'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorState } from '@/components/ui/ErrorState'
@@ -114,6 +114,32 @@ function useBuilderTerms(builderId?: string) {
         .select('*').eq('builder_id', builderId!).maybeSingle()
       if (error) throw error
       return data as BuilderTerms | null
+    },
+  })
+}
+
+function useCategories(builderId?: string) {
+  return useQuery({
+    queryKey: ['catalog', 'categories', builderId ?? 'none'],
+    enabled: Boolean(builderId),
+    queryFn: async () => {
+      const { data, error } = await supabase.from('catalog_categories')
+        .select('*').eq('builder_id', builderId!).order('sort')
+      if (error) throw error
+      return data as CatalogCategory[]
+    },
+  })
+}
+
+function useOrigins(builderId?: string) {
+  return useQuery({
+    queryKey: ['catalog', 'origins', builderId ?? 'none'],
+    enabled: Boolean(builderId),
+    queryFn: async () => {
+      const { data, error } = await supabase.from('origins')
+        .select('*').eq('builder_id', builderId!).order('sort')
+      if (error) throw error
+      return data as Origin[]
     },
   })
 }
@@ -226,6 +252,132 @@ function PlatformsCell({ ids, platforms }: { ids: string[]; platforms: Platform[
   )
 }
 
+// ─── Cost drawer ─────────────────────────────────────────────────────────────
+// Mirrors the Catalog sheet in the costing workbook: web price →
+// retail → kit cost → freight / duty / tariff / s232 / fees → landed
+// + parts sell → labour / materials / install → final. Computes the
+// intermediates client-side from the option + category + origin +
+// terms; the stored parts_sell / landed / install / price are shown
+// as the strong rows so a mismatch between client math and the DB
+// surfaces visually.
+
+interface CostDrawerProps {
+  option: CatalogOption
+  category: CatalogCategory | null
+  origin: Origin | null
+  terms: BuilderTerms
+  onClose: () => void
+}
+
+function CostDrawer({ option, category, origin, terms, onClose }: CostDrawerProps) {
+  const d = (c: number) => `$${c.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  const pct = (p: number) => `${(p * 100).toFixed(2)}%`
+
+  const isManual = !option.synced
+  const webGbp = (option.web_price_cents ?? 0) / 100
+  const retail = isManual
+    ? (option.manual_parts_sell_cents ?? 0) / 100
+    : webGbp * Number(terms.fx_rate)
+  const kitCost = isManual ? retail : retail * (1 - Number(terms.trade_discount_pct))
+  const freight = isManual ? 0 : (category?.freight_cents ?? 0) / 100
+  const dutyPct = isManual ? 0 : Number(category?.hts_duty_pct ?? 0)
+  const duty = kitCost * dutyPct
+  const tariffPct = isManual ? 0 : Number(origin?.tariff_pct ?? 0)
+  const tariff = kitCost * tariffPct
+  const isWheels = category?.name === 'Alloy wheels'
+  const s232Pct = isManual ? 0 : Number(origin?.s232_aluminium_pct ?? 0)
+  const s232 = !isManual && isWheels ? kitCost * Number(terms.aluminium_share_pct) * s232Pct : 0
+  const mpf = isManual ? 0 : kitCost * Number(terms.mpf_pct)
+  const brokeragePer = isManual ? 0 : (terms.brokerage_cents / 100) / Math.max(1, terms.items_per_shipment)
+  const fees = mpf + brokeragePer
+  const landed = (option.landed_cost_cents ?? 0) / 100
+  const partsSell = (option.parts_sell_cents ?? 0) / 100
+  const installH = Number(category?.install_hours ?? 0)
+  const paintH = Number(category?.paint_hours ?? 0)
+  const labour = installH * (terms.labour_rate_cents / 100) + paintH * (terms.paint_rate_cents / 100)
+  const materials = (category?.paint_materials_cents ?? 0) / 100
+  const install = (option.install_price_cents ?? 0) / 100
+  const total = (option.price_cents ?? 0) / 100
+
+  interface DrawerRow { label: string; detail?: string; value: string; strong?: boolean; muted?: boolean }
+  const rows: DrawerRow[] = isManual
+    ? [
+        { label: 'Parts sell (manual)', value: d(partsSell), strong: true },
+        { label: 'Labour', detail: `${installH}h × $${terms.labour_rate_cents/100} + ${paintH}h × $${terms.paint_rate_cents/100}`, value: d(labour) },
+        { label: 'Paint materials', value: d(materials) },
+        { label: 'Install price', detail: 'labour + materials', value: d(install), strong: true },
+        { label: 'Final price', detail: 'parts sell + install', value: d(total), strong: true },
+      ]
+    : [
+        { label: 'Web price', detail: `£${webGbp.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, value: `× fx ${terms.fx_rate}`, muted: true },
+        { label: 'Retail USD', value: d(retail) },
+        { label: 'Kit cost', detail: `× (1 − ${pct(Number(terms.trade_discount_pct))})`, value: d(kitCost) },
+        { label: 'Freight', detail: category?.name ?? '—', value: d(freight) },
+        { label: 'HTS duty', detail: pct(dutyPct), value: d(duty) },
+        { label: 'Tariff', detail: `${origin?.name ?? '—'} · ${pct(tariffPct)}`, value: d(tariff) },
+        { label: 'Section 232 (aluminium)', detail: isWheels ? `${pct(Number(terms.aluminium_share_pct))} × ${pct(s232Pct)}` : 'wheels only', value: d(s232), muted: !isWheels },
+        { label: 'MPF + brokerage', detail: `MPF ${pct(Number(terms.mpf_pct))} + $${brokeragePer.toFixed(2)}/item`, value: d(fees) },
+        { label: 'Landed cost', detail: 'kit + freight + duty + tariff + 232 + fees', value: d(landed), strong: true },
+        { label: 'Parts sell', detail: 'retail + landing', value: d(partsSell), strong: true },
+        { label: 'Labour', detail: `${installH}h × $${terms.labour_rate_cents/100} + ${paintH}h × $${terms.paint_rate_cents/100}`, value: d(labour) },
+        { label: 'Paint materials', value: d(materials) },
+        { label: 'Install price', detail: 'labour + materials', value: d(install), strong: true },
+        { label: 'Final price', detail: 'parts sell + install', value: d(total), strong: true },
+      ]
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex justify-end bg-black/40 backdrop-blur-sm"
+      onClick={onClose} role="dialog" aria-modal aria-label={`Cost breakdown for ${option.name}`}
+    >
+      <div
+        className="w-full sm:w-[480px] h-full bg-[var(--color-surface)] shadow-2xl overflow-y-auto"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--color-border)]">
+          <div>
+            <div className="text-xs uppercase tracking-wide text-[var(--color-muted)]">Cost breakdown</div>
+            <div className="text-sm font-medium mt-0.5">{option.name}</div>
+            <div className="text-xs text-[var(--color-muted)] font-mono">{option.code ?? '—'}</div>
+          </div>
+          <button
+            onClick={onClose}
+            className="h-7 w-7 rounded-full hover:bg-[var(--color-border)] inline-flex items-center justify-center"
+            aria-label="Close"
+          >
+            <X size={14} />
+          </button>
+        </div>
+        {!category ? (
+          <div className="p-5 text-sm text-[var(--color-muted)]">
+            No category assigned — set one in the row dropdown.
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+            <tbody>
+              {rows.map(r => (
+                <tr
+                  key={r.label}
+                  className={`border-b border-[var(--color-border)] last:border-0 ${r.strong ? 'bg-[var(--color-surface-raised)]' : ''}`}
+                >
+                  <td className={`py-2 pl-5 pr-2 ${r.muted ? 'text-[var(--color-muted)]' : ''}`}>
+                    <div className={r.strong ? 'font-medium' : ''}>{r.label}</div>
+                    {r.detail && <div className="text-[11px] text-[var(--color-muted)] mt-0.5">{r.detail}</div>}
+                  </td>
+                  <td className={`py-2 pr-5 text-right font-mono tabular-nums ${r.strong ? 'font-medium' : r.muted ? 'text-[var(--color-muted)]' : ''}`}>
+                    {r.value}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
 // ─── Virtualized list items ──────────────────────────────────────────────────
 
 type ListItem =
@@ -239,6 +391,8 @@ interface RowProps {
   items: ListItem[]
   platforms: Platform[]
   tiers: Tier[]
+  categories: CatalogCategory[]
+  costBased: boolean
   showTierChips: boolean
   collapsed: Record<string, boolean>
   toggleCollapse: (groupId: string) => void
@@ -246,6 +400,8 @@ interface RowProps {
   onToggleActive: (o: OptionWithPlatforms) => void
   onSwatchUpload: (id: string, url: string) => void
   savePrice: (optionId: string, cents: number) => void
+  saveCategory: (optionId: string, categoryId: string | null) => void
+  onOpenCost: (option: OptionWithPlatforms) => void
 }
 
 interface RowRenderProps extends RowProps { index: number; style: React.CSSProperties }
@@ -276,6 +432,7 @@ function Row(props: RowRenderProps) {
     )
   }
 
+  const { categories, costBased, saveCategory, onOpenCost } = props as RowRenderProps
   // Option row — single line.
   return (
     <OptionRow
@@ -284,11 +441,15 @@ function Row(props: RowRenderProps) {
       group={it.group}
       platforms={platforms}
       tiers={tiers}
+      categories={categories}
+      costBased={costBased}
       showTierChips={showTierChips}
       onEdit={onEdit}
       onToggleActive={onToggleActive}
       onSwatchUpload={onSwatchUpload}
       savePrice={savePrice}
+      saveCategory={saveCategory}
+      onOpenCost={onOpenCost}
     />
   )
 }
@@ -299,22 +460,24 @@ interface OptionRowStandaloneProps {
   group: OptionGroup
   platforms: Platform[]
   tiers: Tier[]
+  categories: CatalogCategory[]
+  costBased: boolean
   showTierChips: boolean
   onEdit: (o: OptionWithPlatforms) => void
   onToggleActive: (o: OptionWithPlatforms) => void
   onSwatchUpload: (id: string, url: string) => void
   savePrice: (optionId: string, cents: number) => void
+  saveCategory: (optionId: string, categoryId: string | null) => void
+  onOpenCost: (option: OptionWithPlatforms) => void
 }
 
 function OptionRow({
-  style, option, platforms, tiers, showTierChips,
-  onEdit, onToggleActive, onSwatchUpload, savePrice,
+  style, option, platforms, tiers, categories, costBased, showTierChips,
+  onEdit, onToggleActive, onSwatchUpload, savePrice, saveCategory, onOpenCost,
 }: OptionRowStandaloneProps) {
   const isManual = !option.synced
-  const kitSku = (option as { kit_sku?: string | null }).kit_sku ?? option.code
-  // category_id / cost_cents land in Phase 5. Feature-detect so this
-  // UX works both pre- and post-merge.
-  const costCents = (option as { cost_cents?: number | null }).cost_cents ?? null
+  const kitSku = option.code ?? null
+  const costCents = option.cost_cents ?? null
 
   return (
     <div
@@ -332,32 +495,50 @@ function OptionRow({
         </div>
       </div>
 
+      {/* Category dropdown — cost_based builders only. Pre-Phase 5
+          simple-mode builders don't have categories, so skip. */}
+      {costBased && (
+        <div className="w-40 shrink-0">
+          <select
+            value={option.category_id ?? ''}
+            onChange={e => saveCategory(option.id, e.target.value || null)}
+            className="h-7 w-full px-1.5 rounded-sm border border-[var(--color-border)] bg-[var(--color-surface)] text-xs"
+          >
+            <option value="">— uncategorised —</option>
+            {categories.map(c => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+        </div>
+      )}
+
       <div className="w-32 shrink-0 text-xs">
         <PlatformsCell ids={option.platform_ids} platforms={platforms} />
       </div>
 
-      {/* Inline-editable Price (manual only). Synced price is read-only. */}
+      {/* Inline-editable Price. For cost_based builders the row shows
+          parts_sell_cents (set by reprice) read-only on synced rows,
+          and manual rows edit manual_parts_sell_cents directly. For
+          simple-mode this is the plain price_cents field. */}
       <div className="w-28 shrink-0 text-right">
         {isManual ? (
           <InlinePriceEdit
-            value={option.price_cents}
+            value={costBased ? (option.manual_parts_sell_cents ?? 0) : option.price_cents}
             onSave={cents => savePrice(option.id, cents)}
           />
         ) : (
-          <span className="text-sm">{money(option.price_cents)}</span>
+          <span className="text-sm">{money(costBased ? (option.parts_sell_cents ?? option.price_cents) : option.price_cents)}</span>
         )}
       </div>
 
-      {/* Cost column slot — populated when catalog_options.cost_cents
-          exists (Phase 5+). On main we render nothing. */}
-      {costCents != null && (
+      {/* Cost column — only for cost_based manual rows. */}
+      {costBased && (
         <div className="w-24 shrink-0 text-right text-sm text-[var(--color-muted)]">
-          ${(costCents / 100).toLocaleString('en-US')}
+          {isManual && costCents != null ? `$${(costCents / 100).toLocaleString('en-US')}` : '—'}
         </div>
       )}
 
-      {/* Tier chips only when option_mode is included_only. CTC's
-          "priced" mode hides them for a cleaner one-line row. */}
+      {/* Tier chips only when option_mode is included_only. */}
       {showTierChips && (
         <div className="w-40 shrink-0 flex gap-1 flex-wrap">
           {tiers.map(tier => {
@@ -381,6 +562,17 @@ function OptionRow({
       >
         {option.active ? <ToggleRight size={16} /> : <ToggleLeft size={16} />}
       </button>
+
+      {costBased && (
+        <button
+          onClick={() => onOpenCost(option)}
+          className="shrink-0 text-[var(--color-muted)] hover:text-[var(--color-accent)] transition"
+          aria-label="Cost breakdown"
+          title="Cost breakdown"
+        >
+          <DollarSign size={13} />
+        </button>
+      )}
 
       <button
         onClick={() => onEdit(option)}
@@ -698,8 +890,12 @@ export function OptionsTab() {
   const { data: platforms = [] } = usePlatforms(selected?.id)
   const { data: groups = [] } = useOptionGroups(selected?.id)
   const { data: terms } = useBuilderTerms(selected?.id)
+  const costBased = terms?.pricing_mode === 'cost_based'
+  const { data: categories = [] } = useCategories(costBased ? selected?.id : undefined)
+  const { data: origins = [] } = useOrigins(costBased ? selected?.id : undefined)
 
   const showTierChips = terms?.option_mode === 'included_only'
+  const [costOptionId, setCostOptionId] = useState<string | null>(null)
 
   const [filters, setFilters] = useState<Filters>({
     platformId: '', groupId: '', search: '', activeOnly: false, manualOnly: false, missingPriceOnly: false,
@@ -803,14 +999,49 @@ export function OptionsTab() {
   })
 
   const priceMut = useMutation({
-    mutationFn: async ({ id, cents }: { id: string; cents: number }) => {
-      const { error } = await supabase.from('catalog_options').update({ price_cents: cents }).eq('id', id)
-      if (error) throw error
+    mutationFn: async ({ id, cents, isManual }: { id: string; cents: number; isManual: boolean }) => {
+      // For cost_based manual options, the row's Price is the parts-
+      // sell input (manual_parts_sell_cents). reprice recomputes
+      // price_cents on top of category labour. For everyone else
+      // (synced + simple-mode) write price_cents directly.
+      if (costBased && isManual) {
+        const { error } = await supabase.from('catalog_options').update({ manual_parts_sell_cents: cents }).eq('id', id)
+        if (error) throw error
+        await supabase.rpc('reprice_builder', { target_builder: selected!.id })
+      } else {
+        const { error } = await supabase.from('catalog_options').update({ price_cents: cents }).eq('id', id)
+        if (error) throw error
+      }
     },
-    onMutate: async ({ id, cents }) => {
+    onMutate: async ({ id, cents, isManual }) => {
       await qc.cancelQueries({ queryKey: OPTIONS_KEY })
       const prev = qc.getQueryData<OptionWithPlatforms[]>(OPTIONS_KEY)
-      qc.setQueryData<OptionWithPlatforms[]>(OPTIONS_KEY, old => old?.map(x => x.id === id ? { ...x, price_cents: cents } : x))
+      qc.setQueryData<OptionWithPlatforms[]>(OPTIONS_KEY, old => old?.map(x => {
+        if (x.id !== id) return x
+        return costBased && isManual
+          ? { ...x, manual_parts_sell_cents: cents }
+          : { ...x, price_cents: cents }
+      }))
+      return { prev }
+    },
+    onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(OPTIONS_KEY, ctx.prev) },
+    onSettled: () => qc.invalidateQueries({ queryKey: OPTIONS_KEY }),
+  })
+
+  const categoryMut = useMutation({
+    mutationFn: async ({ id, categoryId }: { id: string; categoryId: string | null }) => {
+      const { error } = await supabase.from('catalog_options')
+        .update({ category_id: categoryId, category_locked: categoryId != null })
+        .eq('id', id)
+      if (error) throw error
+      await supabase.rpc('reprice_builder', { target_builder: selected!.id })
+    },
+    onMutate: async ({ id, categoryId }) => {
+      await qc.cancelQueries({ queryKey: OPTIONS_KEY })
+      const prev = qc.getQueryData<OptionWithPlatforms[]>(OPTIONS_KEY)
+      qc.setQueryData<OptionWithPlatforms[]>(OPTIONS_KEY, old => old?.map(x =>
+        x.id === id ? { ...x, category_id: categoryId, category_locked: categoryId != null } : x,
+      ))
       return { prev }
     },
     onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(OPTIONS_KEY, ctx.prev) },
@@ -870,12 +1101,17 @@ export function OptionsTab() {
             // Cast once at the use site rather than fight the generic.
             rowComponent={Row as unknown as never}
             rowProps={{
-              items, platforms, tiers, showTierChips, collapsed,
+              items, platforms, tiers, categories, costBased, showTierChips, collapsed,
               toggleCollapse,
               onEdit: (o: OptionWithPlatforms) => setEditing({ option: o, groupId: o.group_id }),
               onToggleActive: (o: OptionWithPlatforms) => toggleActiveMut.mutate(o),
               onSwatchUpload: handleSwatchUpload,
-              savePrice: (id: string, cents: number) => priceMut.mutate({ id, cents }),
+              savePrice: (id: string, cents: number) => {
+                const opt = (options ?? []).find(x => x.id === id)
+                priceMut.mutate({ id, cents, isManual: !opt?.synced })
+              },
+              saveCategory: (id: string, categoryId: string | null) => categoryMut.mutate({ id, categoryId }),
+              onOpenCost: (o: OptionWithPlatforms) => setCostOptionId(o.id),
             }}
           />
         </div>
@@ -893,6 +1129,23 @@ export function OptionsTab() {
           saving={saving}
         />
       )}
+
+      {costOptionId && terms && costBased && (() => {
+        const opt = (options ?? []).find(x => x.id === costOptionId)
+        if (!opt) return null
+        const cat = opt.category_id ? categories.find(c => c.id === opt.category_id) ?? null : null
+        const originId = opt.origin_id ?? cat?.default_origin_id ?? null
+        const origin = originId ? origins.find(o => o.id === originId) ?? null : null
+        return (
+          <CostDrawer
+            option={opt}
+            category={cat}
+            origin={origin}
+            terms={terms}
+            onClose={() => setCostOptionId(null)}
+          />
+        )
+      })()}
     </div>
   )
 }

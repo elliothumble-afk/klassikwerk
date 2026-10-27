@@ -21,6 +21,7 @@
     "react-dom": "^19.0.0",
     "react-hook-form": "^7.54.2",
     "react-router": "^7.1.1",
+    "react-window": "^2.5.1",
     "zod": "^3.24.1"
   },
   "devDependencies": {
@@ -28,6 +29,7 @@
     "@tailwindcss/vite": "^4.1.8",
     "@types/react": "^19.0.10",
     "@types/react-dom": "^19.0.4",
+    "@types/react-window": "^1.8.8",
     "@vitejs/plugin-react": "^4.3.4",
     "tailwindcss": "^4.1.8",
     "typescript": "~5.7.3",

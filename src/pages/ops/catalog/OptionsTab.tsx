@@ -151,18 +151,43 @@ function money(cents: number): string {
   return `$${(cents / 100).toLocaleString('en-US')}`
 }
 
-function optionFormToDb(data: CatalogOptionForm, builderId: string) {
+// Everything the form writes except the price fields; the three
+// pricing branches below layer on top.
+function baseFormDb(data: CatalogOptionForm, builderId: string) {
   return {
     builder_id: builderId,
     slug: data.slug,
     name: data.name,
     code: data.code ?? null,
-    price_cents: Math.round(data.price * 100),
     included_in_tier_ids: data.included_in_tier_ids,
     sort: data.sort,
     active: data.active,
     sold_as_set: data.sold_as_set,
   }
+}
+
+// Form → DB payload. Pricing semantics branch on builder mode and
+// whether the option is manual or synced:
+//   - cost_based manual : write manual_parts_sell_cents + cost_cents.
+//                         Never price_cents — reprice_builder owns it.
+//   - cost_based synced : don't touch price fields; the sync + reprice
+//                         own them.
+//   - simple-mode       : write price_cents (manual & synced).
+function optionFormToDb(
+  data: CatalogOptionForm,
+  builderId: string,
+  mode: 'cost_based_manual' | 'cost_based_synced' | 'simple',
+) {
+  const base = baseFormDb(data, builderId)
+  if (mode === 'cost_based_manual') {
+    return {
+      ...base,
+      manual_parts_sell_cents: Math.round(data.price * 100),
+      cost_cents: data.cost == null ? null : Math.round(data.cost * 100),
+    }
+  }
+  if (mode === 'cost_based_synced') return base
+  return { ...base, price_cents: Math.round(data.price * 100) }
 }
 
 // ─── Swatch (thumbnail + lightbox) ───────────────────────────────────────────
@@ -636,23 +661,40 @@ interface EditFormProps {
   groupId: string
   tiers: Tier[]
   platforms: Platform[]
+  costBased: boolean
   showTierChips: boolean
   onSave: (data: CatalogOptionForm, platformIds: string[], id?: string, groupId?: string) => Promise<void>
   onCancel: () => void
   saving: boolean
 }
 
-function OptionEditForm({ option, groupId, tiers, platforms, showTierChips, onSave, onCancel, saving }: EditFormProps) {
+function OptionEditForm({ option, groupId, tiers, platforms, costBased, showTierChips, onSave, onCancel, saving }: EditFormProps) {
+  const isSynced = !!option?.synced
+  const isManual = !isSynced
+  // Which column the `price` field is bound to in the DB.
+  // cost_based manual → manual_parts_sell_cents (parts sell input).
+  // simple-mode manual/synced → price_cents (plain price).
+  // cost_based synced → form hides the field; sync + reprice own it.
+  const priceCentsForForm = (() => {
+    if (!option) return 0
+    if (costBased && isManual) return option.manual_parts_sell_cents ?? 0
+    return option.price_cents
+  })()
+
   const { register, handleSubmit, setValue, watch, formState: { errors } } = useForm<CatalogOptionForm>({
     resolver: zodResolver(catalogOptionSchema),
     defaultValues: option
       ? {
           slug: option.slug, name: option.name, code: option.code ?? '',
-          price: option.price_cents / 100,
+          price: priceCentsForForm / 100,
           included_in_tier_ids: option.included_in_tier_ids,
           sort: option.sort, active: option.active, sold_as_set: option.sold_as_set ?? false,
+          category_id: option.category_id ?? '',
+          origin_id: option.origin_id ?? '',
+          cost: option.cost_cents == null ? null : option.cost_cents / 100,
         }
-      : { price: 0, included_in_tier_ids: [], sort: 0, active: true, sold_as_set: false },
+      : { price: 0, included_in_tier_ids: [], sort: 0, active: true, sold_as_set: false,
+          category_id: '', origin_id: '', cost: null },
   })
 
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(option?.platform_ids ?? [])
@@ -690,13 +732,46 @@ function OptionEditForm({ option, groupId, tiers, platforms, showTierChips, onSa
             <label className="text-xs text-[var(--color-muted)] mb-1 block">Code</label>
             <input {...register('code')} className={inputClass} />
           </div>
-          <div>
-            <label className="text-xs text-[var(--color-muted)] mb-1 block">Price</label>
-            <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-[var(--color-muted)]">$</span>
-              <input {...register('price')} type="number" step="0.01" min="0" className={`${inputClass} pl-7`} />
+
+          {/* Price UI branches on pricing mode and synced-ness.
+              cost_based manual : Parts sell + Cost (both editable),
+                                  computed price shown read-only below.
+              cost_based synced : the sync + reprice own both numbers;
+                                  the form has nothing to say.
+              simple-mode      : plain Price field (manual + synced). */}
+          {costBased && isManual && (
+            <>
+              <div>
+                <label className="text-xs text-[var(--color-muted)] mb-1 block">Parts sell $</label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-[var(--color-muted)]">$</span>
+                  <input {...register('price')} type="number" step="0.01" min="0" className={`${inputClass} pl-7`} />
+                </div>
+              </div>
+              <div>
+                <label
+                  className="text-xs text-[var(--color-muted)] mb-1 block"
+                  title="Operator cost per unit. Blank = assume cost equals sell (zero margin on parts)."
+                >
+                  Cost $ (optional)
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-[var(--color-muted)]">$</span>
+                  <input {...register('cost')} type="number" step="0.01" min="0" className={`${inputClass} pl-7`} placeholder="(blank)" />
+                </div>
+              </div>
+            </>
+          )}
+          {!costBased && (
+            <div>
+              <label className="text-xs text-[var(--color-muted)] mb-1 block">Price</label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-[var(--color-muted)]">$</span>
+                <input {...register('price')} type="number" step="0.01" min="0" className={`${inputClass} pl-7`} />
+              </div>
             </div>
-          </div>
+          )}
+
           <div>
             <label className="text-xs text-[var(--color-muted)] mb-1 block">Sort</label>
             <input {...register('sort')} type="number" className={inputClass} />
@@ -708,6 +783,14 @@ function OptionEditForm({ option, groupId, tiers, platforms, showTierChips, onSa
             <input {...register('sold_as_set')} type="checkbox" /> Sold as set of 4
           </label>
         </div>
+
+        {costBased && option && (
+          <div className="text-xs text-[var(--color-muted)]">
+            {isSynced
+              ? <>Price set by sync; reprice recalculates when terms, categories or origins change.</>
+              : <>Price incl. fitting: <span className="text-[var(--color-foreground)] font-medium">{money(option.price_cents)}</span></>}
+          </div>
+        )}
 
         {showTierChips && (
           <div>
@@ -956,7 +1039,14 @@ export function OptionsTab() {
       data: CatalogOptionForm; platformIds: string[]; id?: string; groupId?: string
     }) => {
       if (!selected) throw new Error('No builder selected')
-      const payload = optionFormToDb(data, selected.id)
+      // Determine pricing mode for this specific row. New options are
+      // treated as manual (sync is the only thing that writes synced=true).
+      const existing = id ? (options ?? []).find(o => o.id === id) : null
+      const isSyncedRow = !!existing?.synced
+      const mode: 'cost_based_manual' | 'cost_based_synced' | 'simple' = costBased
+        ? (isSyncedRow ? 'cost_based_synced' : 'cost_based_manual')
+        : 'simple'
+      const payload = optionFormToDb(data, selected.id, mode)
       if (id) {
         const { builder_id: _bid, ...update } = payload
         const { error } = await supabase.from('catalog_options').update(update).eq('id', id)
@@ -978,6 +1068,11 @@ export function OptionsTab() {
           )
           if (pe.error) throw pe.error
         }
+      }
+      // Reprice so the computed price_cents / parts_sell / landed
+      // refresh immediately after a cost_based save.
+      if (costBased) {
+        await supabase.rpc('reprice_builder', { target_builder: selected.id })
       }
     },
     onSettled: () => qc.invalidateQueries({ queryKey: OPTIONS_KEY }),
@@ -1123,6 +1218,7 @@ export function OptionsTab() {
           groupId={editing.groupId}
           tiers={tiers}
           platforms={platforms}
+          costBased={costBased}
           showTierChips={showTierChips}
           onSave={handleSave}
           onCancel={() => setEditing(null)}

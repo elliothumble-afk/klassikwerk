@@ -36,11 +36,11 @@ export function QuoteEditor() {
     queryFn: async () => {
       const q = await supabase
         .from('quotes')
-        .select('*, quote_options(*)')
+        .select('*, quote_options(*, quote_option_finishes(finish_set_id, finish_id))')
         .eq('id', existingQuoteId!)
         .single()
       if (q.error) throw q.error
-      return q.data as unknown as Quote & { quote_options: QuoteOption[] }
+      return q.data as unknown as Quote & { quote_options: (QuoteOption & { quote_option_finishes: { finish_set_id: string; finish_id: string }[] })[] }
     },
   })
 
@@ -148,7 +148,8 @@ export function QuoteEditor() {
   const [tierId, setTierId] = useState<string>('')
   const [selection, setSelection] = useState<Selection>({})
   const [quantities, setQuantities] = useState<Record<string, number>>({})
-  const [finishByOption, setFinishByOption] = useState<Record<string, string>>({})
+  // optionId → setId → finishId. One finish per applicable set.
+  const [finishByOption, setFinishByOption] = useState<Record<string, Record<string, string>>>({})
   const [finishNoteByOption, setFinishNoteByOption] = useState<Record<string, string>>({})
   const [notes, setNotes] = useState<string>('')
   // Labour source for the margin panel. Default = builder_terms
@@ -164,7 +165,7 @@ export function QuoteEditor() {
       setNotes(existing.notes ?? '')
       const sel: Selection = {}
       const qty: Record<string, number> = {}
-      const fin: Record<string, string> = {}
+      const fin: Record<string, Record<string, string>> = {}
       const finNote: Record<string, string> = {}
       // Need to map option_id → group_id; done once catalog is loaded
       if (catalog) {
@@ -173,7 +174,9 @@ export function QuoteEditor() {
           if (!opt) continue
           sel[opt.group_id] = [...(sel[opt.group_id] ?? []), qo.option_id]
           qty[qo.option_id] = qo.quantity ?? 1
-          if (qo.finish_id) fin[qo.option_id] = qo.finish_id
+          for (const row of qo.quote_option_finishes ?? []) {
+            fin[qo.option_id] = { ...(fin[qo.option_id] ?? {}), [row.finish_set_id]: row.finish_id }
+          }
           if (qo.finish_note) finNote[qo.option_id] = qo.finish_note
         }
         setSelection(sel)
@@ -266,46 +269,73 @@ export function QuoteEditor() {
   // Finishes[] filtered to the set, sorted. The first finish is the
   // default when nothing has been picked.
   type FinishSetEntry = { set: NonNullable<typeof catalog>['finishSets'][number]; finishes: NonNullable<typeof catalog>['finishes'] }
-  const finishSetByCategoryId = useMemo(() => {
-    const m = new Map<string, FinishSetEntry>()
+  // category id → every finish set that applies, in sort order.
+  const finishSetsByCategoryId = useMemo(() => {
+    const m = new Map<string, FinishSetEntry[]>()
     if (!catalog) return m
-    for (const fs of catalog.finishSets) {
+    const sortedSets = [...catalog.finishSets].sort((a, b) => a.sort - b.sort)
+    for (const fs of sortedSets) {
       const members = catalog.finishes
         .filter(f => f.finish_set_id === fs.id)
         .sort((a, b) => a.sort - b.sort)
       for (const catId of fs.applies_to_category_ids) {
-        m.set(catId, { set: fs, finishes: members })
+        const list = m.get(catId) ?? []
+        list.push({ set: fs, finishes: members })
+        m.set(catId, list)
       }
     }
     return m
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [catalog])
 
-  function finishForOption(opt: CatalogOption) {
-    if (!opt.category_id) return null
-    const entry = finishSetByCategoryId.get(opt.category_id)
-    if (!entry || entry.finishes.length === 0) return null
-    const pickedId = finishByOption[opt.id]
-    const match = pickedId ? entry.finishes.find(f => f.id === pickedId) : undefined
-    const current = match ?? entry.finishes[0]
-    return { set: entry.set, finishes: entry.finishes, current }
+  // All applicable finish sets for an option, with the current pick
+  // (either the operator's choice or the first-sorted finish as the
+  // default). Empty array if the option's category has no sets.
+  function finishesForOption(opt: CatalogOption) {
+    if (!opt.category_id) return []
+    const entries = finishSetsByCategoryId.get(opt.category_id) ?? []
+    const perOption = finishByOption[opt.id] ?? {}
+    return entries
+      .filter(e => e.finishes.length > 0)
+      .map(e => {
+        const pickedId = perOption[e.set.id]
+        const match = pickedId ? e.finishes.find(f => f.id === pickedId) : undefined
+        return { set: e.set, finishes: e.finishes, current: match ?? e.finishes[0] }
+      })
   }
 
-  // Install price for a given option with the current finish applied.
+  // Resolve the effective paint hours / materials for an option by
+  // walking every applicable finish set and taking the first non-null
+  // override across them (sets in sort order). If no finish overrides
+  // either field, fall back to the category default.
+  function effectivePaintAndMaterials(opt: CatalogOption) {
+    const cat = opt.category_id ? catalog?.categories.find(c => c.id === opt.category_id) : null
+    const applied = finishesForOption(opt)
+    let paintH: number | null = null
+    let materials: number | null = null
+    for (const a of applied) {
+      if (paintH == null && a.current.paint_hours_override != null) paintH = a.current.paint_hours_override
+      if (materials == null && a.current.materials_cents_override != null) materials = a.current.materials_cents_override
+    }
+    return {
+      paintHours: paintH ?? Number(cat?.paint_hours ?? 0),
+      materialsCents: materials ?? (cat?.paint_materials_cents ?? 0),
+      installHours: Number(cat?.install_hours ?? 0),
+    }
+  }
+
+  // Install price for a given option with the current finishes applied.
   // Null-safe for simple-mode builders.
   function installPriceForOption(opt: CatalogOption): number {
     if (catalog?.pricingMode !== 'cost_based' || opt.install_price_cents == null) {
       return opt.install_price_cents ?? 0
     }
-    const fin = finishForOption(opt)
-    if (!fin) return opt.install_price_cents
-    const cat = catalog.categories.find(c => c.id === opt.category_id)
-    if (!cat) return opt.install_price_cents
-    const paintH = fin.current.paint_hours_override ?? Number(cat.paint_hours)
-    const materials = fin.current.materials_cents_override ?? cat.paint_materials_cents
-    const labour = Number(cat.install_hours) * catalog.labourRateCents
-      + paintH * catalog.paintRateCents
-    return Math.round(labour + materials)
+    const applied = finishesForOption(opt)
+    if (applied.length === 0) return opt.install_price_cents
+    const { installHours, paintHours, materialsCents } = effectivePaintAndMaterials(opt)
+    const labour = installHours * catalog.labourRateCents
+      + paintHours * catalog.paintRateCents
+    return Math.round(labour + materialsCents)
   }
 
   // Per-line cost snapshot. Captures the cost model at save time so a
@@ -317,34 +347,26 @@ export function QuoteEditor() {
     if (!opt || catalog?.pricingMode !== 'cost_based') {
       return { parts_sell_cents: null, landed_cost_cents: null, labour_cents: null, materials_cents: null, partner_cost_cents: null }
     }
-    const cat = opt.category_id ? catalog.categories.find(c => c.id === opt.category_id) : null
-    const fin = finishForOption(opt)
+    const { installHours, paintHours, materialsCents } = effectivePaintAndMaterials(opt)
     const partsSell = (opt.parts_sell_cents ?? 0) * qty
     const landed    = (opt.landed_cost_cents ?? 0) * qty
-    // Labour / materials respect the picked finish override. Partner
-    // shop cost uses the SAME effective paint hours so margin tracks
-    // what the shop will actually bill.
-    const paintH = fin?.current.paint_hours_override ?? Number(cat?.paint_hours ?? 0)
-    const materials = fin?.current.materials_cents_override ?? (cat?.paint_materials_cents ?? 0)
     const labour = Math.round(
-      (Number(cat?.install_hours ?? 0)) * catalog.labourRateCents
-      + paintH * catalog.paintRateCents
+      installHours * catalog.labourRateCents
+      + paintHours * catalog.paintRateCents
     )
-    // "partner_cost_cents" is the operator's cost of labour at the
-    // chosen source rate — kept as a single column so dashboard math
-    // doesn't need to know which rate was picked. The quote's
-    // labour_source documents the pick for display.
+    // partner_cost_cents holds the operator's labour cost at the
+    // chosen source rate — single column so dashboard math doesn't
+    // need to know which rate was picked. The quote's labour_source
+    // documents the pick.
     const sourceRate = effectiveLabourSource === 'in_house'
       ? catalog.inHouseLabourCostCents
       : catalog.partnerShopRateCents
-    const partnerCost = Math.round(
-      (Number(cat?.install_hours ?? 0) + paintH) * sourceRate
-    )
+    const partnerCost = Math.round((installHours + paintHours) * sourceRate)
     return {
       parts_sell_cents: partsSell,
       landed_cost_cents: landed,
       labour_cents: labour,
-      materials_cents: materials,
+      materials_cents: materialsCents,
       partner_cost_cents: partnerCost,
     }
   }
@@ -389,14 +411,11 @@ export function QuoteEditor() {
       const opt = catalog.options.find(o => o.id === optId)
       if (!opt) continue
       const qty = qtyFor(optId)
-      const cat = opt.category_id ? categoryById.get(opt.category_id) : null
-      const fin = finishForOption(opt)
       landed += (opt.landed_cost_cents ?? 0) * qty
-      if (cat) {
-        const paintH = fin?.current.paint_hours_override ?? Number(cat.paint_hours)
-        const mats   = fin?.current.materials_cents_override ?? cat.paint_materials_cents
-        labour    += (Number(cat.install_hours) + paintH) * sourceRate
-        materials += mats
+      if (opt.category_id && categoryById.has(opt.category_id)) {
+        const { installHours, paintHours, materialsCents } = effectivePaintAndMaterials(opt)
+        labour    += (installHours + paintHours) * sourceRate
+        materials += materialsCents
       }
     }
     const sale = total
@@ -433,6 +452,43 @@ export function QuoteEditor() {
     })
   }
 
+  // Insert quote_options for every selected option and link the
+  // picked finishes via quote_option_finishes. Shared between the
+  // new-quote and the existing-quote resave paths.
+  async function writeOptionsAndFinishes(quoteId: string, tierIdNow: string) {
+    const rows = Object.values(selection).flat().map(optionId => {
+      const opt = catalog!.options.find(o => o.id === optionId)!
+      const included = opt.included_in_tier_ids.includes(tierIdNow)
+      const qty = qtyFor(optionId)
+      return {
+        quote_id: quoteId,
+        option_id: optionId,
+        price_cents_at_selection: included ? 0 : opt.price_cents,
+        quantity: qty,
+        finish_note: finishNoteByOption[optionId]?.trim() || null,
+        ...snapshotFor(optionId, qty),
+      }
+    })
+    if (rows.length === 0) return
+    const ins = await supabase.from('quote_options').insert(rows).select('id, option_id')
+    if (ins.error) throw ins.error
+    const idByOption = new Map<string, string>((ins.data as { id: string; option_id: string }[]).map(r => [r.option_id, r.id]))
+    const links: { quote_option_id: string; finish_set_id: string; finish_id: string }[] = []
+    for (const optionId of Object.values(selection).flat()) {
+      const opt = catalog!.options.find(o => o.id === optionId)!
+      const applied = finishesForOption(opt)
+      const qoId = idByOption.get(optionId)
+      if (!qoId) continue
+      for (const a of applied) {
+        links.push({ quote_option_id: qoId, finish_set_id: a.set.id, finish_id: a.current.id })
+      }
+    }
+    if (links.length) {
+      const lr = await supabase.from('quote_option_finishes').insert(links)
+      if (lr.error) throw lr.error
+    }
+  }
+
   // ---------- Save / revise / send / create contract ----------
   const save = useMutation({
     mutationFn: async () => {
@@ -444,25 +500,7 @@ export function QuoteEditor() {
           .eq('id', existing.id)
         if (upErr) throw upErr
         await supabase.from('quote_options').delete().eq('quote_id', existing.id)
-        const rows = Object.values(selection).flat().map(optionId => {
-          const opt = catalog!.options.find(o => o.id === optionId)!
-          const included = opt.included_in_tier_ids.includes(tierId)
-          const qty = qtyFor(optionId)
-          const fin = finishForOption(opt)
-          return {
-            quote_id: existing.id,
-            option_id: optionId,
-            price_cents_at_selection: included ? 0 : opt.price_cents,
-            quantity: qty,
-            finish_id: fin?.current.id ?? null,
-            finish_note: finishNoteByOption[optionId]?.trim() || null,
-            ...snapshotFor(optionId, qty),
-          }
-        })
-        if (rows.length) {
-          const { error } = await supabase.from('quote_options').insert(rows)
-          if (error) throw error
-        }
+        await writeOptionsAndFinishes(existing.id, tierId)
         return existing.id
       }
       // New: find next version
@@ -488,25 +526,7 @@ export function QuoteEditor() {
       if (q.error) throw q.error
       const quoteId = (q.data as { id: string }).id
 
-      const rows = Object.values(selection).flat().map(optionId => {
-        const opt = catalog!.options.find(o => o.id === optionId)!
-        const included = opt.included_in_tier_ids.includes(tierId)
-        const qty = qtyFor(optionId)
-        const fin = finishForOption(opt)
-        return {
-          quote_id: quoteId,
-          option_id: optionId,
-          price_cents_at_selection: included ? 0 : opt.price_cents,
-          quantity: qty,
-          finish_id: fin?.current.id ?? null,
-          finish_note: finishNoteByOption[optionId]?.trim() || null,
-          ...snapshotFor(optionId, qty),
-        }
-      })
-      if (rows.length) {
-        const { error } = await supabase.from('quote_options').insert(rows)
-        if (error) throw error
-      }
+      await writeOptionsAndFinishes(quoteId, tierId)
       await supabase.from('quote_events').insert({ quote_id: quoteId, kind: 'created' })
       await supabase.from('leads').update({ stage: 'quoting' }).eq('id', lead.id)
       return quoteId
@@ -579,12 +599,25 @@ export function QuoteEditor() {
         labour_cents: qo.labour_cents ?? null,
         materials_cents: qo.materials_cents ?? null,
         partner_cost_cents: qo.partner_cost_cents ?? null,
-        finish_id: qo.finish_id ?? null,
         finish_note: qo.finish_note ?? null,
       }))
       if (copies.length) {
-        const { error } = await supabase.from('quote_options').insert(copies)
-        if (error) throw error
+        const ir = await supabase.from('quote_options').insert(copies).select('id, option_id')
+        if (ir.error) throw ir.error
+        // Carry finish picks forward on the clone.
+        const newIdByOption = new Map<string, string>((ir.data as { id: string; option_id: string }[]).map(r => [r.option_id, r.id]))
+        const finishRows: { quote_option_id: string; finish_set_id: string; finish_id: string }[] = []
+        for (const qo of existing.quote_options) {
+          const newId = newIdByOption.get(qo.option_id)
+          if (!newId) continue
+          for (const row of qo.quote_option_finishes ?? []) {
+            finishRows.push({ quote_option_id: newId, finish_set_id: row.finish_set_id, finish_id: row.finish_id })
+          }
+        }
+        if (finishRows.length) {
+          const fr = await supabase.from('quote_option_finishes').insert(finishRows)
+          if (fr.error) throw fr.error
+        }
       }
       await supabase.from('quote_events').insert({ quote_id: newQuoteId, kind: 'revised' })
       return newQuoteId
@@ -845,37 +878,46 @@ export function QuoteEditor() {
                               </div>
                             )}
                             {active && (() => {
-                              const fin = finishForOption(opt)
-                              if (!fin) return null
-                              const currentId = finishByOption[opt.id] ?? fin.finishes[0]?.id
+                              const applied = finishesForOption(opt)
+                              if (applied.length === 0) return null
                               return (
-                                <div className="pl-11 space-y-1.5">
-                                  <div className="text-[10px] uppercase tracking-wide text-[var(--color-muted)]">
-                                    {fin.set.name}
-                                  </div>
-                                  <div className="flex gap-1.5 flex-wrap">
-                                    {fin.finishes.map(f => (
-                                      <button
-                                        key={f.id}
-                                        type="button"
-                                        disabled={readOnly}
-                                        onClick={() => setFinishByOption(prev => ({ ...prev, [opt.id]: f.id }))}
-                                        className={`text-[11px] px-2 py-1 rounded-[var(--radius-sm)] border transition ${
-                                          currentId === f.id
-                                            ? 'border-[var(--color-accent)] bg-[var(--color-accent)] text-white'
-                                            : 'border-[var(--color-border)] text-[var(--color-muted)] hover:border-[var(--color-accent)]'
-                                        } disabled:opacity-50`}
-                                      >
-                                        {f.name}
-                                      </button>
-                                    ))}
-                                  </div>
+                                <div className="pl-11 space-y-2">
+                                  {applied.map(a => {
+                                    const currentId = finishByOption[opt.id]?.[a.set.id] ?? a.current.id
+                                    return (
+                                      <div key={a.set.id} className="space-y-1">
+                                        <div className="text-[10px] uppercase tracking-wide text-[var(--color-muted)]">
+                                          {a.set.name}
+                                        </div>
+                                        <div className="flex gap-1.5 flex-wrap">
+                                          {a.finishes.map(f => (
+                                            <button
+                                              key={f.id}
+                                              type="button"
+                                              disabled={readOnly}
+                                              onClick={() => setFinishByOption(prev => ({
+                                                ...prev,
+                                                [opt.id]: { ...(prev[opt.id] ?? {}), [a.set.id]: f.id },
+                                              }))}
+                                              className={`text-[11px] px-2 py-1 rounded-[var(--radius-sm)] border transition ${
+                                                currentId === f.id
+                                                  ? 'border-[var(--color-accent)] bg-[var(--color-accent)] text-white'
+                                                  : 'border-[var(--color-border)] text-[var(--color-muted)] hover:border-[var(--color-accent)]'
+                                              } disabled:opacity-50`}
+                                            >
+                                              {f.name}
+                                            </button>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )
+                                  })}
                                   <input
                                     type="text"
                                     disabled={readOnly}
                                     value={finishNoteByOption[opt.id] ?? ''}
                                     onChange={e => setFinishNoteByOption(prev => ({ ...prev, [opt.id]: e.target.value }))}
-                                    placeholder="Note (colour, paint code, …)"
+                                    placeholder="Note (paint code, custom detail, …)"
                                     className="h-7 w-full max-w-xs text-[11px] px-2 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] disabled:opacity-50"
                                   />
                                 </div>

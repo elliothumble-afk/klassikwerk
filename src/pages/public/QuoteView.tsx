@@ -48,7 +48,11 @@ interface QuoteData {
       parts_sell_cents: number | null
       install_price_cents: number | null
     } | null
-    finish: { name: string } | null
+    quote_option_finishes: {
+      finish_set_id: string
+      catalog_finish_sets: { sort: number } | null
+      catalog_finishes: { name: string } | null
+    }[]
   }[]
 }
 
@@ -198,9 +202,14 @@ export function QuoteView() {
                   : qty === 5 ? 'Set of 5 incl. spare'
                   : qty === 4 ? 'Set of 4'
                   : null
-                const finishLabel = qo.finish?.name
-                  ? `${qo.finish.name}${qo.finish_note ? `, ${qo.finish_note}` : ''}`
-                  : null
+                const finishNames = (qo.quote_option_finishes ?? [])
+                  .slice()
+                  .sort((a, b) => (a.catalog_finish_sets?.sort ?? 0) - (b.catalog_finish_sets?.sort ?? 0))
+                  .map(x => x.catalog_finishes?.name)
+                  .filter((v): v is string => !!v)
+                const finishBits: string[] = [...finishNames]
+                if (qo.finish_note) finishBits.push(qo.finish_note)
+                const finishLabel = finishBits.length ? finishBits.join(', ') : null
                 return (
                   <tr key={qo.option_id} className="border-b border-[var(--color-border)] last:border-0">
                     <td className="py-2 pr-3 text-[var(--color-muted)]">Option</td>

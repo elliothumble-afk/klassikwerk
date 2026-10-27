@@ -681,7 +681,6 @@ export type Database = {
           labour_cents: number | null
           materials_cents: number | null
           partner_cost_cents: number | null
-          finish_id: string | null
           finish_note: string | null
           created_at: string
         }
@@ -696,7 +695,6 @@ export type Database = {
           labour_cents?: number | null
           materials_cents?: number | null
           partner_cost_cents?: number | null
-          finish_id?: string | null
           finish_note?: string | null
           created_at?: string
         }
@@ -710,8 +708,24 @@ export type Database = {
           labour_cents?: number | null
           materials_cents?: number | null
           partner_cost_cents?: number | null
-          finish_id?: string | null
           finish_note?: string | null
+        }
+        Relationships: []
+      }
+      quote_option_finishes: {
+        Row: {
+          quote_option_id: string
+          finish_set_id: string
+          finish_id: string
+        }
+        Insert: {
+          quote_option_id: string
+          finish_set_id: string
+          finish_id: string
+        }
+        Update: {
+          finish_set_id?: string
+          finish_id?: string
         }
         Relationships: []
       }

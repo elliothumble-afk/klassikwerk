@@ -312,9 +312,11 @@ export function QuotePdf(input: QuotePdfInput) {
                     <View style={styles.optionTextWrap}>
                       <Text style={styles.optionName}>
                         {o.name}
-                        {o.finish_name
-                          ? ` — ${o.finish_name}${o.finish_note ? `, ${o.finish_note}` : ''}`
-                          : ''}
+                        {(() => {
+                          const parts = [...(o.finish_names ?? [])]
+                          if (o.finish_note) parts.push(o.finish_note)
+                          return parts.length ? ` — ${parts.join(', ')}` : ''
+                        })()}
                       </Text>
                       {qtyLabel ? (
                         <Text style={styles.optionCode}>

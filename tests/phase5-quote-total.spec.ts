@@ -78,6 +78,9 @@ async function seed(): Promise<Seed> {
   // Pin the Body kit install_hours to the workbook value (24) in
   // case category edits have drifted it. Reset afterwards in cleanup.
   await admin.from('catalog_categories').update({ install_hours: 24 }).eq('builder_id', CTC_ID).eq('name', 'Body kit')
+  // Suspend the Grenadier auto-add tyre so wheel selection doesn't
+  // append an extra line to the workbook scenario. Restored in cleanup.
+  await admin.from('catalog_options').update({ auto_add_with_group_id: null }).eq('builder_id', CTC_ID).eq('kit_sku', '4929')
   await admin.rpc('reprice_builder', { target_builder: CTC_ID })
 
   // 2. Scratch customer + lead.
@@ -119,6 +122,11 @@ async function cleanup(s: Seed) {
   // the human who watches the dashboard.
   for (const row of s.originalPrices) {
     await admin.from('catalog_options').update({ web_price_cents: row.web_price_cents }).eq('id', row.id)
+  }
+  // Re-link the Grenadier auto-add tyre to the Alloy wheels group.
+  const grp = await admin.from('catalog_option_groups').select('id').eq('builder_id', CTC_ID).eq('external_id', 'shopify:group:alloy-wheels').single()
+  if (grp.data) {
+    await admin.from('catalog_options').update({ auto_add_with_group_id: grp.data.id }).eq('builder_id', CTC_ID).eq('kit_sku', '4929')
   }
   await admin.rpc('reprice_builder', { target_builder: CTC_ID })
 }

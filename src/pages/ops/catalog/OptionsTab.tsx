@@ -317,6 +317,9 @@ function optionFormToDb(
     category_id: data.category_id,
     origin_id: data.origin_id,
     category_locked: categoryChanged || (data.category_id != null),
+    // cost_cents only applies to cost_based manual options. For simple
+    // mode and synced rows it stays null — the catalog admin ignores it.
+    cost_cents: costBasedManual && data.cost != null ? Math.round(data.cost * 100) : null,
   }
 }
 
@@ -493,6 +496,11 @@ function OptionRow({ option, tiers, platforms, costBased, onEdit, onToggleActive
       <td className="py-3 pr-3 text-sm font-medium">{option.name}</td>
       <td className="py-3 pr-3 text-sm text-[var(--color-muted)] font-mono text-xs">{option.code ?? '—'}</td>
       <td className="py-3 pr-3 text-sm text-[var(--color-muted)]">{formatPrice(option.price_cents)}</td>
+      {costBased && (
+        <td className="py-3 pr-3 text-sm text-[var(--color-muted)]">
+          {option.cost_cents == null ? '—' : `$${(option.cost_cents / 100).toLocaleString()}`}
+        </td>
+      )}
 
       <td className="py-3 pr-3">
         <div className="flex gap-1.5 flex-wrap">
@@ -613,8 +621,9 @@ function OptionEditForm({ option, tiers, platforms, categories, origins, costBas
           sold_as_set: option.sold_as_set ?? false,
           category_id: option.category_id ?? '',
           origin_id: option.origin_id ?? '',
+          cost: option.cost_cents == null ? null : option.cost_cents / 100,
         }
-      : { price: 0, included_in_tier_ids: [], sort: 0, active: true, sold_as_set: false, category_id: '', origin_id: '' },
+      : { price: 0, included_in_tier_ids: [], sort: 0, active: true, sold_as_set: false, category_id: '', origin_id: '', cost: null },
   })
 
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(
@@ -647,7 +656,7 @@ function OptionEditForm({ option, tiers, platforms, categories, origins, costBas
 
   return (
     <tr className="border-b border-[var(--color-border)] bg-[var(--color-accent-light)]">
-      <td colSpan={10} className="py-4 px-4">
+      <td colSpan={11} className="py-4 px-4">
         <form
           onSubmit={handleSubmit(d => onSave(d, selectedPlatforms, option?.id))}
           className="space-y-3"
@@ -668,7 +677,9 @@ function OptionEditForm({ option, tiers, platforms, categories, origins, costBas
               <input {...register('code')} className={inputClass} placeholder="MB-359" />
             </div>
             <div>
-              <label className="text-xs text-[var(--color-muted)] mb-1 block">Price</label>
+              <label className="text-xs text-[var(--color-muted)] mb-1 block">
+                {costBased && !option?.synced ? 'Parts sell $' : 'Price'}
+              </label>
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-[var(--color-muted)] pointer-events-none select-none">
                   $
@@ -684,6 +695,29 @@ function OptionEditForm({ option, tiers, platforms, categories, origins, costBas
               </div>
               {errors.price && <p className="text-xs text-[var(--color-danger)] mt-1">{errors.price.message}</p>}
             </div>
+            {costBased && !option?.synced && (
+              <div>
+                <label
+                  className="text-xs text-[var(--color-muted)] mb-1 block"
+                  title="Operator cost per unit. Blank = assume cost equals sell price (zero margin on parts)."
+                >
+                  Cost $ (optional)
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-[var(--color-muted)] pointer-events-none select-none">
+                    $
+                  </span>
+                  <input
+                    {...register('cost')}
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    className={`${inputClass} pl-7`}
+                    placeholder="(blank)"
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -864,6 +898,7 @@ function GroupSection({
                 <th className="text-left py-2 pr-3 text-xs font-medium text-[var(--color-muted)]">Name</th>
                 <th className="text-left py-2 pr-3 text-xs font-medium text-[var(--color-muted)]">Code</th>
                 <th className="text-left py-2 pr-3 text-xs font-medium text-[var(--color-muted)]">Price</th>
+                {costBased && <th className="text-left py-2 pr-3 text-xs font-medium text-[var(--color-muted)]">Cost</th>}
                 <th className="text-left py-2 pr-3 text-xs font-medium text-[var(--color-muted)]">Included in</th>
                 <th className="text-left py-2 pr-3 text-xs font-medium text-[var(--color-muted)]">Platforms</th>
                 <th className="text-left py-2 pr-3 text-xs font-medium text-[var(--color-muted)]">Status</th>

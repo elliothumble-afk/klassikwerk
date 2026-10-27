@@ -37,6 +37,8 @@ export const catalogOptionSchema = z.object({
   // reassign.
   category_id: z.string().uuid().nullable().or(z.literal('')).transform(v => v || null),
   origin_id: z.string().uuid().nullable().or(z.literal('')).transform(v => v || null),
+  // Operator cost per unit. Blank → cost = sell for margin purposes.
+  cost: z.coerce.number().min(0).nullable().or(z.literal('')).transform(v => v === '' || v == null ? null : Number(v)),
 })
 
 export type PlatformForm = z.infer<typeof platformSchema>

@@ -427,29 +427,90 @@ export function QuoteEditor() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selection, quantities, finishByOption, catalog, tier, total, effectiveLabourSource])
 
+  // Options that get added to the quote automatically when any option
+  // in the referenced group is selected on the current platform. Right
+  // now this is the Grenadier BFG and Defender Pirelli tyres linked to
+  // the Alloy wheels group; the editor swaps them in without ops action.
+  function autoAddTargetsForGroup(groupId: string): CatalogOption[] {
+    if (!catalog || !platform) return []
+    return catalog.options.filter(o => {
+      if (o.auto_add_with_group_id !== groupId) return false
+      // Platform eligibility matches the general visibility rule.
+      const restricted = optionPlatformMap.get(o.id)
+      const isUniversal = !restricted || restricted.size === 0
+      return isUniversal || restricted!.has(platform.id)
+    })
+  }
+
   function toggleOption(group: OptionGroup, optionId: string) {
+    const wasSelected = (selection[group.id] ?? []).includes(optionId)
+    const addingNew = !wasSelected
     setSelection(prev => {
       const current = prev[group.id] ?? []
+      const next = { ...prev }
       if (group.selection === 'single') {
-        return { ...prev, [group.id]: current[0] === optionId ? [] : [optionId] }
-      }
-      return {
-        ...prev,
-        [group.id]: current.includes(optionId)
+        next[group.id] = current[0] === optionId ? [] : [optionId]
+      } else {
+        next[group.id] = current.includes(optionId)
           ? current.filter(id => id !== optionId)
-          : [...current, optionId],
+          : [...current, optionId]
       }
+      // Auto-add: when a NEW option in a group with auto-add targets
+      // is selected, drop the target into its own group's slot.
+      // Respects the target group's selection mode (single = swap).
+      if (addingNew) {
+        for (const t of autoAddTargetsForGroup(group.id)) {
+          const tGroup = catalog!.groups.find(g => g.id === t.group_id)
+          if (!tGroup) continue
+          const tCurrent = next[tGroup.id] ?? []
+          if (tCurrent.includes(t.id)) continue
+          next[tGroup.id] = tGroup.selection === 'single'
+            // Single-select: only populate the empty slot. If the
+            // operator has already picked a different tyre in this
+            // slot, respect it — swapping would surprise them.
+            ? (tCurrent.length === 0 ? [t.id] : tCurrent)
+            : [...tCurrent, t.id]
+        }
+      }
+      return next
     })
-    // Clear the stored qty when deselecting so a re-click starts fresh
-    // at the default 4.
     setQuantities(prev => {
-      const current = selection[group.id] ?? []
-      if (current.includes(optionId)) {
-        const { [optionId]: _, ...rest } = prev
-        return rest
+      const next = { ...prev }
+      if (wasSelected) {
+        delete next[optionId]
+      } else if (addingNew) {
+        // Mirror the triggering option's qty onto any auto-added
+        // targets so a Set-of-5 wheel pulls a Set-of-5 tyre.
+        const triggerQty = prev[optionId] ?? 4
+        for (const t of autoAddTargetsForGroup(group.id)) {
+          next[t.id] = triggerQty
+        }
       }
-      return prev
+      return next
     })
+  }
+
+  // Wraps setQuantities so a wheel chip click mirrors onto the auto-
+  // added tyre line. Qty updates on the tyre tile itself are not
+  // mirrored back onto the wheel — the ops user is the source of truth.
+  function setQtyWithMirror(opt: CatalogOption, n: number) {
+    setQuantities(prev => {
+      const next = { ...prev, [opt.id]: n }
+      for (const other of catalog?.options ?? []) {
+        if (other.auto_add_with_group_id !== opt.group_id) continue
+        if (!Object.values(selection).flat().includes(other.id)) continue
+        next[other.id] = n
+      }
+      return next
+    })
+  }
+
+  // True when the given option is currently in the quote because of
+  // an auto-add link to a selected wheel (used to render the badge).
+  function isAutoAdded(opt: CatalogOption): boolean {
+    if (!opt.auto_add_with_group_id) return false
+    const trigger = selection[opt.auto_add_with_group_id] ?? []
+    return trigger.length > 0
   }
 
   // Insert quote_options for every selected option and link the
@@ -837,6 +898,9 @@ export function QuoteEditor() {
                                   {opt.sold_as_set && active && (
                                     <div className="text-xs text-[var(--color-accent)]">Set of 4</div>
                                   )}
+                                  {active && isAutoAdded(opt) && (
+                                    <div className="text-xs text-[var(--color-muted)] italic">Added with wheels</div>
+                                  )}
                                 </div>
                               </div>
                               {!includedOnly && (
@@ -865,7 +929,7 @@ export function QuoteEditor() {
                                     key={n}
                                     type="button"
                                     disabled={readOnly}
-                                    onClick={() => setQuantities(prev => ({ ...prev, [opt.id]: n }))}
+                                    onClick={() => setQtyWithMirror(opt, n)}
                                     className={`text-[11px] px-2 py-1 rounded-[var(--radius-sm)] border transition ${
                                       q === n
                                         ? 'border-[var(--color-accent)] bg-[var(--color-accent)] text-white'

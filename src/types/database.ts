@@ -1104,6 +1104,8 @@ export type Database = {
           install_price_cents: number | null
           landed_cost_cents: number | null
           manual_parts_sell_cents: number | null
+          auto_add_with_group_id: string | null
+          cost_cents: number | null
           created_at: string
           updated_at: string
         }
@@ -1129,6 +1131,8 @@ export type Database = {
           install_price_cents?: number | null
           landed_cost_cents?: number | null
           manual_parts_sell_cents?: number | null
+          auto_add_with_group_id?: string | null
+          cost_cents?: number | null
           created_at?: string
           updated_at?: string
         }
@@ -1153,6 +1157,8 @@ export type Database = {
           install_price_cents?: number | null
           landed_cost_cents?: number | null
           manual_parts_sell_cents?: number | null
+          auto_add_with_group_id?: string | null
+          cost_cents?: number | null
           updated_at?: string
         }
         Relationships: []

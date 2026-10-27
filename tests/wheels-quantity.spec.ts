@@ -53,6 +53,13 @@ async function seedForPlatform(opts: {
   wheelFilter: { nameLike?: string; soldAsSet: boolean }
 }): Promise<PlatformSeed> {
   const admin = createClient(SUPABASE_URL, SERVICE, { auth: { persistSession: false } })
+  // Suspend all auto-add tyres so wheel selection doesn't append an
+  // extra tyre line; the tests assert the wheel line in isolation.
+  // Restored on cleanup via a global afterAll (set up per test file).
+  await admin.from('catalog_options')
+    .update({ auto_add_with_group_id: null })
+    .eq('builder_id', CTC_ID)
+    .not('auto_add_with_group_id', 'is', null)
 
   const { data: cust, error: ce } = await admin.from('customers')
     .insert({ full_name: `Playwright ${opts.platformFilter}`, email: `pw-${opts.platformFilter.replace(/\s+/g, '-')}-${Date.now()}@example.com` })
@@ -116,6 +123,14 @@ async function cleanup(leadId: string, customerId: string) {
   await admin.from('quotes').delete().eq('lead_id', leadId)
   await admin.from('leads').delete().eq('id', leadId)
   await admin.from('customers').delete().eq('id', customerId)
+  // Re-link the Grenadier BFG auto-add tyre to the Alloy wheels group.
+  // Only one row currently has this link (sku 4929) — the Pirelli will
+  // need re-linking separately once its price is set.
+  const grp = await admin.from('catalog_option_groups').select('id').eq('builder_id', CTC_ID).eq('external_id', 'shopify:group:alloy-wheels').single()
+  if (grp.data) {
+    await admin.from('catalog_options').update({ auto_add_with_group_id: grp.data.id })
+      .eq('builder_id', CTC_ID).in('kit_sku', ['4929', '2661900'])
+  }
 }
 
 async function operatorSession() {

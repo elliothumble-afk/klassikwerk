@@ -12,6 +12,10 @@ export default defineConfig({
   timeout: 60_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,
+  // Our tests all touch CTC seed data in Supabase and race if two run
+  // concurrently (both null auto_add_with_group_id on the same tyre,
+  // one restores it before the other's assertion runs). Serialize.
+  workers: 1,
   reporter: 'list',
   use: {
     baseURL: 'http://localhost:5173',

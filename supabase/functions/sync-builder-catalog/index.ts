@@ -1058,6 +1058,9 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     sort: 0,
     active: o.active,
     sold_as_set: o.sold_as_set,
+    // Reset the miss counter every time the feed includes this row.
+    // sync_options_sweep increments it on rows the upsert didn't visit.
+    missed_sync_runs: 0,
     synced: true,
     external_id: o.external_id,
   }))
@@ -1115,13 +1118,19 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     .lt('updated_at', syncStartedAt)
     .select('id')
 
-  const optionsMissing = await admin.from('catalog_options')
-    .update({ active: false })
-    .eq('builder_id', builder.id)
-    .eq('synced', true)
-    .eq('active', true)
-    .lt('updated_at', syncStartedAt)
-    .select('id')
+  // sync_options_sweep deactivates missing rows + increments
+  // missed_sync_runs, then deletes anything missed twice in a row
+  // that was never quoted. One trip to the DB instead of a chunked
+  // row-by-row dance.
+  const sweepRes = await admin.rpc('sync_options_sweep', {
+    target_builder: builder.id,
+    started_at: syncStartedAt,
+  })
+  if (sweepRes.error) throw sweepRes.error
+  const sweepRow = (sweepRes.data as unknown as { deactivated: number; deleted: number }[] | null)?.[0]
+    ?? { deactivated: 0, deleted: 0 }
+  const optionsMissing = { data: new Array(sweepRow.deactivated).fill({ id: '' }) }
+  const optionsDeleted = sweepRow.deleted
 
   // Per-platform report: count UNIQUE options linked to each vehicle,
   // not raw hits across collections.
@@ -1172,6 +1181,9 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
       unique_products: byExternalId.size,
       upserted: totalUpserted,
       deactivated: optionsMissing.data?.length ?? 0,
+      // Synced rows missing from the feed for two consecutive runs
+      // with no quote reference were deleted outright this run.
+      deleted_after_two_misses: optionsDeleted,
       inactive_zero_price_or_no_sku: inactiveZeroOrNoSku,
       variants_split: totalVariantsSplit,
     },

@@ -168,6 +168,14 @@ export function QuoteEditor() {
     toPlatformId: string
     dropped: { id: string; name: string; reason: 'platform' | 'auto-add' }[]
   } | null>(null)
+  // Set when loading a legacy quote whose quote_options include rows
+  // that would now fail the platform guard. We prune them from state
+  // on load; this banner tells the operator what disappeared so the
+  // next save doesn't look like it silently rewrote their quote.
+  const [legacyRemoved, setLegacyRemoved] = useState<{
+    platformName: string
+    names: string[]
+  } | null>(null)
   // Labour source for the margin panel. Default = builder_terms
   // default_labour_source; overridden by quote.labour_source once a
   // quote has been saved. Explicit state here so a flip in the editor
@@ -185,9 +193,20 @@ export function QuoteEditor() {
       const finNote: Record<string, string> = {}
       // Need to map option_id → group_id; done once catalog is loaded
       if (catalog) {
+        const prunedNames: string[] = []
         for (const qo of existing.quote_options) {
           const opt = catalog.options.find(o => o.id === qo.option_id)
           if (!opt) continue
+          // Honour the server-side platform guard client-side: if this
+          // line is platform-restricted and doesn't include the quote's
+          // current platform, drop it from state and surface a banner.
+          const restricted = optionPlatformMap.get(qo.option_id)
+          const universal = !restricted || restricted.size === 0
+          const linkedHere = restricted?.has(existing.platform_id) ?? false
+          if (!universal && !linkedHere) {
+            prunedNames.push(opt.name)
+            continue
+          }
           sel[opt.group_id] = [...(sel[opt.group_id] ?? []), qo.option_id]
           qty[qo.option_id] = qo.quantity ?? 1
           for (const row of qo.quote_option_finishes ?? []) {
@@ -199,6 +218,12 @@ export function QuoteEditor() {
         setQuantities(qty)
         setFinishByOption(fin)
         setFinishNoteByOption(finNote)
+        if (prunedNames.length > 0) {
+          const platName = catalog.platforms.find(p => p.id === existing.platform_id)?.name ?? 'this vehicle'
+          setLegacyRemoved({ platformName: platName, names: prunedNames })
+        } else {
+          setLegacyRemoved(null)
+        }
       }
       if (existing.labour_source) setLabourSource(existing.labour_source)
       setThemeWords(existing.theme_words ?? '')
@@ -681,6 +706,20 @@ export function QuoteEditor() {
   }
 
   // ---------- Save / revise / send / create contract ----------
+  /** Translate the quote_options_platform_guard trigger error (and
+   *  anything else that mentions a UUID the user has no business
+   *  seeing) into a plain, actionable sentence. Pass-through for any
+   *  message that doesn't match the guard pattern. */
+  function friendlyError(e: unknown): string {
+    const msg = (e as Error)?.message ?? String(e)
+    // `option Large Rear Roof Wing (uuid) is not linked to this quote's platform (uuid)`
+    const guardMatch = /option\s+(.+?)\s+\([0-9a-f-]{36}\)\s+is not linked to this quote/i.exec(msg)
+    if (guardMatch) {
+      return `${guardMatch[1]} isn't available on this vehicle — remove it to save.`
+    }
+    return msg
+  }
+
   const save = useMutation({
     mutationFn: async () => {
       if (!lead || !platformId || !tierId) throw new Error('Pick a platform and tier')
@@ -739,7 +778,7 @@ export function QuoteEditor() {
       qc.invalidateQueries({ queryKey: ['lead'] })
       if (!existingQuoteId) navigate(`/ops/quotes/${quoteId}`, { replace: true })
     },
-    onError: e => setErr((e as Error).message),
+    onError: e => setErr(friendlyError(e)),
   })
 
   const generatePdf = useMutation({
@@ -949,6 +988,28 @@ export function QuoteEditor() {
             </div>
           </div>
         </div>
+
+        {legacyRemoved && (
+          <div
+            role="alert"
+            className="mb-6 rounded-[var(--radius-sm)] border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 flex items-start justify-between gap-4"
+          >
+            <div>
+              <span className="font-medium">
+                {legacyRemoved.names.length} item{legacyRemoved.names.length === 1 ? '' : 's'} {legacyRemoved.names.length === 1 ? "isn't" : "aren't"} available on {legacyRemoved.platformName} and {legacyRemoved.names.length === 1 ? 'was' : 'were'} removed:
+              </span>{' '}
+              {legacyRemoved.names.join('; ')}. Save to persist.
+            </div>
+            <button
+              type="button"
+              onClick={() => setLegacyRemoved(null)}
+              className="text-amber-900/70 hover:text-amber-900 text-lg leading-none"
+              aria-label="Dismiss"
+            >
+              ×
+            </button>
+          </div>
+        )}
 
         {/* Step: Platform */}
         <Step label="Platform">

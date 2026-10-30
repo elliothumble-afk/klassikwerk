@@ -122,6 +122,48 @@ async function cleanup(admin: SupabaseClient, s: Seed) {
   await admin.from('customers').delete().eq('id', s.customerId)
 }
 
+test('Phase 6 — legacy quote banner lists off-platform options and prunes on save', async ({ page }) => {
+  test.setTimeout(90_000)
+  const admin = createClient(SUPABASE_URL, SERVICE, { auth: { persistSession: false } })
+  const s = await seed(admin)
+  try {
+    // Simulate a legacy quote: flip the quote's platform directly on
+    // the quotes row (no trigger on UPDATE of quotes), leaving the
+    // Grenadier-only quote_options rows pointing at the now-Defender
+    // quote. The editor must prune them on load and surface a banner.
+    const flip = await admin.from('quotes').update({ platform_id: s.defenderPlatformId }).eq('id', s.quoteId)
+    expect(flip.error).toBeNull()
+
+    const sess = await session()
+    await page.addInitScript(({ key, value }) => {
+      window.localStorage.setItem(key, value)
+    }, { key: `sb-${PROJECT_REF}-auth-token`, value: JSON.stringify(sess) })
+
+    await page.goto(`/ops/quotes/${s.quoteId}`)
+    const banner = page.getByRole('alert')
+    await expect(banner).toBeVisible({ timeout: 20_000 })
+    await expect(banner).toContainText(new RegExp(s.defenderPlatformName, 'i'))
+    for (const name of s.grenadierOptionNames) {
+      await expect(banner).toContainText(name)
+    }
+    // No UUIDs in the banner copy.
+    const text = await banner.innerText()
+    expect(text).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)
+
+    await page.getByRole('button', { name: /Save draft/ }).click()
+    await expect(page.getByText('Saved', { exact: true })).toBeVisible({ timeout: 10_000 })
+
+    const { data: qoRows } = await admin.from('quote_options')
+      .select('option_id').eq('quote_id', s.quoteId)
+    const survivingIds = (qoRows ?? []).map(r => r.option_id as string)
+    for (const id of s.grenadierOptionIds) {
+      expect(survivingIds, `${id} should have been pruned from the saved quote`).not.toContain(id)
+    }
+  } finally {
+    await cleanup(admin, s)
+  }
+})
+
 test('Phase 6 — platform switch drops incompatible options', async ({ page }) => {
   test.setTimeout(90_000)
   const admin = createClient(SUPABASE_URL, SERVICE, { auth: { persistSession: false } })

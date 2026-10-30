@@ -161,6 +161,13 @@ export function QuoteEditor() {
   const [vehicleYear, setVehicleYear] = useState<string>('')
   const [vehiclePhotoUrl, setVehiclePhotoUrl] = useState<string>('')
   const [vehiclePhotoUploading, setVehiclePhotoUploading] = useState(false)
+  // Set when a platform switch would drop currently-selected options.
+  // The confirm dialog previews what will be removed; applying commits
+  // the new platform AND prunes selection/qty/finish state in one go.
+  const [pendingPlatformSwitch, setPendingPlatformSwitch] = useState<{
+    toPlatformId: string
+    dropped: { id: string; name: string; reason: 'platform' | 'auto-add' }[]
+  } | null>(null)
   // Labour source for the margin panel. Default = builder_terms
   // default_labour_source; overridden by quote.labour_source once a
   // quote has been saved. Explicit state here so a flip in the editor
@@ -503,6 +510,116 @@ export function QuoteEditor() {
     })
   }
 
+  /** Returns the currently-selected options that would not survive a
+   *  switch to `nextPlatformId`: platform-restricted options not linked
+   *  to the new platform, PLUS every auto-added option (we re-run auto-
+   *  add after the switch so the new platform's targets land in). */
+  function platformSwitchDrops(nextPlatformId: string): { id: string; name: string; reason: 'platform' | 'auto-add' }[] {
+    if (!catalog) return []
+    const selectedIds = new Set<string>(Object.values(selection).flat())
+    const out: { id: string; name: string; reason: 'platform' | 'auto-add' }[] = []
+    for (const id of selectedIds) {
+      const opt = catalog.options.find(o => o.id === id)
+      if (!opt) continue
+      const restricted = optionPlatformMap.get(id)
+      const isUniversal = !restricted || restricted.size === 0
+      const linkedToNext = restricted?.has(nextPlatformId) ?? false
+      if (!isUniversal && !linkedToNext) {
+        out.push({ id, name: opt.name, reason: 'platform' })
+        continue
+      }
+      // Auto-added rows always get dropped so we can re-run auto-add
+      // against the new platform's targets.
+      if (opt.auto_add_with_group_id && isAutoAdded(opt)) {
+        out.push({ id, name: opt.name, reason: 'auto-add' })
+      }
+    }
+    return out
+  }
+
+  /** Called when the operator clicks a platform tile. Switches
+   *  immediately if the move is a no-op; otherwise opens the confirm
+   *  dialog with the list of options that will be removed. */
+  function requestPlatformSwitch(nextPlatformId: string) {
+    if (nextPlatformId === platformId) return
+    const dropped = platformSwitchDrops(nextPlatformId)
+    if (dropped.length === 0) {
+      applyPlatformSwitch(nextPlatformId, [])
+      return
+    }
+    setPendingPlatformSwitch({ toPlatformId: nextPlatformId, dropped })
+  }
+
+  /** Commits a platform switch: prunes the selection + per-option
+   *  state for every dropped id, flips platformId, then runs auto-add
+   *  for the new platform against every remaining trigger-group row. */
+  function applyPlatformSwitch(nextPlatformId: string, dropped: { id: string }[]) {
+    const dropIds = new Set(dropped.map(d => d.id))
+    setSelection(prev => {
+      const next: Selection = {}
+      for (const [gId, ids] of Object.entries(prev)) {
+        next[gId] = ids.filter(id => !dropIds.has(id))
+      }
+      return next
+    })
+    setQuantities(prev => {
+      const next = { ...prev }
+      for (const id of dropIds) delete next[id]
+      return next
+    })
+    setFinishByOption(prev => {
+      const next = { ...prev }
+      for (const id of dropIds) delete next[id]
+      return next
+    })
+    setFinishNoteByOption(prev => {
+      const next = { ...prev }
+      for (const id of dropIds) delete next[id]
+      return next
+    })
+    setPlatformId(nextPlatformId)
+    setPendingPlatformSwitch(null)
+  }
+
+  // Re-run auto-add once the platform has actually changed. We can't
+  // do this inside applyPlatformSwitch because the platform state
+  // update is batched; the effect below reads the new platform via
+  // the memoised `platform` and finds auto-add targets for every
+  // group that still has a selection on it.
+  useEffect(() => {
+    if (!catalog || !platform) return
+    setSelection(prev => {
+      const next: Selection = { ...prev }
+      let changed = false
+      for (const [gId, ids] of Object.entries(prev)) {
+        if (ids.length === 0) continue
+        // Find auto-add targets for THIS group on the new platform.
+        const targets = catalog.options.filter(o => {
+          if (o.auto_add_with_group_id !== gId) return false
+          const r = optionPlatformMap.get(o.id)
+          const universal = !r || r.size === 0
+          return universal || r!.has(platform.id)
+        })
+        for (const t of targets) {
+          const tGroup = catalog.groups.find(g => g.id === t.group_id)
+          if (!tGroup) continue
+          const tCurrent = next[tGroup.id] ?? []
+          if (tCurrent.includes(t.id)) continue
+          next[tGroup.id] = tGroup.selection === 'single'
+            ? (tCurrent.length === 0 ? [t.id] : tCurrent)
+            : [...tCurrent, t.id]
+          // Mirror the triggering option's qty onto the newly added
+          // target so a Set-of-5 wheel pulls a Set-of-5 tyre.
+          const triggerQty = quantities[ids[0]] ?? 4
+          setQuantities(q => ({ ...q, [t.id]: triggerQty }))
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [platform?.id, catalog])
+
   // Wraps setQuantities so a wheel chip click mirrors onto the auto-
   // added tyre line. Qty updates on the tyre tile itself are not
   // mirrored back onto the wheel — the ops user is the source of truth.
@@ -840,7 +957,7 @@ export function QuoteEditor() {
               <button
                 key={p.id}
                 disabled={readOnly}
-                onClick={() => setPlatformId(p.id)}
+                onClick={() => requestPlatformSwitch(p.id)}
                 className={`text-left rounded-[var(--radius-md)] border px-4 py-3 transition ${
                   platformId === p.id
                     ? 'border-[var(--color-accent)] bg-[var(--color-surface)]'
@@ -853,6 +970,15 @@ export function QuoteEditor() {
             ))}
           </div>
         </Step>
+
+        {pendingPlatformSwitch && (
+          <PlatformSwitchDialog
+            toPlatformName={catalog.platforms.find(p => p.id === pendingPlatformSwitch.toPlatformId)?.name ?? '—'}
+            dropped={pendingPlatformSwitch.dropped}
+            onCancel={() => setPendingPlatformSwitch(null)}
+            onConfirm={() => applyPlatformSwitch(pendingPlatformSwitch.toPlatformId, pendingPlatformSwitch.dropped)}
+          />
+        )}
 
         {platformId && (
           <Step label="Tier">
@@ -1278,6 +1404,76 @@ function Step({ label, children }: { label: string; children: React.ReactNode })
     <div className="mb-8">
       <h2 className="text-xs font-medium text-[var(--color-muted)] uppercase tracking-wide mb-3">{label}</h2>
       {children}
+    </div>
+  )
+}
+
+function PlatformSwitchDialog({
+  toPlatformName, dropped, onCancel, onConfirm,
+}: {
+  toPlatformName: string
+  dropped: { id: string; name: string; reason: 'platform' | 'auto-add' }[]
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  const platformDrops = dropped.filter(d => d.reason === 'platform')
+  const autoAddDrops = dropped.filter(d => d.reason === 'auto-add')
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Confirm platform switch"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={onCancel}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        className="w-full max-w-md rounded-[var(--radius-md)] bg-[var(--color-surface)] border border-[var(--color-border)] shadow-xl p-5"
+      >
+        <h3 className="text-base font-medium mb-1">Switch to {toPlatformName}?</h3>
+        <p className="text-sm text-[var(--color-muted)] mb-4">
+          The options below are tied to the current vehicle and will be removed.
+          Auto-added tyres will re-run against the new platform.
+        </p>
+        {platformDrops.length > 0 && (
+          <div className="mb-3">
+            <div className="text-xs font-medium text-[var(--color-muted)] uppercase tracking-wide mb-1.5">
+              Not available on {toPlatformName}
+            </div>
+            <ul className="text-sm space-y-1">
+              {platformDrops.map(d => (
+                <li key={d.id} className="text-[var(--color-foreground)]">• {d.name}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {autoAddDrops.length > 0 && (
+          <div className="mb-3">
+            <div className="text-xs font-medium text-[var(--color-muted)] uppercase tracking-wide mb-1.5">
+              Auto-added — will re-add on the new platform
+            </div>
+            <ul className="text-sm space-y-1">
+              {autoAddDrops.map(d => (
+                <li key={d.id} className="text-[var(--color-foreground)]">• {d.name}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        <div className="flex justify-end gap-2 pt-3 border-t border-[var(--color-border)]">
+          <button
+            onClick={onCancel}
+            className="h-9 px-4 rounded-[var(--radius-sm)] border border-[var(--color-border)] text-sm hover:bg-[var(--color-surface-raised)]"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="h-9 px-4 rounded-[var(--radius-sm)] bg-[var(--color-accent)] text-white text-sm hover:opacity-90"
+          >
+            Switch & remove {platformDrops.length} option{platformDrops.length === 1 ? '' : 's'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

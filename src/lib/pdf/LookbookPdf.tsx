@@ -382,18 +382,21 @@ export function LookbookPdf(input: LookbookPdfInput) {
         // only card echoing the vehicle colour name, so the chip
         // doesn't invent a fake swatch block.
         const isBodyColour = (name: string) => /^body[-\s]?colour/i.test(name)
-        const renderFinish = (f: LookbookFinish, key: string, subtitle: string) => {
+        const renderFinish = (f: LookbookFinish, key: string, _subtitle: string) => {
           if (isBodyColour(f.name)) {
+            // Body-colour paint card reads "Body-colour paint" above
+            // the vehicle colour name, so it doesn't look like a
+            // duplicate of the vehicle-colour card.
             return (
               <Swatch
                 key={key}
-                title={vColour?.name ?? f.name}
-                subtitle={subtitle}
+                title={f.name}
+                subtitle={vColour?.name ?? 'Vehicle colour'}
                 hex={null}
               />
             )
           }
-          return <Swatch key={key} title={f.name} subtitle={subtitle} hex={f.swatch_hex ?? undefined} />
+          return <Swatch key={key} title={f.name} subtitle={_subtitle} hex={f.swatch_hex ?? undefined} />
         }
 
         const paletteTitle = (() => {
@@ -437,7 +440,18 @@ export function LookbookPdf(input: LookbookPdfInput) {
             }}>
               <View style={{ width: PAGE_W, height: bandH, backgroundColor: GREEN + '14' }}>
                 {page2_hero_url && (
-                  <Image src={page2_hero_url} style={{ width: PAGE_W, height: bandH, objectFit: 'cover' }} />
+                  <Image
+                    src={page2_hero_url}
+                    style={{
+                      width: PAGE_W, height: bandH,
+                      objectFit: 'cover',
+                      // Anchor the crop higher than centre so the
+                      // roofline survives on Shopify's wide collection
+                      // banners (vehicle usually sits a touch below
+                      // middle of the frame).
+                      objectPosition: '50% 40%',
+                    }}
+                  />
                 )}
               </View>
               <View style={{ paddingTop: 20, paddingBottom: 24, paddingHorizontal: 56, height: PAGE_H - bandH }}>

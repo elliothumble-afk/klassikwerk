@@ -105,6 +105,8 @@ export interface QuotePdfInput {
 export interface LookbookFinish {
   set_name: string
   name: string
+  /** `#RRGGBB` if the ops user seeded one. Null → render as text pill. */
+  swatch_hex: string | null
 }
 
 export interface LookbookOption {
@@ -131,6 +133,10 @@ export interface LookbookTyre {
   name: string
   code: string | null
   description: string | null
+  /** Line price (already parts × qty + install), for the Investment page. */
+  line_price_cents: number
+  quantity: number
+  sold_as_set: boolean
 }
 
 export interface LookbookPdfInput {

@@ -28,3 +28,4 @@ tests/.auth/
 # Logs
 *.log
 npm-debug.log*
+.claude/

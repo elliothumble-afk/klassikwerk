@@ -376,7 +376,7 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
     // install_price_cents lives on catalog_options; here we read the
     // per-line snapshot (parts × qty + labour + materials = line price).
     supabase.from('quote_options')
-      .select('id, option_id, quantity, finish_note, parts_sell_cents, labour_cents, materials_cents, price_cents_at_selection, quote_option_finishes(finish_set_id, finish_id, catalog_finish_sets(name, sort), catalog_finishes(name))')
+      .select('id, option_id, quantity, finish_note, parts_sell_cents, labour_cents, materials_cents, price_cents_at_selection, quote_option_finishes(finish_set_id, finish_id, catalog_finish_sets(name, sort), catalog_finishes(name, swatch_hex))')
       .eq('quote_id', quote.id),
     // Who sent/created the quote? Grab the most recent sent-or-created
     // event with a by_profile_id for the Closing sign-off.
@@ -433,7 +433,7 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
   interface QoFinishRow {
     finish_set_id: string; finish_id: string
     catalog_finish_sets: { name: string; sort: number } | null
-    catalog_finishes: { name: string } | null
+    catalog_finishes: { name: string; swatch_hex: string | null } | null
   }
   const qoRows = qoRes.data as unknown as {
     id: string; option_id: string; quantity: number; finish_note: string | null
@@ -507,7 +507,11 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
     const finishes = (qo.quote_option_finishes ?? [])
       .slice()
       .sort((a, b) => (a.catalog_finish_sets?.sort ?? 0) - (b.catalog_finish_sets?.sort ?? 0))
-      .map(f => ({ set_name: f.catalog_finish_sets?.name ?? '', name: f.catalog_finishes?.name ?? '' }))
+      .map(f => ({
+        set_name: f.catalog_finish_sets?.name ?? '',
+        name: f.catalog_finishes?.name ?? '',
+        swatch_hex: f.catalog_finishes?.swatch_hex ?? null,
+      }))
       .filter(f => f.name)
 
     const cat = o.category_id ? categoryById.get(o.category_id) : null
@@ -537,7 +541,14 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
     // Tyres get a one-liner on the Wheels page. Wheels become cards.
     // Everything else is a full option page.
     if (o.group_id === tyresGroupId) {
-      tyres.push({ name: o.name, code: o.code, description: o.description })
+      tyres.push({
+        name: o.name,
+        code: o.code,
+        description: o.description,
+        line_price_cents: linePrice,
+        quantity: qty,
+        sold_as_set: o.sold_as_set,
+      })
     } else if (o.group_id === wheelsGroupId) {
       wheelOptions.push(lookbook)
     } else {

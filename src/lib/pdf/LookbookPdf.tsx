@@ -165,7 +165,8 @@ export function LookbookPdf(input: LookbookPdfInput) {
   const {
     builder, brand, terms, operator_contact, closing_signer,
     platform, tier, options, tyres, wheel_options,
-    customer_first_name, theme_words, vehicle_colour,
+    customer_first_name, theme_words, vehicle_colour, vehicle_colour_hex, vehicle_year,
+    page2_hero_url,
   } = input
   const currency = terms.currency
   // The Lookbook has a fixed type system (Cormorant Garamond + DM Sans)
@@ -211,8 +212,12 @@ export function LookbookPdf(input: LookbookPdfInput) {
   const operatorName = operator_contact.name ?? 'Humble House'
   const customerName = customer_first_name ?? 'you'
 
-  const platformHero = platform.hero_image_url ?? null
-  const vColour = parseVehicleColour(vehicle_colour)
+  // The explicit `vehicle_colour_hex` picker wins; `[hex]` embedded in
+  // the name string is a legacy fallback.
+  const parsed = parseVehicleColour(vehicle_colour)
+  const vColour = parsed
+    ? { name: parsed.name, hex: vehicle_colour_hex ?? parsed.hex }
+    : null
 
   // ─── Grouping ──────────────────────────────────────────────────
   // Section → options, sorted by section_sort then option name.
@@ -229,19 +234,6 @@ export function LookbookPdf(input: LookbookPdfInput) {
 
   const validUntil = new Date(new Date(input.created_at).getTime() + (terms.quote_validity_days ?? 30) * 86400_000)
     .toISOString().slice(0, 10)
-
-  // Finishes across the quote (deduped by name) for the Mood row.
-  // We dedupe by name so two options sharing the same colour don't
-  // repeat a swatch, but keep the hex so we can paint it.
-  const moodFinishes: LookbookFinish[] = []
-  const moodSeen = new Set<string>()
-  for (const o of options) {
-    for (const f of o.finishes) {
-      if (!f.name || moodSeen.has(f.name)) continue
-      moodSeen.add(f.name)
-      moodFinishes.push(f)
-    }
-  }
 
   // Hide the footer on image-dominant pages so the long legal name
   // doesn't overprint a photo.
@@ -346,77 +338,82 @@ export function LookbookPdf(input: LookbookPdfInput) {
         <Footer dark />
       </Page>
 
-      {/* ─── 2. Your {platform} ────────────────────────────────── */}
-      <Page size={{ width: PAGE_W, height: PAGE_H }} style={base.cream}>
-        <View style={{ flexDirection: 'row', height: '100%', gap: 32 }}>
-          <View style={{ flex: 1.3 }}>
-            <Text style={base.label}>THE FOUNDATION</Text>
-            <Text style={[base.h1, { marginTop: 12 }]}>{platform.name}</Text>
-            <Text style={[base.body, { marginTop: 20, maxWidth: 460 }]}>
-              {platform.lookbook_copy ?? ''}
-            </Text>
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={[base.label, { marginBottom: 12 }]}>YOUR COLOURS</Text>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
-              {vColour && (
-                <Swatch
-                  title={vColour.name}
-                  subtitle="Vehicle colour"
-                  hex={vColour.hex ?? undefined}
-                />
-              )}
-              {options.some(o => o.category_name === 'Leather interior') && (() => {
-                const inter = options.find(o => o.category_name === 'Leather interior')
-                const colour = inter?.finishes.find(f => f.set_name === 'Interior colour')
-                return (
-                  <Swatch
-                    title={colour?.name ?? 'Interior'}
-                    subtitle="Leather interior"
-                    hex={colour?.swatch_hex ?? null}
-                  />
-                )
-              })()}
+      {/* ─── 2. Your {platform} ─ merged Foundation + palette ─── */}
+      {/* Left half: customer photo if uploaded, else platform hero,
+          else the lead image of the highest-priced option on the
+          quote. Right half: name/year, lookbook copy, palette. */}
+      {(() => {
+        // Partition finishes for the palette.
+        // Exterior finishes: distinct names from options tagged
+        // "Exterior finish" (grille/body kit paint choice). Interior:
+        // the Leather-interior option's colour. Wheel finish: the
+        // first wheel option's exterior-equivalent finish.
+        const seen = new Set<string>()
+        const exteriorFinishes: LookbookFinish[] = []
+        for (const o of options) {
+          for (const f of o.finishes) {
+            if (f.set_name !== 'Exterior finish') continue
+            if (!f.name || seen.has(f.name)) continue
+            seen.add(f.name); exteriorFinishes.push(f)
+          }
+        }
+        const interiorOpt = options.find(o => o.category_name === 'Leather interior')
+        const interiorColour = interiorOpt?.finishes.find(f => f.set_name === 'Interior colour') ?? null
+        const interiorPatterns = (interiorOpt?.finishes ?? []).filter(f => f.set_name === 'Interior pattern')
+        const wheelFinish = wheel_options[0]?.finishes.find(f => f.set_name === 'Exterior finish') ?? null
+        // Compact per-swatch size so a vehicle colour + 2 exterior
+        // finishes + wheel + interior fit comfortably in the right
+        // half (420px wide after padding).
+        const half = PAGE_W / 2
+        const paletteTitle = (() => {
+          const parts: string[] = []
+          if (vehicle_year) parts.push(String(vehicle_year))
+          parts.push(platform.name)
+          return parts.join(' ')
+        })()
+        return (
+          <Page key="page2" size={{ width: PAGE_W, height: PAGE_H }} style={{
+            backgroundColor: CREAM, color: INK, fontFamily: body, padding: 0,
+          }}>
+            <View style={{ flexDirection: 'row', width: PAGE_W, height: PAGE_H }}>
+              <View style={{ width: half, height: PAGE_H, backgroundColor: GREEN + '14' }}>
+                {page2_hero_url && (
+                  <Image src={page2_hero_url} style={{ width: half, height: PAGE_H, objectFit: 'cover' }} />
+                )}
+              </View>
+              <View style={{ width: half, height: PAGE_H, padding: 40 }}>
+                <Text style={base.label}>THE FOUNDATION</Text>
+                <Text style={[base.h1, { marginTop: 8, fontSize: 32 }]}>{paletteTitle}</Text>
+                <Text style={[base.body, { marginTop: 10, maxWidth: half - 80, fontSize: 10, lineHeight: 1.5 }]}>
+                  {platform.lookbook_copy ?? ''}
+                </Text>
+                <Text style={[base.label, { marginTop: 18 }]}>YOUR PALETTE</Text>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 10 }}>
+                  {vColour && (
+                    <Swatch title={vColour.name} subtitle="Vehicle colour" hex={vColour.hex ?? undefined} />
+                  )}
+                  {exteriorFinishes.map((f, i) => (
+                    <Swatch key={`ext${i}`} title={f.name} subtitle="Exterior finish" hex={f.swatch_hex ?? undefined} />
+                  ))}
+                  {wheelFinish && (
+                    <Swatch key="wheel" title={wheelFinish.name} subtitle="Wheels" hex={wheelFinish.swatch_hex ?? undefined} />
+                  )}
+                  {interiorColour && (
+                    <Swatch key="int" title={interiorColour.name} subtitle="Interior" hex={interiorColour.swatch_hex ?? undefined} />
+                  )}
+                </View>
+                {interiorPatterns.length > 0 && (
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 2 }}>
+                    {interiorPatterns.map((f, i) =>
+                      <PatternPill key={`pat${i}`} title={f.name} />
+                    )}
+                  </View>
+                )}
+              </View>
             </View>
-          </View>
-        </View>
-        <Footer />
-      </Page>
-
-      {/* ─── 3. The Mood ──────────────────────────────────────── */}
-      {/* padding:0 so the hero can bleed the full width, but we give the
-          page explicit height-locked children so react-pdf doesn't
-          flow-break and emit a blank continuation. */}
-      <Page size={{ width: PAGE_W, height: PAGE_H }} style={{
-        backgroundColor: CREAM, color: INK, fontFamily: body, padding: 0,
-      }}>
-        <View style={{ width: PAGE_W, height: 240, overflow: 'hidden' }}>
-          {platformHero ? (
-            <Image src={platformHero} style={{ width: PAGE_W, height: 240, objectFit: 'cover' }} />
-          ) : (
-            <View style={{ width: PAGE_W, height: 240, backgroundColor: GREEN + '30' }} />
-          )}
-        </View>
-        <View style={{ paddingTop: 18, paddingBottom: 20, paddingHorizontal: 56, height: 300 }}>
-          <Text style={base.label}>THE MOOD</Text>
-          <Text style={[base.h2, { marginTop: 2 }]}>Stealth, texture and warmth</Text>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 14 }}>
-            {vColour && (
-              <Swatch title={vColour.name} subtitle="Vehicle" hex={vColour.hex ?? undefined} />
-            )}
-            {moodFinishes.filter(f => f.swatch_hex).map((f, i) =>
-              <Swatch key={`sw${i}`} title={f.name} subtitle={f.set_name} hex={f.swatch_hex ?? undefined} />
-            )}
-          </View>
-          {moodFinishes.some(f => !f.swatch_hex) && (
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
-              {moodFinishes.filter(f => !f.swatch_hex).map((f, i) =>
-                <PatternPill key={`p${i}`} title={f.name} />
-              )}
-            </View>
-          )}
-        </View>
-      </Page>
+          </Page>
+        )
+      })()}
 
       {/* ─── 4+. One page per selected option (sections ordered) ─ */}
       {sections.flatMap((section, sectionIdx) =>

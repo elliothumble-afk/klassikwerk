@@ -158,6 +158,10 @@ export function QuoteEditor() {
   //   but the Lookbook renders a swatch of it on page 2.
   const [themeWords, setThemeWords] = useState<string>('')
   const [vehicleColour, setVehicleColour] = useState<string>('')
+  const [vehicleColourHex, setVehicleColourHex] = useState<string>('')
+  const [vehicleYear, setVehicleYear] = useState<string>('')
+  const [vehiclePhotoUrl, setVehiclePhotoUrl] = useState<string>('')
+  const [vehiclePhotoUploading, setVehiclePhotoUploading] = useState(false)
   // Labour source for the margin panel. Default = builder_terms
   // default_labour_source; overridden by quote.labour_source once a
   // quote has been saved. Explicit state here so a flip in the editor
@@ -193,6 +197,9 @@ export function QuoteEditor() {
       if (existing.labour_source) setLabourSource(existing.labour_source)
       setThemeWords(existing.theme_words ?? '')
       setVehicleColour(existing.vehicle_colour ?? '')
+      setVehicleColourHex(existing.vehicle_colour_hex ?? '')
+      setVehicleYear(existing.vehicle_year == null ? '' : String(existing.vehicle_year))
+      setVehiclePhotoUrl(existing.vehicle_photo_url ?? '')
     } else if (lead?.platform_interest_id && !platformId) {
       setPlatformId(lead.platform_interest_id)
     }
@@ -570,6 +577,9 @@ export function QuoteEditor() {
             labour_source: effectiveLabourSource,
             theme_words: themeWords.trim() || null,
             vehicle_colour: vehicleColour.trim() || null,
+            vehicle_colour_hex: vehicleColourHex.trim() || null,
+            vehicle_year: vehicleYear.trim() ? Number(vehicleYear) : null,
+            vehicle_photo_url: vehiclePhotoUrl.trim() || null,
           })
           .eq('id', existing.id)
         if (upErr) throw upErr
@@ -598,6 +608,9 @@ export function QuoteEditor() {
         labour_source: effectiveLabourSource,
         theme_words: themeWords.trim() || null,
         vehicle_colour: vehicleColour.trim() || null,
+        vehicle_colour_hex: vehicleColourHex.trim() || null,
+        vehicle_year: vehicleYear.trim() ? Number(vehicleYear) : null,
+        vehicle_photo_url: vehiclePhotoUrl.trim() || null,
       }).select('id').single()
       if (q.error) throw q.error
       const quoteId = (q.data as { id: string }).id
@@ -1014,7 +1027,7 @@ export function QuoteEditor() {
         )}
 
         {catalog?.pricingMode === 'cost_based' && (
-          <Step label="Lookbook details">
+          <Step label="Vehicle">
             <div className="grid gap-3 sm:grid-cols-2">
               <div>
                 <label className="text-xs text-[var(--color-muted)] mb-1 block">Theme words</label>
@@ -1027,14 +1040,96 @@ export function QuoteEditor() {
                 />
               </div>
               <div>
-                <label className="text-xs text-[var(--color-muted)] mb-1 block">Vehicle colour</label>
+                <label className="text-xs text-[var(--color-muted)] mb-1 block">Vehicle year</label>
                 <input
-                  value={vehicleColour}
-                  onChange={e => setVehicleColour(e.target.value)}
+                  type="number"
+                  min={1950}
+                  max={2100}
+                  value={vehicleYear}
+                  onChange={e => setVehicleYear(e.target.value)}
                   disabled={readOnly}
-                  placeholder="Carpathian Grey"
+                  placeholder="2024"
                   className="w-full h-9 px-3 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] text-sm disabled:opacity-50"
                 />
+              </div>
+              <div className="sm:col-span-2 grid gap-3 sm:grid-cols-[1fr_auto]">
+                <div>
+                  <label className="text-xs text-[var(--color-muted)] mb-1 block">Vehicle colour</label>
+                  <input
+                    value={vehicleColour}
+                    onChange={e => setVehicleColour(e.target.value)}
+                    disabled={readOnly}
+                    placeholder="Carpathian Grey"
+                    className="w-full h-9 px-3 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] text-sm disabled:opacity-50"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-[var(--color-muted)] mb-1 block">Hex</label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="color"
+                      value={/^#[0-9a-f]{6}$/i.test(vehicleColourHex) ? vehicleColourHex : '#5B5F62'}
+                      onChange={e => setVehicleColourHex(e.target.value.toUpperCase())}
+                      disabled={readOnly}
+                      className="h-9 w-10 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] cursor-pointer disabled:opacity-50"
+                    />
+                    <input
+                      type="text"
+                      value={vehicleColourHex}
+                      onChange={e => setVehicleColourHex(e.target.value)}
+                      disabled={readOnly}
+                      placeholder="#5B5F62"
+                      className="h-9 w-24 px-2 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] text-sm font-mono disabled:opacity-50"
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="sm:col-span-2">
+                <label className="text-xs text-[var(--color-muted)] mb-1 block">Vehicle photo (optional)</label>
+                <div className="flex items-start gap-3">
+                  {vehiclePhotoUrl ? (
+                    <img src={vehiclePhotoUrl} alt="Vehicle" className="w-32 h-20 object-cover rounded-[var(--radius-sm)] border border-[var(--color-border)]" />
+                  ) : (
+                    <div className="w-32 h-20 rounded-[var(--radius-sm)] border border-dashed border-[var(--color-border)] bg-[var(--color-surface)] flex items-center justify-center text-xs text-[var(--color-muted)]">
+                      No photo
+                    </div>
+                  )}
+                  <div className="flex-1 flex flex-col gap-1.5">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      disabled={readOnly || vehiclePhotoUploading}
+                      onChange={async e => {
+                        const file = e.target.files?.[0]
+                        if (!file) return
+                        setVehiclePhotoUploading(true); setErr(null)
+                        try {
+                          const ext = (file.name.split('.').pop() ?? 'jpg').toLowerCase()
+                          const path = `vehicles/quote-${existing?.id ?? lead?.id ?? Date.now()}-${Date.now()}.${ext}`
+                          const up = await supabase.storage.from('media').upload(path, file, { upsert: true, contentType: file.type })
+                          if (up.error) throw up.error
+                          const { data: pub } = supabase.storage.from('media').getPublicUrl(path)
+                          setVehiclePhotoUrl(pub.publicUrl)
+                        } catch (err) {
+                          setErr((err as Error).message)
+                        } finally {
+                          setVehiclePhotoUploading(false)
+                        }
+                      }}
+                      className="text-xs"
+                    />
+                    {vehiclePhotoUrl && !readOnly && (
+                      <button
+                        type="button"
+                        onClick={() => setVehiclePhotoUrl('')}
+                        className="self-start text-xs text-[var(--color-muted)] hover:text-[var(--color-foreground)]"
+                      >
+                        Remove photo
+                      </button>
+                    )}
+                    {vehiclePhotoUploading && <span className="text-xs text-[var(--color-muted)]">Uploading…</span>}
+                  </div>
+                </div>
               </div>
             </div>
           </Step>

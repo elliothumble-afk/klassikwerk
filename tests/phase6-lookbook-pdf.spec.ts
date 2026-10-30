@@ -165,11 +165,11 @@ test('Phase 6 — Grenadier Lookbook PDF renders 12+ pages', async ({ page }) =>
     const buf = Buffer.from(await resp.body())
     // Count /Type /Page occurrences — a cheap page count that doesn't
     // require pulling a PDF parsing lib into node_modules. The
-    // 4-option Grenadier scenario (3 non-wheel + 1 wheel) produces 11
-    // pages: Cover + Foundation + Mood + 3 option pages + Wheels +
+    // 4-option Grenadier scenario (3 non-wheel + 1 wheel) produces 10
+    // pages: Cover + "Your {platform}" + 3 option pages + Wheels +
     // Statement + At a Glance + Investment + Closing.
     const pageCount = (buf.toString('latin1').match(/\/Type\s*\/Page[^s]/g) ?? []).length
-    expect(pageCount, `expected ≥11 lookbook pages, got ${pageCount}`).toBeGreaterThanOrEqual(11)
+    expect(pageCount, `expected ≥10 lookbook pages, got ${pageCount}`).toBeGreaterThanOrEqual(10)
     // Stash the URL + a local copy for manual review / PR attachment.
     if (process.env.KW_SAVE_PDF) {
       fs.writeFileSync('/tmp/grenadier-lookbook.pdf', buf)

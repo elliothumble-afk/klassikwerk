@@ -635,6 +635,9 @@ export type Database = {
           labour_source: 'in_house' | 'partner_shop' | null
           theme_words: string | null
           vehicle_colour: string | null
+          vehicle_colour_hex: string | null
+          vehicle_year: number | null
+          vehicle_photo_url: string | null
           created_at: string
           updated_at: string
         }
@@ -655,6 +658,9 @@ export type Database = {
           labour_source?: 'in_house' | 'partner_shop' | null
           theme_words?: string | null
           vehicle_colour?: string | null
+          vehicle_colour_hex?: string | null
+          vehicle_year?: number | null
+          vehicle_photo_url?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -674,6 +680,9 @@ export type Database = {
           labour_source?: 'in_house' | 'partner_shop' | null
           theme_words?: string | null
           vehicle_colour?: string | null
+          vehicle_colour_hex?: string | null
+          vehicle_year?: number | null
+          vehicle_photo_url?: string | null
           updated_at?: string
         }
         Relationships: []

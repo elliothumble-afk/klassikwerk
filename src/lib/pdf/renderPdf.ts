@@ -355,7 +355,7 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
   const qRes = await supabase.from('quotes')
     .select(`
       id, version, price_cents, created_at, builder_id, platform_id, tier_id, lead_id,
-      theme_words, vehicle_colour,
+      theme_words, vehicle_colour, vehicle_colour_hex, vehicle_year, vehicle_photo_url,
       lead:leads(phone, customer:customers(full_name, email))
     `)
     .eq('id', quoteId).single()
@@ -364,6 +364,7 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
     id: string; version: number; price_cents: number; created_at: string
     builder_id: string; platform_id: string; tier_id: string
     theme_words: string | null; vehicle_colour: string | null
+    vehicle_colour_hex: string | null; vehicle_year: number | null; vehicle_photo_url: string | null
     lead: { phone: string | null; customer: { full_name: string | null; email: string | null } | null } | null
   }
 
@@ -563,6 +564,16 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
   const customerFullName = quote.lead?.customer?.full_name ?? null
   const customerFirstName = customerFullName ? customerFullName.split(/\s+/)[0] : null
 
+  // Page 2 hero: customer-uploaded photo wins; otherwise the platform
+  // hero; otherwise fall back to the image of the highest-priced non-
+  // wheel/tyre option on the quote. Never ship a grey box.
+  const platformHero = (platform as { hero_image_url?: string | null }).hero_image_url ?? null
+  const topOptionImage = [...options]
+    .sort((a, b) => b.line_price_cents - a.line_price_cents)[0]?.image_url ?? null
+  const page2HeroUrl = quote.vehicle_photo_url
+    ?? platformHero
+    ?? topOptionImage
+
   const input: LookbookPdfInput = {
     quote_id: quote.id,
     version: quote.version,
@@ -582,6 +593,9 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
     customer_first_name: customerFirstName,
     theme_words: quote.theme_words,
     vehicle_colour: quote.vehicle_colour,
+    vehicle_colour_hex: quote.vehicle_colour_hex,
+    vehicle_year: quote.vehicle_year,
+    page2_hero_url: page2HeroUrl,
   }
 
   const [{ LookbookPdf }, { registerBrandFonts }] = await Promise.all([

@@ -164,7 +164,6 @@ export interface LookbookPdfInput {
   customer_first_name: string | null
   theme_words: string | null
   vehicle_colour: string | null
-  vehicle_colour_hex: string | null
   vehicle_year: number | null
   /** Resolved by renderPdf: customer-uploaded photo → platform.hero →
    *  the lead image of the highest-priced option on the quote. Never

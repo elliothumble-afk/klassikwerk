@@ -158,7 +158,6 @@ export function QuoteEditor() {
   //   but the Lookbook renders a swatch of it on page 2.
   const [themeWords, setThemeWords] = useState<string>('')
   const [vehicleColour, setVehicleColour] = useState<string>('')
-  const [vehicleColourHex, setVehicleColourHex] = useState<string>('')
   const [vehicleYear, setVehicleYear] = useState<string>('')
   const [vehiclePhotoUrl, setVehiclePhotoUrl] = useState<string>('')
   const [vehiclePhotoUploading, setVehiclePhotoUploading] = useState(false)
@@ -197,7 +196,6 @@ export function QuoteEditor() {
       if (existing.labour_source) setLabourSource(existing.labour_source)
       setThemeWords(existing.theme_words ?? '')
       setVehicleColour(existing.vehicle_colour ?? '')
-      setVehicleColourHex(existing.vehicle_colour_hex ?? '')
       setVehicleYear(existing.vehicle_year == null ? '' : String(existing.vehicle_year))
       setVehiclePhotoUrl(existing.vehicle_photo_url ?? '')
     } else if (lead?.platform_interest_id && !platformId) {
@@ -577,7 +575,6 @@ export function QuoteEditor() {
             labour_source: effectiveLabourSource,
             theme_words: themeWords.trim() || null,
             vehicle_colour: vehicleColour.trim() || null,
-            vehicle_colour_hex: vehicleColourHex.trim() || null,
             vehicle_year: vehicleYear.trim() ? Number(vehicleYear) : null,
             vehicle_photo_url: vehiclePhotoUrl.trim() || null,
           })
@@ -608,7 +605,6 @@ export function QuoteEditor() {
         labour_source: effectiveLabourSource,
         theme_words: themeWords.trim() || null,
         vehicle_colour: vehicleColour.trim() || null,
-        vehicle_colour_hex: vehicleColourHex.trim() || null,
         vehicle_year: vehicleYear.trim() ? Number(vehicleYear) : null,
         vehicle_photo_url: vehiclePhotoUrl.trim() || null,
       }).select('id').single()
@@ -1052,37 +1048,15 @@ export function QuoteEditor() {
                   className="w-full h-9 px-3 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] text-sm disabled:opacity-50"
                 />
               </div>
-              <div className="sm:col-span-2 grid gap-3 sm:grid-cols-[1fr_auto]">
-                <div>
-                  <label className="text-xs text-[var(--color-muted)] mb-1 block">Vehicle colour</label>
-                  <input
-                    value={vehicleColour}
-                    onChange={e => setVehicleColour(e.target.value)}
-                    disabled={readOnly}
-                    placeholder="Carpathian Grey"
-                    className="w-full h-9 px-3 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] text-sm disabled:opacity-50"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-[var(--color-muted)] mb-1 block">Hex</label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="color"
-                      value={/^#[0-9a-f]{6}$/i.test(vehicleColourHex) ? vehicleColourHex : '#5B5F62'}
-                      onChange={e => setVehicleColourHex(e.target.value.toUpperCase())}
-                      disabled={readOnly}
-                      className="h-9 w-10 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] cursor-pointer disabled:opacity-50"
-                    />
-                    <input
-                      type="text"
-                      value={vehicleColourHex}
-                      onChange={e => setVehicleColourHex(e.target.value)}
-                      disabled={readOnly}
-                      placeholder="#5B5F62"
-                      className="h-9 w-24 px-2 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] text-sm font-mono disabled:opacity-50"
-                    />
-                  </div>
-                </div>
+              <div className="sm:col-span-2">
+                <label className="text-xs text-[var(--color-muted)] mb-1 block">Vehicle colour</label>
+                <input
+                  value={vehicleColour}
+                  onChange={e => setVehicleColour(e.target.value)}
+                  disabled={readOnly}
+                  placeholder="Carpathian Grey"
+                  className="w-full h-9 px-3 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] text-sm disabled:opacity-50"
+                />
               </div>
               <div className="sm:col-span-2">
                 <label className="text-xs text-[var(--color-muted)] mb-1 block">Vehicle photo (optional)</label>

@@ -165,7 +165,7 @@ export function LookbookPdf(input: LookbookPdfInput) {
   const {
     builder, brand, terms, operator_contact, closing_signer,
     platform, tier, options, tyres, wheel_options,
-    customer_first_name, theme_words, vehicle_colour, vehicle_colour_hex, vehicle_year,
+    customer_first_name, theme_words, vehicle_colour, vehicle_year,
     page2_hero_url, page2_hero_is_wide,
   } = input
   const currency = terms.currency
@@ -212,12 +212,9 @@ export function LookbookPdf(input: LookbookPdfInput) {
   const operatorName = operator_contact.name ?? 'Humble House'
   const customerName = customer_first_name ?? 'you'
 
-  // The explicit `vehicle_colour_hex` picker wins; `[hex]` embedded in
-  // the name string is a legacy fallback.
-  const parsed = parseVehicleColour(vehicle_colour)
-  const vColour = parsed
-    ? { name: parsed.name, hex: vehicle_colour_hex ?? parsed.hex }
-    : null
+  // Vehicle colour is text only — the palette card is name-only, so
+  // we only need the display name.
+  const vColour = parseVehicleColour(vehicle_colour)
 
   // ─── Grouping ──────────────────────────────────────────────────
   // Section → options, sorted by section_sort then option name.
@@ -249,32 +246,50 @@ export function LookbookPdf(input: LookbookPdfInput) {
   )
 
   // ─── Swatches ──────────────────────────────────────────────────
-  // Compact 120×140 chip used on Mood + p2. Patterns (no hex, no body-
-  // colour mapping) render as a text pill instead of a colour swatch.
+  // Compact 120×140 card used on the palette. When a real hex is
+  // supplied (Raptor, carbon, interior leather) we paint a colour
+  // block above the name; when `hex` is null/undefined the card is
+  // "name-only" — serif title centred, subtitle beneath — so a free-
+  // text vehicle colour like "Carpathian Grey" or a Body-colour paint
+  // callout doesn't invent a fake swatch.
   function Swatch({ title, subtitle, hex, dark = false }: {
     title: string
     subtitle?: string
     hex?: string | null
     dark?: boolean
   }) {
-    const chipColour = hex ?? (dark ? CREAM + '22' : CHARCOAL + '14')
+    const nameOnly = !hex
     return (
       <View style={{
         width: 120, height: 140, marginRight: 12, marginBottom: 12,
         padding: 10, borderRadius: 4,
         backgroundColor: dark ? CREAM + '14' : '#FFFFFF',
         border: `0.5 solid ${dark ? CREAM + '33' : INK + '1F'}`,
+        justifyContent: nameOnly ? 'center' : 'flex-start',
       }}>
-        <View style={{
-          flex: 1, borderRadius: 2, marginBottom: 8,
-          backgroundColor: chipColour,
-          border: `0.5 solid ${dark ? CREAM + '22' : INK + '18'}`,
-        }} />
-        <Text style={{ fontFamily: display, fontSize: 12, color: dark ? CREAM : INK }}>
+        {!nameOnly && (
+          <View style={{
+            flex: 1, borderRadius: 2, marginBottom: 8,
+            backgroundColor: hex!,
+            border: `0.5 solid ${dark ? CREAM + '22' : INK + '18'}`,
+          }} />
+        )}
+        <Text style={{
+          fontFamily: display,
+          fontSize: nameOnly ? 15 : 12,
+          color: dark ? CREAM : INK,
+          textAlign: nameOnly ? 'center' : 'left',
+          lineHeight: 1.2,
+        }}>
           {title}
         </Text>
         {subtitle && (
-          <Text style={[dark ? base.bodyLight : base.body, { fontSize: 8, marginTop: 1, color: (dark ? CREAM : INK) + '99' }]}>
+          <Text style={[dark ? base.bodyLight : base.body, {
+            fontSize: 8,
+            marginTop: nameOnly ? 6 : 1,
+            color: (dark ? CREAM : INK) + '99',
+            textAlign: nameOnly ? 'center' : 'left',
+          }]}>
             {subtitle}
           </Text>
         )}
@@ -363,12 +378,22 @@ export function LookbookPdf(input: LookbookPdfInput) {
         const wheelFinish = wheel_options[0]?.finishes.find(f => f.set_name === 'Exterior finish') ?? null
 
         // Body-colour paint is a label, not a palette entry — it
-        // means "paint it to match the vehicle". Resolve any finish
-        // name that starts with "Body-colour" to the quote's hex so
-        // the swatch is a real colour, not a neutral card.
-        const resolveFinishHex = (f: LookbookFinish): string | null => {
-          if (/^body[-\s]?colour/i.test(f.name) && vColour?.hex) return vColour.hex
-          return f.swatch_hex
+        // means "paint it to match the vehicle". Render it as a name-
+        // only card echoing the vehicle colour name, so the chip
+        // doesn't invent a fake swatch block.
+        const isBodyColour = (name: string) => /^body[-\s]?colour/i.test(name)
+        const renderFinish = (f: LookbookFinish, key: string, subtitle: string) => {
+          if (isBodyColour(f.name)) {
+            return (
+              <Swatch
+                key={key}
+                title={vColour?.name ?? f.name}
+                subtitle={subtitle}
+                hex={null}
+              />
+            )
+          }
+          return <Swatch key={key} title={f.name} subtitle={subtitle} hex={f.swatch_hex ?? undefined} />
         }
 
         const paletteTitle = (() => {
@@ -379,21 +404,17 @@ export function LookbookPdf(input: LookbookPdfInput) {
         })()
 
         // Vehicle colour swatch comes first, always, so the palette
-        // leads with the car's finish. Fallback title "Vehicle colour"
-        // when the ops user hasn't named it yet.
+        // leads with the car's finish. Vehicle colour is text-only
+        // (no fake colour block); real swatches follow.
         const PaletteSwatches = () => (
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 10 }}>
             <Swatch
               title={vColour?.name ?? 'Vehicle colour'}
               subtitle="Vehicle colour"
-              hex={vColour?.hex ?? undefined}
+              hex={null}
             />
-            {exteriorFinishes.map((f, i) => (
-              <Swatch key={`ext${i}`} title={f.name} subtitle="Exterior finish" hex={resolveFinishHex(f) ?? undefined} />
-            ))}
-            {wheelFinish && (
-              <Swatch key="wheel" title={wheelFinish.name} subtitle="Wheels" hex={resolveFinishHex(wheelFinish) ?? undefined} />
-            )}
+            {exteriorFinishes.map((f, i) => renderFinish(f, `ext${i}`, 'Exterior finish'))}
+            {wheelFinish && renderFinish(wheelFinish, 'wheel', 'Wheels')}
             {interiorColour && (
               <Swatch key="int" title={interiorColour.name} subtitle="Interior" hex={interiorColour.swatch_hex ?? undefined} />
             )}

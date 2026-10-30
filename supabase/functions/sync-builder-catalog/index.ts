@@ -620,6 +620,83 @@ async function fetchCollectionImage(baseUrl: string, slug: string): Promise<stri
   }
 }
 
+/** Fetch an image's intrinsic width + height by reading the file
+ *  header. Supports JPEG, PNG and WebP (the three formats Shopify
+ *  returns). Returns null on any error. We fetch the first 64KB which
+ *  is enough for every SOF marker in a reasonable JPEG and well past
+ *  the IHDR/VP8X headers for PNG/WebP. */
+async function probeImageSize(url: string): Promise<{ width: number; height: number } | null> {
+  try {
+    const r = await fetch(url, { headers: { 'User-Agent': UA, Range: 'bytes=0-65535' } })
+    if (!r.ok && r.status !== 206) return null
+    const buf = new Uint8Array(await r.arrayBuffer())
+    return readImageDimensions(buf)
+  } catch {
+    return null
+  }
+}
+
+function readImageDimensions(buf: Uint8Array): { width: number; height: number } | null {
+  if (buf.length < 24) return null
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
+  // PNG: 89 50 4E 47 0D 0A 1A 0A, IHDR at offset 16 (width) and 20 (height), big-endian.
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) {
+    return { width: dv.getUint32(16), height: dv.getUint32(20) }
+  }
+  // WebP: 'RIFF' .... 'WEBP' at 0..11.
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46
+      && buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) {
+    // Chunk at offset 12: 'VP8 ', 'VP8L', or 'VP8X'.
+    const tag = String.fromCharCode(buf[12], buf[13], buf[14], buf[15])
+    if (tag === 'VP8X' && buf.length >= 30) {
+      // 3-byte little-endian width-1 / height-1 at offsets 24 / 27.
+      const w = 1 + (buf[24] | (buf[25] << 8) | (buf[26] << 16))
+      const h = 1 + (buf[27] | (buf[28] << 8) | (buf[29] << 16))
+      return { width: w, height: h }
+    }
+    if (tag === 'VP8L' && buf.length >= 25) {
+      // 14-bit width-1 and height-1 packed little-endian starting at offset 21.
+      const b0 = buf[21], b1 = buf[22], b2 = buf[23], b3 = buf[24]
+      const w = 1 + (((b1 & 0x3F) << 8) | b0)
+      const h = 1 + (((b3 & 0x0F) << 10) | (b2 << 2) | ((b1 & 0xC0) >> 6))
+      return { width: w, height: h }
+    }
+    if (tag === 'VP8 ' && buf.length >= 30) {
+      // Frame-tag + 'start code' 9D 01 2A, then little-endian width (14 bits) + height (14 bits).
+      // Start code at offset 23 for the simple lossy container.
+      if (buf[23] === 0x9D && buf[24] === 0x01 && buf[25] === 0x2A) {
+        const w = (buf[26] | (buf[27] << 8)) & 0x3FFF
+        const h = (buf[28] | (buf[29] << 8)) & 0x3FFF
+        return { width: w, height: h }
+      }
+    }
+    return null
+  }
+  // JPEG: starts with FF D8. Walk SOF markers.
+  if (buf[0] === 0xFF && buf[1] === 0xD8) {
+    let i = 2
+    while (i < buf.length - 8) {
+      if (buf[i] !== 0xFF) { i++; continue }
+      // Skip padding FFs.
+      while (i < buf.length && buf[i] === 0xFF) i++
+      const marker = buf[i]; i++
+      // Standalone markers (no length).
+      if (marker === 0xD8 || marker === 0xD9 || (marker >= 0xD0 && marker <= 0xD7)) continue
+      if (i + 1 >= buf.length) return null
+      const segLen = dv.getUint16(i)
+      // SOF0..SOF15 excluding DHT (C4), DAC (CC), DNL (DC): the common SOF markers.
+      const isSof = (marker >= 0xC0 && marker <= 0xCF) && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC
+      if (isSof && i + 7 < buf.length) {
+        const h = dv.getUint16(i + 3)
+        const w = dv.getUint16(i + 5)
+        return { width: w, height: h }
+      }
+      i += segLen
+    }
+  }
+  return null
+}
+
 /** Last-resort hero: fetch /collections/<slug>/products.json?limit=50 and
  *  return the first image of the most expensive product (by variant
  *  price, descending). Null if no products. */
@@ -880,24 +957,30 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
 
   // Resolve a hero image per vehicle in parallel: exterior collection
   // banner → interior → wheels → highest-priced product in exterior.
-  // The first non-null wins.
+  // The first non-null wins. We also probe the chosen image for its
+  // intrinsic width/height so the Lookbook renderer can decide the
+  // page-2 layout without a client-side Image round-trip.
   const HERO_CATEGORY_ORDER: ShopifyCategory[] = ['exterior', 'interior', 'alloy-wheels']
-  const heroByVehicleSlug = new Map<string, string | null>()
+  interface ResolvedHero { url: string | null; width: number | null; height: number | null }
+  const heroByVehicleSlug = new Map<string, ResolvedHero>()
   await Promise.all(resolved.map(async ({ vehicle, canonicals }) => {
+    const chosen = async (url: string): Promise<ResolvedHero> => {
+      const dims = await probeImageSize(url)
+      return { url, width: dims?.width ?? null, height: dims?.height ?? null }
+    }
     for (const cat of HERO_CATEGORY_ORDER) {
       const slug = canonicals[cat]
       if (!slug) continue
       const img = await fetchCollectionImage(baseUrl, slug)
-      if (img) { heroByVehicleSlug.set(vehicle.slug, img); return }
+      if (img) { heroByVehicleSlug.set(vehicle.slug, await chosen(img)); return }
     }
-    // Last-resort: top-priced product in whichever collection we have.
     for (const cat of HERO_CATEGORY_ORDER) {
       const slug = canonicals[cat]
       if (!slug) continue
       const img = await fetchHighestPricedProductImage(baseUrl, slug)
-      if (img) { heroByVehicleSlug.set(vehicle.slug, img); return }
+      if (img) { heroByVehicleSlug.set(vehicle.slug, await chosen(img)); return }
     }
-    heroByVehicleSlug.set(vehicle.slug, null)
+    heroByVehicleSlug.set(vehicle.slug, { url: null, width: null, height: null })
   }))
 
   const platformIdByVehicle = new Map<string, string>()  // v.slug → id
@@ -907,7 +990,7 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     const externalId = `shopify:platform:${vehicle.slug}`
     const existing = existingHero.get(externalId)
     const canWriteHero = !existing?.hero_image_url || existing.hero_source === 'sync'
-    const resolvedHero = heroByVehicleSlug.get(vehicle.slug) ?? null
+    const resolvedHero = heroByVehicleSlug.get(vehicle.slug) ?? { url: null, width: null, height: null }
     const payload: Record<string, unknown> = {
       builder_id: builder.id,
       slug: vehicle.slug,
@@ -919,10 +1002,12 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
       synced: true,
       external_id: externalId,
     }
-    if (canWriteHero && resolvedHero) {
-      payload.hero_image_url = resolvedHero
+    if (canWriteHero && resolvedHero.url) {
+      payload.hero_image_url = resolvedHero.url
+      payload.hero_image_width = resolvedHero.width
+      payload.hero_image_height = resolvedHero.height
       payload.hero_source = 'sync'
-      if (existing?.hero_image_url !== resolvedHero) heroesWritten += 1
+      if (existing?.hero_image_url !== resolvedHero.url) heroesWritten += 1
     }
     const ins = await admin.from('catalog_platforms').upsert(
       payload,

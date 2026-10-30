@@ -62,6 +62,62 @@ function stripVehicleDecorations(name: string): string {
   return out.trim()
 }
 
+// ─── All-caps → Title Case ───────────────────────────────────────
+// Shopify copy routinely ships option names in SHOUT-CAPS ("LAND
+// ROVER DEFENDER (1991-2016) FRONT BUMPER SUMP GUARD"). The lookbook
+// is a customer-facing document, so we re-case any run of ALL-CAPS
+// words to Title Case while preserving a short list of acronyms the
+// catalog actually uses in uppercase. Mixed-case names are left
+// alone — Shopify writers who typed "Side Vents and CTC badges"
+// knew what they were doing.
+const KEEP_AS_IS = new Set([
+  'AMG', 'CTC', 'RS', 'DC', 'LED', 'KO3', 'G22', 'G63', 'G350', 'G400',
+])
+// Articles / conjunctions / short prepositions that stay lowercase
+// mid-string in English title case.
+const MINOR_WORDS = new Set([
+  'a', 'an', 'and', 'as', 'at', 'but', 'by', 'for', 'in', 'of', 'on',
+  'or', 'the', 'to', 'with',
+])
+
+function titleCaseSubtoken(w: string): string {
+  if (!w) return w
+  if (KEEP_AS_IS.has(w)) return w
+  // Convert if the whole subtoken is uppercase alphanumeric (letters +
+  // optional digits) AND has at least two letters.
+  if (/^[A-Z0-9]+$/.test(w) && (w.match(/[A-Z]/g)?.length ?? 0) >= 2) {
+    return w[0] + w.slice(1).toLowerCase()
+  }
+  return w
+}
+
+function titleCaseToken(token: string): string {
+  // Split on hyphens / slashes so sub-pieces are evaluated separately:
+  // "RS-FORGED" → "RS" (keep) + "FORGED" → "Forged".
+  return token.split(/([-/])/).map(part =>
+    /^[-/]$/.test(part) ? part : titleCaseSubtoken(part),
+  ).join('')
+}
+
+function titleCaseName(name: string): string {
+  if (!name) return ''
+  const parts = name.split(/(\s+)/)
+  // Index of the first / last non-whitespace token so we know which
+  // positions are allowed to stay as minor-word lowercase.
+  const wordIdx: number[] = []
+  parts.forEach((p, i) => { if (!/^\s+$/.test(p)) wordIdx.push(i) })
+  const firstWord = wordIdx[0] ?? -1
+  const lastWord = wordIdx[wordIdx.length - 1] ?? -1
+  return parts.map((p, i) => {
+    if (/^\s+$/.test(p)) return p
+    const tc = titleCaseToken(p)
+    // Only lowercase minor words in the middle, never at the ends.
+    const isEdge = i === firstWord || i === lastWord
+    if (!isEdge && MINOR_WORDS.has(tc.toLowerCase())) return tc.toLowerCase()
+    return tc
+  }).join('')
+}
+
 function stripTrailingSku(name: string, sku: string | null): string {
   if (!name) return ''
   let out = name.trim()
@@ -77,7 +133,7 @@ function stripTrailingSku(name: string, sku: string | null): string {
 }
 
 function cleanName(raw: string, _platformName: string, sku: string | null): string {
-  return stripTrailingSku(stripVehicleDecorations(raw), sku)
+  return titleCaseName(stripTrailingSku(stripVehicleDecorations(raw), sku))
 }
 
 // Shopify descriptions often open with a title repeat ("Comfort Leather

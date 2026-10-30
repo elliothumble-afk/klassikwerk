@@ -166,7 +166,7 @@ export function LookbookPdf(input: LookbookPdfInput) {
     builder, brand, terms, operator_contact, closing_signer,
     platform, tier, options, tyres, wheel_options,
     customer_first_name, theme_words, vehicle_colour, vehicle_colour_hex, vehicle_year,
-    page2_hero_url,
+    page2_hero_url, page2_hero_is_wide,
   } = input
   const currency = terms.currency
   // The Lookbook has a fixed type system (Cormorant Garamond + DM Sans)
@@ -339,9 +339,9 @@ export function LookbookPdf(input: LookbookPdfInput) {
       </Page>
 
       {/* ─── 2. Your {platform} ─ merged Foundation + palette ─── */}
-      {/* Left half: customer photo if uploaded, else platform hero,
-          else the lead image of the highest-priced option on the
-          quote. Right half: name/year, lookbook copy, palette. */}
+      {/* Hero image placement switches on aspect ratio: wide (Shopify
+          collection banners) → full-width top band; portrait/square
+          (customer photos, platform renders) → left half. */}
       {(() => {
         // Partition finishes for the palette.
         // Exterior finishes: distinct names from options tagged
@@ -361,16 +361,80 @@ export function LookbookPdf(input: LookbookPdfInput) {
         const interiorColour = interiorOpt?.finishes.find(f => f.set_name === 'Interior colour') ?? null
         const interiorPatterns = (interiorOpt?.finishes ?? []).filter(f => f.set_name === 'Interior pattern')
         const wheelFinish = wheel_options[0]?.finishes.find(f => f.set_name === 'Exterior finish') ?? null
-        // Compact per-swatch size so a vehicle colour + 2 exterior
-        // finishes + wheel + interior fit comfortably in the right
-        // half (420px wide after padding).
-        const half = PAGE_W / 2
+
+        // Body-colour paint is a label, not a palette entry — it
+        // means "paint it to match the vehicle". Resolve any finish
+        // name that starts with "Body-colour" to the quote's hex so
+        // the swatch is a real colour, not a neutral card.
+        const resolveFinishHex = (f: LookbookFinish): string | null => {
+          if (/^body[-\s]?colour/i.test(f.name) && vColour?.hex) return vColour.hex
+          return f.swatch_hex
+        }
+
         const paletteTitle = (() => {
           const parts: string[] = []
           if (vehicle_year) parts.push(String(vehicle_year))
           parts.push(platform.name)
           return parts.join(' ')
         })()
+
+        // Vehicle colour swatch comes first, always, so the palette
+        // leads with the car's finish. Fallback title "Vehicle colour"
+        // when the ops user hasn't named it yet.
+        const PaletteSwatches = () => (
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 10 }}>
+            <Swatch
+              title={vColour?.name ?? 'Vehicle colour'}
+              subtitle="Vehicle colour"
+              hex={vColour?.hex ?? undefined}
+            />
+            {exteriorFinishes.map((f, i) => (
+              <Swatch key={`ext${i}`} title={f.name} subtitle="Exterior finish" hex={resolveFinishHex(f) ?? undefined} />
+            ))}
+            {wheelFinish && (
+              <Swatch key="wheel" title={wheelFinish.name} subtitle="Wheels" hex={resolveFinishHex(wheelFinish) ?? undefined} />
+            )}
+            {interiorColour && (
+              <Swatch key="int" title={interiorColour.name} subtitle="Interior" hex={interiorColour.swatch_hex ?? undefined} />
+            )}
+          </View>
+        )
+        const PaletteExtras = () => (
+          interiorPatterns.length > 0 ? (
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 2 }}>
+              {interiorPatterns.map((f, i) => <PatternPill key={`pat${i}`} title={f.name} />)}
+            </View>
+          ) : null
+        )
+
+        if (page2_hero_is_wide) {
+          // Banner layout: full-width top 45%, text + palette beneath.
+          const bandH = Math.round(PAGE_H * 0.45)
+          return (
+            <Page key="page2" size={{ width: PAGE_W, height: PAGE_H }} style={{
+              backgroundColor: CREAM, color: INK, fontFamily: body, padding: 0,
+            }}>
+              <View style={{ width: PAGE_W, height: bandH, backgroundColor: GREEN + '14' }}>
+                {page2_hero_url && (
+                  <Image src={page2_hero_url} style={{ width: PAGE_W, height: bandH, objectFit: 'cover' }} />
+                )}
+              </View>
+              <View style={{ paddingTop: 20, paddingBottom: 24, paddingHorizontal: 56, height: PAGE_H - bandH }}>
+                <Text style={base.label}>THE FOUNDATION</Text>
+                <Text style={[base.h1, { marginTop: 4, fontSize: 28 }]}>{paletteTitle}</Text>
+                <Text style={[base.body, { marginTop: 6, maxWidth: 760, fontSize: 10, lineHeight: 1.5 }]}>
+                  {platform.lookbook_copy ?? ''}
+                </Text>
+                <Text style={[base.label, { marginTop: 12 }]}>YOUR PALETTE</Text>
+                <PaletteSwatches />
+                <PaletteExtras />
+              </View>
+            </Page>
+          )
+        }
+
+        // Portrait / square: left half photo, right half text.
+        const half = PAGE_W / 2
         return (
           <Page key="page2" size={{ width: PAGE_W, height: PAGE_H }} style={{
             backgroundColor: CREAM, color: INK, fontFamily: body, padding: 0,
@@ -388,27 +452,8 @@ export function LookbookPdf(input: LookbookPdfInput) {
                   {platform.lookbook_copy ?? ''}
                 </Text>
                 <Text style={[base.label, { marginTop: 18 }]}>YOUR PALETTE</Text>
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 10 }}>
-                  {vColour && (
-                    <Swatch title={vColour.name} subtitle="Vehicle colour" hex={vColour.hex ?? undefined} />
-                  )}
-                  {exteriorFinishes.map((f, i) => (
-                    <Swatch key={`ext${i}`} title={f.name} subtitle="Exterior finish" hex={f.swatch_hex ?? undefined} />
-                  ))}
-                  {wheelFinish && (
-                    <Swatch key="wheel" title={wheelFinish.name} subtitle="Wheels" hex={wheelFinish.swatch_hex ?? undefined} />
-                  )}
-                  {interiorColour && (
-                    <Swatch key="int" title={interiorColour.name} subtitle="Interior" hex={interiorColour.swatch_hex ?? undefined} />
-                  )}
-                </View>
-                {interiorPatterns.length > 0 && (
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 2 }}>
-                    {interiorPatterns.map((f, i) =>
-                      <PatternPill key={`pat${i}`} title={f.name} />
-                    )}
-                  </View>
-                )}
+                <PaletteSwatches />
+                <PaletteExtras />
               </View>
             </View>
           </Page>

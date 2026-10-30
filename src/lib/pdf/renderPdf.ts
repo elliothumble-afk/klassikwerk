@@ -18,6 +18,25 @@ async function pdfBlob(doc: ReactElement<DocumentProps>): Promise<Blob> {
   return await pdf(doc).toBlob()
 }
 
+/** Load an image URL in the browser and return true when its aspect
+ *  ratio exceeds the threshold. Safe to call with a null URL (returns
+ *  false) and in non-browser environments (returns false). */
+async function measureIsWide(url: string | null, threshold: number): Promise<boolean> {
+  if (!url) return false
+  if (typeof window === 'undefined' || typeof Image === 'undefined') return false
+  return new Promise<boolean>(resolve => {
+    const img = new Image()
+    const timeout = setTimeout(() => resolve(false), 5000)
+    img.crossOrigin = 'anonymous'
+    img.onload = () => {
+      clearTimeout(timeout)
+      resolve(img.naturalWidth / (img.naturalHeight || 1) > threshold)
+    }
+    img.onerror = () => { clearTimeout(timeout); resolve(false) }
+    img.src = url
+  })
+}
+
 async function uploadPdf(path: string, blob: Blob): Promise<string> {
   const up = await supabase.storage
     .from('media')
@@ -574,6 +593,14 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
     ?? platformHero
     ?? topOptionImage
 
+  // Measure the hero's aspect ratio so the LookbookPdf can switch
+  // between the half-page portrait layout (customer photos) and a
+  // full-width banner layout (Shopify collection images). We fall
+  // back to the half-page layout if the browser can't load it (CORS,
+  // network error, timeout) — centre-cropping a wide image in a
+  // tall half isn't ideal but it's not broken.
+  const page2HeroIsWide = await measureIsWide(page2HeroUrl, 1.6)
+
   const input: LookbookPdfInput = {
     quote_id: quote.id,
     version: quote.version,
@@ -596,6 +623,7 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
     vehicle_colour_hex: quote.vehicle_colour_hex,
     vehicle_year: quote.vehicle_year,
     page2_hero_url: page2HeroUrl,
+    page2_hero_is_wide: page2HeroIsWide,
   }
 
   const [{ LookbookPdf }, { registerBrandFonts }] = await Promise.all([

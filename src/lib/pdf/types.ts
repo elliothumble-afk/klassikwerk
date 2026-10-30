@@ -170,6 +170,11 @@ export interface LookbookPdfInput {
    *  the lead image of the highest-priced option on the quote. Never
    *  a stock grey box; the LookbookPdf trusts this to be set. */
   page2_hero_url: string | null
+  /** True when the hero image's aspect ratio is wider than 1.6:1
+   *  (Shopify collection banner territory). Portrait / square (<= 1.6)
+   *  stays as the half-page layout; wider becomes a full-bleed top
+   *  band so the banner isn't centre-cropped into a tall slice. */
+  page2_hero_is_wide: boolean
 }
 
 export interface ContractPdfInput {

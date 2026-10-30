@@ -152,6 +152,12 @@ export function QuoteEditor() {
   const [finishByOption, setFinishByOption] = useState<Record<string, Record<string, string>>>({})
   const [finishNoteByOption, setFinishNoteByOption] = useState<Record<string, string>>({})
   const [notes, setNotes] = useState<string>('')
+  // Lookbook PDF (cost_based builders) consumes these two.
+  // theme_words: short tag line on the cover ("Carbon · Bronze · All-Terrain").
+  // vehicle_colour: the customer's existing paint — we don't repaint,
+  //   but the Lookbook renders a swatch of it on page 2.
+  const [themeWords, setThemeWords] = useState<string>('')
+  const [vehicleColour, setVehicleColour] = useState<string>('')
   // Labour source for the margin panel. Default = builder_terms
   // default_labour_source; overridden by quote.labour_source once a
   // quote has been saved. Explicit state here so a flip in the editor
@@ -185,6 +191,8 @@ export function QuoteEditor() {
         setFinishNoteByOption(finNote)
       }
       if (existing.labour_source) setLabourSource(existing.labour_source)
+      setThemeWords(existing.theme_words ?? '')
+      setVehicleColour(existing.vehicle_colour ?? '')
     } else if (lead?.platform_interest_id && !platformId) {
       setPlatformId(lead.platform_interest_id)
     }
@@ -557,7 +565,12 @@ export function QuoteEditor() {
       if (existing) {
         const { error: upErr } = await supabase
           .from('quotes')
-          .update({ platform_id: platformId, tier_id: tierId, price_cents: total, notes, labour_source: effectiveLabourSource })
+          .update({
+            platform_id: platformId, tier_id: tierId, price_cents: total, notes,
+            labour_source: effectiveLabourSource,
+            theme_words: themeWords.trim() || null,
+            vehicle_colour: vehicleColour.trim() || null,
+          })
           .eq('id', existing.id)
         if (upErr) throw upErr
         await supabase.from('quote_options').delete().eq('quote_id', existing.id)
@@ -583,6 +596,8 @@ export function QuoteEditor() {
         status: 'draft',
         notes,
         labour_source: effectiveLabourSource,
+        theme_words: themeWords.trim() || null,
+        vehicle_colour: vehicleColour.trim() || null,
       }).select('id').single()
       if (q.error) throw q.error
       const quoteId = (q.data as { id: string }).id
@@ -994,6 +1009,33 @@ export function QuoteEditor() {
                   </div>
                 )
               })}
+            </div>
+          </Step>
+        )}
+
+        {catalog?.pricingMode === 'cost_based' && (
+          <Step label="Lookbook details">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="text-xs text-[var(--color-muted)] mb-1 block">Theme words</label>
+                <input
+                  value={themeWords}
+                  onChange={e => setThemeWords(e.target.value)}
+                  disabled={readOnly}
+                  placeholder="Carbon · Bronze · All-Terrain"
+                  className="w-full h-9 px-3 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] text-sm disabled:opacity-50"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-[var(--color-muted)] mb-1 block">Vehicle colour</label>
+                <input
+                  value={vehicleColour}
+                  onChange={e => setVehicleColour(e.target.value)}
+                  disabled={readOnly}
+                  placeholder="Carpathian Grey"
+                  className="w-full h-9 px-3 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] text-sm disabled:opacity-50"
+                />
+              </div>
             </div>
           </Step>
         )}

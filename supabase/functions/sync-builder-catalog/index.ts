@@ -553,8 +553,35 @@ interface ShopifyProductImage { src: string }
 interface ShopifyProduct {
   handle: string
   title: string
+  body_html: string | null
   variants: ShopifyProductVariant[]
   images: ShopifyProductImage[]
+}
+
+/** Shopify's body_html → first two sentences of plain text. We strip
+ *  tags, collapse whitespace, split on sentence terminators, and
+ *  concatenate the first two. Preserves em-dashes and smart quotes. */
+function bodyToDescription(html: string | null | undefined): string | null {
+  if (!html) return null
+  const stripped = html
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!stripped) return null
+  const sentences = stripped
+    .split(/(?<=[.!?])\s+(?=[A-Z"])/)
+    .map(s => s.trim())
+    .filter(Boolean)
+  if (sentences.length === 0) return stripped.slice(0, 400)
+  return sentences.slice(0, 2).join(' ').slice(0, 600)
 }
 
 const SHOPIFY_CATEGORIES = ['exterior', 'interior', 'alloy-wheels'] as const
@@ -846,6 +873,8 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     source_currency: string
     category_id: string | null
     swatch_image_url: string | null
+    description: string | null
+    image_urls: string[]
     active: boolean
     sold_as_set: boolean
     group_id: string
@@ -915,6 +944,9 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
               categoryId = pickCategoryId(cat, (product.tags as string[]) ?? [])
             }
 
+            const imageUrls = (product.images ?? []).map(img => img.src).filter((v): v is string => !!v)
+            const description = bodyToDescription(product.body_html)
+
             const existing = byExternalId.get(externalId)
             if (!existing || priority > existing.group_priority) {
               byExternalId.set(externalId, {
@@ -928,6 +960,8 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
                 source_currency: 'GBP',
                 category_id: categoryId,
                 swatch_image_url: image,
+                description,
+                image_urls: imageUrls,
                 active,
                 sold_as_set: soldAsSet,
                 group_id: groupId,
@@ -1053,6 +1087,7 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     web_price_cents: o.web_price_cents,
     source_currency: o.source_currency,
     category_id: o.category_id,
+    description: o.description,
     included_in_tier_ids: [],
     swatch_image_url: o.swatch_image_url,
     sort: 0,
@@ -1107,6 +1142,46 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
   }
 
   const totalUpserted = allRows.length
+
+  // ─── Rebuild catalog_option_images for ACTIVE synced options ──────
+  // Wipe-then-reinsert mirrors the platform-link approach so stale
+  // images from superseded Shopify handles don't accumulate. Only
+  // active options get image rows; inactive rows have no customer-
+  // visible surface. The Lookbook PDF reads the first by sort as the
+  // hero when the option doesn't have a lead_image_url set.
+  const activeOptionIds: string[] = []
+  const imageRows: { option_id: string; url: string; sort: number }[] = []
+  for (const o of byExternalId.values()) {
+    if (!o.active) continue
+    const optionId = upsertedIdByExternal.get(o.external_id)
+    if (!optionId) continue
+    activeOptionIds.push(optionId)
+    o.image_urls.forEach((url, i) => imageRows.push({ option_id: optionId, url, sort: i }))
+  }
+  // Delete the current image set for every active synced option.
+  const IMG_CHUNK = 100
+  for (let i = 0; i < activeOptionIds.length; i += IMG_CHUNK) {
+    const chunk = activeOptionIds.slice(i, i + IMG_CHUNK)
+    const del = await admin.from('catalog_option_images').delete().in('option_id', chunk)
+    if (del.error) throw del.error
+  }
+  // Dedupe within each option in case Shopify repeats a src across
+  // variant pins — the (option_id, url) unique constraint would reject
+  // the whole batch otherwise.
+  const seenPerOption = new Map<string, Set<string>>()
+  const dedupedImageRows = imageRows.filter(r => {
+    const seen = seenPerOption.get(r.option_id) ?? new Set<string>()
+    if (seen.has(r.url)) return false
+    seen.add(r.url); seenPerOption.set(r.option_id, seen)
+    return true
+  })
+  let imagesInserted = 0
+  for (let i = 0; i < dedupedImageRows.length; i += IMG_CHUNK) {
+    const chunk = dedupedImageRows.slice(i, i + IMG_CHUNK)
+    const ins = await admin.from('catalog_option_images').insert(chunk)
+    if (ins.error) throw ins.error
+    imagesInserted += chunk.length
+  }
 
   // ─── Deactivate stale rows via updated_at (survives URL-length limits) ─
   // Anything synced + still-active that wasn't touched this run is stale.
@@ -1191,5 +1266,6 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     per_platform: perPlatformNamed,
     fx_rate: fx,
     kit_markup: markup,
+    images_inserted: imagesInserted,
   }
 }

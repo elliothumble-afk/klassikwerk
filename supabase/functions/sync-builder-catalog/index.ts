@@ -606,6 +606,42 @@ function stripTags(s: string): string {
   return s.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
 }
 
+/** Fetch a Shopify collection's banner image via /collections/<slug>.json
+ *  and return `collection.image.src`. Returns null on any error, including
+ *  a missing image field. */
+async function fetchCollectionImage(baseUrl: string, slug: string): Promise<string | null> {
+  try {
+    const r = await shopifyFetch(`${baseUrl}/collections/${slug}.json`)
+    if (!r.ok) return null
+    const body = await r.json() as { collection?: { image?: { src?: string } | null } }
+    return body.collection?.image?.src ?? null
+  } catch {
+    return null
+  }
+}
+
+/** Last-resort hero: fetch /collections/<slug>/products.json?limit=50 and
+ *  return the first image of the most expensive product (by variant
+ *  price, descending). Null if no products. */
+async function fetchHighestPricedProductImage(baseUrl: string, slug: string): Promise<string | null> {
+  try {
+    const r = await shopifyFetch(`${baseUrl}/collections/${slug}/products.json?limit=50&page=1`)
+    if (!r.ok) return null
+    const body = await r.json() as { products?: Array<{ images?: Array<{ src?: string }>; variants?: Array<{ price?: string }> }> }
+    const products = body.products ?? []
+    const ranked = products
+      .map(p => ({
+        img: p.images?.[0]?.src ?? null,
+        price: Math.max(0, ...(p.variants ?? []).map(v => Number(v.price ?? '0'))),
+      }))
+      .filter(p => !!p.img)
+      .sort((a, b) => b.price - a.price)
+    return ranked[0]?.img ?? null
+  } catch {
+    return null
+  }
+}
+
 function slugify(s: string): string {
   return s
     .toLowerCase()
@@ -828,11 +864,51 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
   }
 
   // ─── Upsert platforms ──────────────────────────────────────────────
+  // Pre-read any existing hero_image_url + hero_source so we don't
+  // blow away a manually-pinned hero on resync. The sync is only
+  // allowed to overwrite rows it previously wrote (hero_source='sync')
+  // or that were never set.
+  const existingHero = new Map<string, { hero_image_url: string | null; hero_source: string | null }>()
+  const existingPlatRes = await admin.from('catalog_platforms')
+    .select('external_id, hero_image_url, hero_source')
+    .eq('builder_id', builder.id)
+  if (existingPlatRes.error) throw existingPlatRes.error
+  for (const r of (existingPlatRes.data ?? []) as { external_id: string | null; hero_image_url: string | null; hero_source: string | null }[]) {
+    if (!r.external_id) continue
+    existingHero.set(r.external_id, { hero_image_url: r.hero_image_url, hero_source: r.hero_source })
+  }
+
+  // Resolve a hero image per vehicle in parallel: exterior collection
+  // banner → interior → wheels → highest-priced product in exterior.
+  // The first non-null wins.
+  const HERO_CATEGORY_ORDER: ShopifyCategory[] = ['exterior', 'interior', 'alloy-wheels']
+  const heroByVehicleSlug = new Map<string, string | null>()
+  await Promise.all(resolved.map(async ({ vehicle, canonicals }) => {
+    for (const cat of HERO_CATEGORY_ORDER) {
+      const slug = canonicals[cat]
+      if (!slug) continue
+      const img = await fetchCollectionImage(baseUrl, slug)
+      if (img) { heroByVehicleSlug.set(vehicle.slug, img); return }
+    }
+    // Last-resort: top-priced product in whichever collection we have.
+    for (const cat of HERO_CATEGORY_ORDER) {
+      const slug = canonicals[cat]
+      if (!slug) continue
+      const img = await fetchHighestPricedProductImage(baseUrl, slug)
+      if (img) { heroByVehicleSlug.set(vehicle.slug, img); return }
+    }
+    heroByVehicleSlug.set(vehicle.slug, null)
+  }))
+
   const platformIdByVehicle = new Map<string, string>()  // v.slug → id
   const seenPlatformExternalIds = new Set<string>()
+  let heroesWritten = 0
   for (const { vehicle } of resolved) {
     const externalId = `shopify:platform:${vehicle.slug}`
-    const ins = await admin.from('catalog_platforms').upsert({
+    const existing = existingHero.get(externalId)
+    const canWriteHero = !existing?.hero_image_url || existing.hero_source === 'sync'
+    const resolvedHero = heroByVehicleSlug.get(vehicle.slug) ?? null
+    const payload: Record<string, unknown> = {
       builder_id: builder.id,
       slug: vehicle.slug,
       name: vehicle.name,
@@ -842,7 +918,16 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
       active: true,
       synced: true,
       external_id: externalId,
-    }, { onConflict: 'builder_id,external_id' }).select('id').single()
+    }
+    if (canWriteHero && resolvedHero) {
+      payload.hero_image_url = resolvedHero
+      payload.hero_source = 'sync'
+      if (existing?.hero_image_url !== resolvedHero) heroesWritten += 1
+    }
+    const ins = await admin.from('catalog_platforms').upsert(
+      payload,
+      { onConflict: 'builder_id,external_id' },
+    ).select('id').single()
     if (ins.error) throw ins.error
     platformIdByVehicle.set(vehicle.slug, (ins.data as any).id)
     seenPlatformExternalIds.add(externalId)
@@ -1267,5 +1352,6 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     fx_rate: fx,
     kit_markup: markup,
     images_inserted: imagesInserted,
+    platform_heroes_written: heroesWritten,
   }
 }

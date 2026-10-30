@@ -15,19 +15,51 @@ const CHARCOAL = '#1F2420'
 const INK = '#2A2E2A'
 
 // ─── Text cleanup helpers ────────────────────────────────────────
-// Shopify option names arrive as e.g. "INEOS Grenadier (2023 Onwards)
-// Comfort Leather Interior (LSCIC24SDWS3N)". The lookbook already
-// knows which platform the quote is for and shows SKUs on the
-// Investment page, so we strip the leading vehicle prefix + any
-// trailing "(SKU)" disambiguator.
+// Shopify option names arrive in three vehicle-decorated shapes we
+// want to normalise before showing in the lookbook:
+//   1. Leading platform prefix — "INEOS Grenadier (2023 Onwards)
+//      Comfort Leather Interior (LSCIC24SDWS3N)"
+//   2. Trailing platform suffix — "Large Rear Roof Wing for Land Rover
+//      Defender (2020 Onwards)" (also "FOR" uppercase)
+//   3. Trailing "(SKU)" disambiguator — on either shape.
+//
+// The pattern we strip isn't just the current quote's platform.name —
+// Shopify titles often say "Land Rover Defender" where the catalog
+// row is "Land Rover Defender 110", or "INEOS Grenadier" where ours
+// is "Ineos Grenadier". So we match any "<Capitalised Words>
+// (YYYY+)" shape bounded by the string edge, case-insensitive on
+// the "for" / "Onwards" / "Present" keywords.
 
-function stripVehiclePrefix(name: string, platformName: string): string {
+// A years parenthetical: (2023 Onwards), (1991-2016), (2023–Present),
+// (2024 onwards). Match both case variants explicitly so the outer
+// regex doesn't need the /i flag — /i would widen [A-Z] to [A-Za-z]
+// and let the platform-name alternation eat lower-case words.
+const YEARS_PAREN = `\\(\\s*\\d{4}(?:\\s*[-–]\\s*\\d{4}|\\s*(?:[Oo]n\\s*[Ww]ards?|[Pp]resent))?\\s*\\)`
+// A platform-name token: 1-5 Capitalised words (e.g. "Land Rover
+// Defender 110", "Mercedes-Benz G-Wagon G350/400", "Ineos
+// Grenadier"), allowing hyphens, slashes and digits mid-word.
+const PLATFORM_NAME = `(?:[A-Z][A-Za-z0-9/-]*(?:\\s+[A-Z0-9][A-Za-z0-9/-]*){0,4})`
+// "for" / "fits" — common Shopify suffix connectors. Match both cases
+// explicitly, no /i flag on the outer regex.
+const FOR_WORD = `(?:[Ff][Oo][Rr]|[Ff][Ii][Tt][Ss]?)`
+
+function stripVehicleDecorations(name: string): string {
   if (!name) return ''
-  const pat = platformName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  // Match "Platform (anything)" or "Platform" at the start,
-  // case-insensitive, with an optional separator.
-  const re = new RegExp(`^\\s*${pat}\\s*(?:\\([^)]*\\))?\\s*[-–—:]?\\s*`, 'i')
-  return name.replace(re, '').trim()
+  let out = name.trim()
+  // 1. Leading "Platform (years) [-|–|:] " prefix.
+  const leading = new RegExp(`^\\s*${PLATFORM_NAME}\\s*${YEARS_PAREN}\\s*[-–—:]?\\s*`)
+  out = out.replace(leading, '')
+  // 2. Trailing " [for] Platform (years)" suffix. The "for" is
+  //    required when the suffix is preceded by non-platform words,
+  //    otherwise the greedy PLATFORM_NAME alternation would eat the
+  //    whole option label ("Large Rear Roof Wing for ..." → "Large").
+  //    Allow "for"-less when preceded by nothing (i.e. the whole
+  //    string is a trailing-only platform mention).
+  const trailingWithFor = new RegExp(`\\s+${FOR_WORD}\\s+${PLATFORM_NAME}\\s*${YEARS_PAREN}\\s*$`)
+  out = out.replace(trailingWithFor, '')
+  const trailingAlone = new RegExp(`^${PLATFORM_NAME}\\s*${YEARS_PAREN}\\s*$`)
+  out = out.replace(trailingAlone, '')
+  return out.trim()
 }
 
 function stripTrailingSku(name: string, sku: string | null): string {
@@ -44,8 +76,8 @@ function stripTrailingSku(name: string, sku: string | null): string {
   return out.trim()
 }
 
-function cleanName(raw: string, platformName: string, sku: string | null): string {
-  return stripTrailingSku(stripVehiclePrefix(raw, platformName), sku)
+function cleanName(raw: string, _platformName: string, sku: string | null): string {
+  return stripTrailingSku(stripVehicleDecorations(raw), sku)
 }
 
 // Shopify descriptions often open with a title repeat ("Comfort Leather
@@ -514,10 +546,13 @@ export function LookbookPdf(input: LookbookPdfInput) {
       </Page>
 
       {/* ─── Investment ────────────────────────────────────────── */}
+      {/* Target: fit header, table + total, schedule and validity on
+          ONE page even with 10+ options. Row paddings are tight on
+          purpose. */}
       <Page size={{ width: PAGE_W, height: PAGE_H }} style={base.cream}>
         <Text style={base.label}>INVESTMENT</Text>
-        <Text style={[base.h1, { marginTop: 4 }]}>Your package</Text>
-        <View style={{ marginTop: 14 }}>
+        <Text style={[base.h2, { marginTop: 2 }]}>Your package</Text>
+        <View style={{ marginTop: 10 }}>
           <View style={{ flexDirection: 'row', borderBottom: `0.5 solid ${INK}66`, paddingBottom: 5 }}>
             <Text style={[base.label, { flex: 2 }]}>Item</Text>
             <Text style={[base.label, { flex: 1.5 }]}>Finish</Text>
@@ -546,7 +581,7 @@ export function LookbookPdf(input: LookbookPdfInput) {
             money(t.line_price_cents, currency),
             `tyre-${i}`,
           ))}
-          <View style={{ flexDirection: 'row', paddingTop: 8, marginTop: 4, borderTop: `0.5 solid ${INK}66` }}>
+          <View style={{ flexDirection: 'row', paddingTop: 6, marginTop: 2, borderTop: `0.5 solid ${INK}66` }}>
             <Text style={[base.body, { flex: 2, fontFamily: display, fontSize: 14 }]}>Total</Text>
             <Text style={[base.body, { flex: 1.5 }]} />
             <Text style={[base.body, { width: 48 }]} />
@@ -557,9 +592,9 @@ export function LookbookPdf(input: LookbookPdfInput) {
         </View>
 
         {terms.payment_schedule.length > 0 && (
-          <View style={{ marginTop: 10 }}>
+          <View style={{ marginTop: 8 }}>
             <Text style={base.label}>PAYMENT SCHEDULE</Text>
-            <View style={{ marginTop: 4 }}>
+            <View style={{ marginTop: 2 }}>
               <ScheduleRow label="Reservation deposit" trigger="On acceptance" value={money(terms.reservation_cents, currency)} />
               {terms.payment_schedule.map((s, i) => (
                 <ScheduleRow key={i} label={s.label} trigger={triggerLabel(s.trigger)}
@@ -614,21 +649,21 @@ function GlanceRow({ label, value }: { label: string; value: string }) {
 
 function InvestRow({ item, finish, qty, price }: { item: string; finish: string; qty: string; price: string }) {
   return (
-    <View style={{ flexDirection: 'row', paddingVertical: 6, borderBottom: `0.5 solid ${INK}22` }}>
-      <Text style={{ fontFamily: 'Helvetica', fontSize: 10, flex: 2 }}>{item}</Text>
-      <Text style={{ fontFamily: 'Helvetica', fontSize: 10, flex: 1.5, color: INK + '99' }}>{finish}</Text>
-      <Text style={{ fontFamily: 'Helvetica', fontSize: 10, width: 48, textAlign: 'right', color: INK + '99' }}>{qty}</Text>
-      <Text style={{ fontFamily: 'Helvetica', fontSize: 10, width: 110, textAlign: 'right' }}>{price}</Text>
+    <View style={{ flexDirection: 'row', paddingVertical: 3, borderBottom: `0.5 solid ${INK}22` }}>
+      <Text style={{ fontFamily: 'Helvetica', fontSize: 9, flex: 2 }}>{item}</Text>
+      <Text style={{ fontFamily: 'Helvetica', fontSize: 9, flex: 1.5, color: INK + '99' }}>{finish}</Text>
+      <Text style={{ fontFamily: 'Helvetica', fontSize: 9, width: 48, textAlign: 'right', color: INK + '99' }}>{qty}</Text>
+      <Text style={{ fontFamily: 'Helvetica', fontSize: 9, width: 110, textAlign: 'right' }}>{price}</Text>
     </View>
   )
 }
 
 function ScheduleRow({ label, trigger, value }: { label: string; trigger: string; value: string }) {
   return (
-    <View style={{ flexDirection: 'row', paddingVertical: 4, borderBottom: `0.5 solid ${INK}22` }}>
-      <Text style={{ fontFamily: 'Helvetica', fontSize: 10, flex: 1 }}>{label}</Text>
-      <Text style={{ fontFamily: 'Helvetica', fontSize: 10, flex: 1, color: INK + '99' }}>{trigger}</Text>
-      <Text style={{ fontFamily: 'Helvetica', fontSize: 10, width: 140, textAlign: 'right' }}>{value}</Text>
+    <View style={{ flexDirection: 'row', paddingVertical: 2, borderBottom: `0.5 solid ${INK}22` }}>
+      <Text style={{ fontFamily: 'Helvetica', fontSize: 9, flex: 1 }}>{label}</Text>
+      <Text style={{ fontFamily: 'Helvetica', fontSize: 9, flex: 1, color: INK + '99' }}>{trigger}</Text>
+      <Text style={{ fontFamily: 'Helvetica', fontSize: 9, width: 140, textAlign: 'right' }}>{value}</Text>
     </View>
   )
 }

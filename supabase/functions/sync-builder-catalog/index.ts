@@ -189,18 +189,24 @@ Deno.serve(async (req) => {
     // stay manual (not touched by this sync).
     // ────────────────────────────────────────────────────────────
     if (builder.catalog_source === 'shopify') {
-      const shopifyCounts = await syncShopify(admin, builder)
+      const shopifyCounts = await syncShopify(admin, builder) as { summary?: unknown; [k: string]: unknown }
+      const summary = (shopifyCounts.summary ?? null) as object | null
       const nowIso = new Date().toISOString()
       await admin.from('sync_runs').update({
         status: 'success',
         finished_at: nowIso,
         counts: shopifyCounts,
+        summary,
       }).eq('id', runId!)
       await admin.from('builders').update({
         last_synced_at: nowIso,
         last_sync_status: 'success',
         last_sync_error: null,
       }).eq('id', builderId)
+      // Fire-and-forget email to HH_INBOX_EMAIL if the summary is
+      // non-empty and the Resend key is configured. The sync does
+      // not wait on the mail response.
+      if (summary) emailSyncSummary(builder.name, summary).catch(err => console.error('[sync-email]', err))
       return new Response(JSON.stringify({ ok: true, counts: shopifyCounts, run_id: runId }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
@@ -606,6 +612,47 @@ function stripTags(s: string): string {
   return s.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
 }
 
+/** Fire-and-forget email to HH_INBOX_EMAIL via Resend. Silently
+ *  no-ops when either HH_INBOX_EMAIL or RESEND_API_KEY is missing so
+ *  the sync still succeeds on preview envs without secrets. */
+async function emailSyncSummary(builderName: string, summary: unknown): Promise<void> {
+  const to  = Deno.env.get('HH_INBOX_EMAIL')
+  const key = Deno.env.get('RESEND_API_KEY')
+  const from = Deno.env.get('HH_INBOX_FROM') ?? 'sync@humblehouseauto.com'
+  if (!to || !key) return
+  const s = summary as {
+    new_options?: { name: string }[]
+    removed_options?: { name: string }[]
+    price_changes?: { name: string; from_cents: number; to_cents: number; delta_pct: number }[]
+    uncategorised?: { name: string }[]
+  }
+  const dollars = (c: number) => `$${(c / 100).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+  const list = (title: string, items: string[]) =>
+    items.length ? `<h3>${title} (${items.length})</h3><ul>${items.map(i => `<li>${i}</li>`).join('')}</ul>` : ''
+  const html = [
+    `<h2>${builderName} sync</h2>`,
+    list('New options', (s.new_options ?? []).map(o => o.name)),
+    list('Removed options', (s.removed_options ?? []).map(o => o.name)),
+    list('Price changes', (s.price_changes ?? []).map(p =>
+      `${p.name}: ${dollars(p.from_cents)} → ${dollars(p.to_cents)} (${p.delta_pct > 0 ? '+' : ''}${p.delta_pct}%)`)),
+    list('Uncategorised', (s.uncategorised ?? []).map(o => o.name)),
+  ].join('')
+  const total = (s.new_options?.length ?? 0)
+    + (s.removed_options?.length ?? 0)
+    + (s.price_changes?.length ?? 0)
+    + (s.uncategorised?.length ?? 0)
+  if (total === 0) return  // nothing to report, don't spam
+  const subject = `[sync] ${builderName}: ${s.new_options?.length ?? 0} new, ${s.removed_options?.length ?? 0} removed, ${s.price_changes?.length ?? 0} price changes`
+  await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${key}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ from, to, subject, html }),
+  })
+}
+
 /** Fetch a Shopify collection's banner image via /collections/<slug>.json
  *  and return `collection.image.src`. Returns null on any error, including
  *  a missing image field. */
@@ -853,7 +900,23 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
   interface CategoryRow { id: string; name: string; shopify_tags: string[]; sort: number }
   let categories: CategoryRow[] = []
   let otherCategoryId: string | null = null
-  const existingByExternal = new Map<string, { category_id: string | null; category_locked: boolean }>()
+  // Pre-sync snapshot keyed by Shopify external_id. Carries both the
+  // ops override state (locks) AND the pre-sync values we need to diff
+  // against for the summary (name + prices).
+  interface ExistingSnap {
+    id: string
+    external_id: string
+    name: string
+    category_id: string | null
+    category_locked: boolean
+    origin_id: string | null
+    origin_locked: boolean
+    description: string | null
+    description_locked: boolean
+    price_cents: number
+    active: boolean
+  }
+  const existingByExternal = new Map<string, ExistingSnap>()
   if (isCostBased) {
     const catRes = await admin.from('catalog_categories')
       .select('id, name, shopify_tags, sort')
@@ -862,18 +925,22 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     if (catRes.error) throw catRes.error
     categories = (catRes.data ?? []) as CategoryRow[]
     otherCategoryId = categories.find(c => c.name === 'Other')?.id ?? null
+  }
 
-    // Paginate so we see every row — PostgREST caps at 1000.
-    for (let from = 0; ; from += 1000) {
-      const r = await admin.from('catalog_options')
-        .select('external_id, category_id, category_locked')
-        .eq('builder_id', builder.id).eq('synced', true)
-        .range(from, from + 999)
-      if (r.error) throw r.error
-      const batch = (r.data ?? []) as { external_id: string; category_id: string | null; category_locked: boolean }[]
-      for (const row of batch) existingByExternal.set(row.external_id, row)
-      if (batch.length < 1000) break
+  // Load every existing synced row so we can diff AND respect locks.
+  // Done regardless of pricing_mode because the lock + diff logic is
+  // orthogonal to cost-based repricing.
+  for (let from = 0; ; from += 1000) {
+    const r = await admin.from('catalog_options')
+      .select('id, external_id, name, category_id, category_locked, origin_id, origin_locked, description, description_locked, price_cents, active')
+      .eq('builder_id', builder.id).eq('synced', true)
+      .range(from, from + 999)
+    if (r.error) throw r.error
+    const batch = (r.data ?? []) as ExistingSnap[]
+    for (const row of batch) {
+      if (row.external_id) existingByExternal.set(row.external_id, row)
     }
+    if (batch.length < 1000) break
   }
 
   function pickCategoryId(cat: ShopifyCategory, tags: string[]): string | null {
@@ -1106,9 +1173,11 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
             const webPriceCents = Math.round(priceGbp * 100)
 
             // Preserve ops-set category when the option is locked.
+            // The lock applies regardless of pricing_mode; the
+            // category snapshot is loaded for every builder above.
             const existingRow = existingByExternal.get(externalId)
             let categoryId: string | null
-            if (isCostBased && existingRow?.category_locked) {
+            if (existingRow?.category_locked) {
               categoryId = existingRow.category_id
             } else {
               categoryId = pickCategoryId(cat, (product.tags as string[]) ?? [])
@@ -1246,29 +1315,40 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
   }
 
   // ─── Bulk upsert the deduped options (chunked for URL limits) ──────
-  const allRows = Array.from(byExternalId.values()).map(o => ({
-    builder_id: builder.id,
-    group_id: o.group_id,
-    slug: o.slug,
-    name: o.name,
-    code: o.code,
-    kit_sku: o.kit_sku,
-    price_cents: o.price_cents,
-    web_price_cents: o.web_price_cents,
-    source_currency: o.source_currency,
-    category_id: o.category_id,
-    description: o.description,
-    included_in_tier_ids: [],
-    swatch_image_url: o.swatch_image_url,
-    sort: 0,
-    active: o.active,
-    sold_as_set: o.sold_as_set,
-    // Reset the miss counter every time the feed includes this row.
-    // sync_options_sweep increments it on rows the upsert didn't visit.
-    missed_sync_runs: 0,
-    synced: true,
-    external_id: o.external_id,
-  }))
+  const allRows = Array.from(byExternalId.values()).map(o => {
+    // Respect ops overrides. category_locked wins at pickCategoryId
+    // above (we pass the existing id when locked), description_locked
+    // wins here (don't overwrite with Shopify copy once ops has
+    // edited it). origin_id isn't written by the sync at all, so the
+    // origin_locked flag is defensive — the value survives either way.
+    const existing = existingByExternal.get(o.external_id)
+    const description = existing?.description_locked
+      ? existing.description
+      : o.description
+    return {
+      builder_id: builder.id,
+      group_id: o.group_id,
+      slug: o.slug,
+      name: o.name,
+      code: o.code,
+      kit_sku: o.kit_sku,
+      price_cents: o.price_cents,
+      web_price_cents: o.web_price_cents,
+      source_currency: o.source_currency,
+      category_id: o.category_id,
+      description,
+      included_in_tier_ids: [],
+      swatch_image_url: o.swatch_image_url,
+      sort: 0,
+      active: o.active,
+      sold_as_set: o.sold_as_set,
+      // Reset the miss counter every time the feed includes this row.
+      // sync_options_sweep increments it on rows the upsert didn't visit.
+      missed_sync_runs: 0,
+      synced: true,
+      external_id: o.external_id,
+    }
+  })
   const upsertedIdByExternal = new Map<string, string>()
   const CHUNK = 50
   for (let i = 0; i < allRows.length; i += CHUNK) {
@@ -1413,6 +1493,60 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
       .length
   }
 
+  // ─── Structured summary (change-log) ─────────────────────────────
+  // Diff pre-sync (existingByExternal) vs post-sync (byExternalId)
+  // and write the result to sync_runs.summary. We also return it so
+  // the caller can email the summary via Resend.
+  interface SummaryOpt { external_id: string; name: string }
+  interface SummaryPriceChange { external_id: string; name: string; from_cents: number; to_cents: number; delta_pct: number }
+  interface SummaryUncat { external_id: string; name: string }
+  const new_options: SummaryOpt[] = []
+  const removed_options: SummaryOpt[] = []
+  const price_changes: SummaryPriceChange[] = []
+  const uncategorised_list: SummaryUncat[] = []
+
+  for (const o of byExternalId.values()) {
+    const prev = existingByExternal.get(o.external_id)
+    if (!prev) {
+      if (o.active) new_options.push({ external_id: o.external_id, name: o.name })
+    } else {
+      const was = prev.price_cents ?? 0
+      const now = o.price_cents ?? 0
+      if (was > 0) {
+        const deltaPct = ((now - was) / was) * 100
+        if (Math.abs(deltaPct) > 5) {
+          price_changes.push({
+            external_id: o.external_id,
+            name: o.name,
+            from_cents: was,
+            to_cents: now,
+            delta_pct: Math.round(deltaPct * 10) / 10,
+          })
+        }
+      }
+    }
+    if (o.active && !o.category_id) {
+      uncategorised_list.push({ external_id: o.external_id, name: o.name })
+    }
+  }
+  // Rows that were active pre-sync and either flipped to inactive OR
+  // disappeared from the feed. The sweep RPC may delete some; we
+  // record them by name before it runs out of scope.
+  for (const prev of existingByExternal.values()) {
+    if (!prev.active) continue
+    const match = byExternalId.get(prev.external_id)
+    if (!match || !match.active) {
+      removed_options.push({ external_id: prev.external_id, name: prev.name })
+    }
+  }
+
+  const summary = {
+    new_options,
+    removed_options,
+    price_changes,
+    uncategorised: uncategorised_list,
+  }
+
   return {
     source: 'shopify',
     pricing_mode: isCostBased ? 'cost_based' : 'simple',
@@ -1438,5 +1572,6 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     kit_markup: markup,
     images_inserted: imagesInserted,
     platform_heroes_written: heroesWritten,
+    summary,
   }
 }

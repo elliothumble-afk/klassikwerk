@@ -120,6 +120,8 @@ function defaultTerms(builderId: string): BuilderTerms {
     commission_flat_cents: 50000,
     commission_bonus_cents: 50000,
     commission_bonus_threshold_cents: 5000000,
+    fx_auto: true,
+    fx_last_updated_at: null,
     pricing_mode: 'simple',
     in_house_labour_cost_cents: 6500,
     default_labour_source: 'partner_shop',

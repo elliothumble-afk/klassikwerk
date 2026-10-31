@@ -152,6 +152,30 @@ export function QuoteEditor() {
   const [finishByOption, setFinishByOption] = useState<Record<string, Record<string, string>>>({})
   const [finishNoteByOption, setFinishNoteByOption] = useState<Record<string, string>>({})
   const [notes, setNotes] = useState<string>('')
+  // Lookbook PDF (cost_based builders) consumes these two.
+  // theme_words: short tag line on the cover ("Carbon · Bronze · All-Terrain").
+  // vehicle_colour: the customer's existing paint — we don't repaint,
+  //   but the Lookbook renders a swatch of it on page 2.
+  const [themeWords, setThemeWords] = useState<string>('')
+  const [vehicleColour, setVehicleColour] = useState<string>('')
+  const [vehicleYear, setVehicleYear] = useState<string>('')
+  const [vehiclePhotoUrl, setVehiclePhotoUrl] = useState<string>('')
+  const [vehiclePhotoUploading, setVehiclePhotoUploading] = useState(false)
+  // Set when a platform switch would drop currently-selected options.
+  // The confirm dialog previews what will be removed; applying commits
+  // the new platform AND prunes selection/qty/finish state in one go.
+  const [pendingPlatformSwitch, setPendingPlatformSwitch] = useState<{
+    toPlatformId: string
+    dropped: { id: string; name: string; reason: 'platform' | 'auto-add' }[]
+  } | null>(null)
+  // Set when loading a legacy quote whose quote_options include rows
+  // that would now fail the platform guard. We prune them from state
+  // on load; this banner tells the operator what disappeared so the
+  // next save doesn't look like it silently rewrote their quote.
+  const [legacyRemoved, setLegacyRemoved] = useState<{
+    platformName: string
+    names: string[]
+  } | null>(null)
   // Labour source for the margin panel. Default = builder_terms
   // default_labour_source; overridden by quote.labour_source once a
   // quote has been saved. Explicit state here so a flip in the editor
@@ -169,9 +193,20 @@ export function QuoteEditor() {
       const finNote: Record<string, string> = {}
       // Need to map option_id → group_id; done once catalog is loaded
       if (catalog) {
+        const prunedNames: string[] = []
         for (const qo of existing.quote_options) {
           const opt = catalog.options.find(o => o.id === qo.option_id)
           if (!opt) continue
+          // Honour the server-side platform guard client-side: if this
+          // line is platform-restricted and doesn't include the quote's
+          // current platform, drop it from state and surface a banner.
+          const restricted = optionPlatformMap.get(qo.option_id)
+          const universal = !restricted || restricted.size === 0
+          const linkedHere = restricted?.has(existing.platform_id) ?? false
+          if (!universal && !linkedHere) {
+            prunedNames.push(opt.name)
+            continue
+          }
           sel[opt.group_id] = [...(sel[opt.group_id] ?? []), qo.option_id]
           qty[qo.option_id] = qo.quantity ?? 1
           for (const row of qo.quote_option_finishes ?? []) {
@@ -183,8 +218,18 @@ export function QuoteEditor() {
         setQuantities(qty)
         setFinishByOption(fin)
         setFinishNoteByOption(finNote)
+        if (prunedNames.length > 0) {
+          const platName = catalog.platforms.find(p => p.id === existing.platform_id)?.name ?? 'this vehicle'
+          setLegacyRemoved({ platformName: platName, names: prunedNames })
+        } else {
+          setLegacyRemoved(null)
+        }
       }
       if (existing.labour_source) setLabourSource(existing.labour_source)
+      setThemeWords(existing.theme_words ?? '')
+      setVehicleColour(existing.vehicle_colour ?? '')
+      setVehicleYear(existing.vehicle_year == null ? '' : String(existing.vehicle_year))
+      setVehiclePhotoUrl(existing.vehicle_photo_url ?? '')
     } else if (lead?.platform_interest_id && !platformId) {
       setPlatformId(lead.platform_interest_id)
     }
@@ -490,6 +535,116 @@ export function QuoteEditor() {
     })
   }
 
+  /** Returns the currently-selected options that would not survive a
+   *  switch to `nextPlatformId`: platform-restricted options not linked
+   *  to the new platform, PLUS every auto-added option (we re-run auto-
+   *  add after the switch so the new platform's targets land in). */
+  function platformSwitchDrops(nextPlatformId: string): { id: string; name: string; reason: 'platform' | 'auto-add' }[] {
+    if (!catalog) return []
+    const selectedIds = new Set<string>(Object.values(selection).flat())
+    const out: { id: string; name: string; reason: 'platform' | 'auto-add' }[] = []
+    for (const id of selectedIds) {
+      const opt = catalog.options.find(o => o.id === id)
+      if (!opt) continue
+      const restricted = optionPlatformMap.get(id)
+      const isUniversal = !restricted || restricted.size === 0
+      const linkedToNext = restricted?.has(nextPlatformId) ?? false
+      if (!isUniversal && !linkedToNext) {
+        out.push({ id, name: opt.name, reason: 'platform' })
+        continue
+      }
+      // Auto-added rows always get dropped so we can re-run auto-add
+      // against the new platform's targets.
+      if (opt.auto_add_with_group_id && isAutoAdded(opt)) {
+        out.push({ id, name: opt.name, reason: 'auto-add' })
+      }
+    }
+    return out
+  }
+
+  /** Called when the operator clicks a platform tile. Switches
+   *  immediately if the move is a no-op; otherwise opens the confirm
+   *  dialog with the list of options that will be removed. */
+  function requestPlatformSwitch(nextPlatformId: string) {
+    if (nextPlatformId === platformId) return
+    const dropped = platformSwitchDrops(nextPlatformId)
+    if (dropped.length === 0) {
+      applyPlatformSwitch(nextPlatformId, [])
+      return
+    }
+    setPendingPlatformSwitch({ toPlatformId: nextPlatformId, dropped })
+  }
+
+  /** Commits a platform switch: prunes the selection + per-option
+   *  state for every dropped id, flips platformId, then runs auto-add
+   *  for the new platform against every remaining trigger-group row. */
+  function applyPlatformSwitch(nextPlatformId: string, dropped: { id: string }[]) {
+    const dropIds = new Set(dropped.map(d => d.id))
+    setSelection(prev => {
+      const next: Selection = {}
+      for (const [gId, ids] of Object.entries(prev)) {
+        next[gId] = ids.filter(id => !dropIds.has(id))
+      }
+      return next
+    })
+    setQuantities(prev => {
+      const next = { ...prev }
+      for (const id of dropIds) delete next[id]
+      return next
+    })
+    setFinishByOption(prev => {
+      const next = { ...prev }
+      for (const id of dropIds) delete next[id]
+      return next
+    })
+    setFinishNoteByOption(prev => {
+      const next = { ...prev }
+      for (const id of dropIds) delete next[id]
+      return next
+    })
+    setPlatformId(nextPlatformId)
+    setPendingPlatformSwitch(null)
+  }
+
+  // Re-run auto-add once the platform has actually changed. We can't
+  // do this inside applyPlatformSwitch because the platform state
+  // update is batched; the effect below reads the new platform via
+  // the memoised `platform` and finds auto-add targets for every
+  // group that still has a selection on it.
+  useEffect(() => {
+    if (!catalog || !platform) return
+    setSelection(prev => {
+      const next: Selection = { ...prev }
+      let changed = false
+      for (const [gId, ids] of Object.entries(prev)) {
+        if (ids.length === 0) continue
+        // Find auto-add targets for THIS group on the new platform.
+        const targets = catalog.options.filter(o => {
+          if (o.auto_add_with_group_id !== gId) return false
+          const r = optionPlatformMap.get(o.id)
+          const universal = !r || r.size === 0
+          return universal || r!.has(platform.id)
+        })
+        for (const t of targets) {
+          const tGroup = catalog.groups.find(g => g.id === t.group_id)
+          if (!tGroup) continue
+          const tCurrent = next[tGroup.id] ?? []
+          if (tCurrent.includes(t.id)) continue
+          next[tGroup.id] = tGroup.selection === 'single'
+            ? (tCurrent.length === 0 ? [t.id] : tCurrent)
+            : [...tCurrent, t.id]
+          // Mirror the triggering option's qty onto the newly added
+          // target so a Set-of-5 wheel pulls a Set-of-5 tyre.
+          const triggerQty = quantities[ids[0]] ?? 4
+          setQuantities(q => ({ ...q, [t.id]: triggerQty }))
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [platform?.id, catalog])
+
   // Wraps setQuantities so a wheel chip click mirrors onto the auto-
   // added tyre line. Qty updates on the tyre tile itself are not
   // mirrored back onto the wheel — the ops user is the source of truth.
@@ -551,13 +706,34 @@ export function QuoteEditor() {
   }
 
   // ---------- Save / revise / send / create contract ----------
+  /** Translate the quote_options_platform_guard trigger error (and
+   *  anything else that mentions a UUID the user has no business
+   *  seeing) into a plain, actionable sentence. Pass-through for any
+   *  message that doesn't match the guard pattern. */
+  function friendlyError(e: unknown): string {
+    const msg = (e as Error)?.message ?? String(e)
+    // `option Large Rear Roof Wing (uuid) is not linked to this quote's platform (uuid)`
+    const guardMatch = /option\s+(.+?)\s+\([0-9a-f-]{36}\)\s+is not linked to this quote/i.exec(msg)
+    if (guardMatch) {
+      return `${guardMatch[1]} isn't available on this vehicle — remove it to save.`
+    }
+    return msg
+  }
+
   const save = useMutation({
     mutationFn: async () => {
       if (!lead || !platformId || !tierId) throw new Error('Pick a platform and tier')
       if (existing) {
         const { error: upErr } = await supabase
           .from('quotes')
-          .update({ platform_id: platformId, tier_id: tierId, price_cents: total, notes, labour_source: effectiveLabourSource })
+          .update({
+            platform_id: platformId, tier_id: tierId, price_cents: total, notes,
+            labour_source: effectiveLabourSource,
+            theme_words: themeWords.trim() || null,
+            vehicle_colour: vehicleColour.trim() || null,
+            vehicle_year: vehicleYear.trim() ? Number(vehicleYear) : null,
+            vehicle_photo_url: vehiclePhotoUrl.trim() || null,
+          })
           .eq('id', existing.id)
         if (upErr) throw upErr
         await supabase.from('quote_options').delete().eq('quote_id', existing.id)
@@ -583,6 +759,10 @@ export function QuoteEditor() {
         status: 'draft',
         notes,
         labour_source: effectiveLabourSource,
+        theme_words: themeWords.trim() || null,
+        vehicle_colour: vehicleColour.trim() || null,
+        vehicle_year: vehicleYear.trim() ? Number(vehicleYear) : null,
+        vehicle_photo_url: vehiclePhotoUrl.trim() || null,
       }).select('id').single()
       if (q.error) throw q.error
       const quoteId = (q.data as { id: string }).id
@@ -598,7 +778,7 @@ export function QuoteEditor() {
       qc.invalidateQueries({ queryKey: ['lead'] })
       if (!existingQuoteId) navigate(`/ops/quotes/${quoteId}`, { replace: true })
     },
-    onError: e => setErr((e as Error).message),
+    onError: e => setErr(friendlyError(e)),
   })
 
   const generatePdf = useMutation({
@@ -809,6 +989,28 @@ export function QuoteEditor() {
           </div>
         </div>
 
+        {legacyRemoved && (
+          <div
+            role="alert"
+            className="mb-6 rounded-[var(--radius-sm)] border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 flex items-start justify-between gap-4"
+          >
+            <div>
+              <span className="font-medium">
+                {legacyRemoved.names.length} item{legacyRemoved.names.length === 1 ? '' : 's'} {legacyRemoved.names.length === 1 ? "isn't" : "aren't"} available on {legacyRemoved.platformName} and {legacyRemoved.names.length === 1 ? 'was' : 'were'} removed:
+              </span>{' '}
+              {legacyRemoved.names.join('; ')}. Save to persist.
+            </div>
+            <button
+              type="button"
+              onClick={() => setLegacyRemoved(null)}
+              className="text-amber-900/70 hover:text-amber-900 text-lg leading-none"
+              aria-label="Dismiss"
+            >
+              ×
+            </button>
+          </div>
+        )}
+
         {/* Step: Platform */}
         <Step label="Platform">
           <div className="grid gap-3 sm:grid-cols-3">
@@ -816,7 +1018,7 @@ export function QuoteEditor() {
               <button
                 key={p.id}
                 disabled={readOnly}
-                onClick={() => setPlatformId(p.id)}
+                onClick={() => requestPlatformSwitch(p.id)}
                 className={`text-left rounded-[var(--radius-md)] border px-4 py-3 transition ${
                   platformId === p.id
                     ? 'border-[var(--color-accent)] bg-[var(--color-surface)]'
@@ -829,6 +1031,15 @@ export function QuoteEditor() {
             ))}
           </div>
         </Step>
+
+        {pendingPlatformSwitch && (
+          <PlatformSwitchDialog
+            toPlatformName={catalog.platforms.find(p => p.id === pendingPlatformSwitch.toPlatformId)?.name ?? '—'}
+            dropped={pendingPlatformSwitch.dropped}
+            onCancel={() => setPendingPlatformSwitch(null)}
+            onConfirm={() => applyPlatformSwitch(pendingPlatformSwitch.toPlatformId, pendingPlatformSwitch.dropped)}
+          />
+        )}
 
         {platformId && (
           <Step label="Tier">
@@ -994,6 +1205,93 @@ export function QuoteEditor() {
                   </div>
                 )
               })}
+            </div>
+          </Step>
+        )}
+
+        {catalog?.pricingMode === 'cost_based' && (
+          <Step label="Vehicle">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="text-xs text-[var(--color-muted)] mb-1 block">Theme words</label>
+                <input
+                  value={themeWords}
+                  onChange={e => setThemeWords(e.target.value)}
+                  disabled={readOnly}
+                  placeholder="Carbon · Bronze · All-Terrain"
+                  className="w-full h-9 px-3 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] text-sm disabled:opacity-50"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-[var(--color-muted)] mb-1 block">Vehicle year</label>
+                <input
+                  type="number"
+                  min={1950}
+                  max={2100}
+                  value={vehicleYear}
+                  onChange={e => setVehicleYear(e.target.value)}
+                  disabled={readOnly}
+                  placeholder="2024"
+                  className="w-full h-9 px-3 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] text-sm disabled:opacity-50"
+                />
+              </div>
+              <div className="sm:col-span-2">
+                <label className="text-xs text-[var(--color-muted)] mb-1 block">Vehicle colour</label>
+                <input
+                  value={vehicleColour}
+                  onChange={e => setVehicleColour(e.target.value)}
+                  disabled={readOnly}
+                  placeholder="Carpathian Grey"
+                  className="w-full h-9 px-3 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] text-sm disabled:opacity-50"
+                />
+              </div>
+              <div className="sm:col-span-2">
+                <label className="text-xs text-[var(--color-muted)] mb-1 block">Vehicle photo (optional)</label>
+                <div className="flex items-start gap-3">
+                  {vehiclePhotoUrl ? (
+                    <img src={vehiclePhotoUrl} alt="Vehicle" className="w-32 h-20 object-cover rounded-[var(--radius-sm)] border border-[var(--color-border)]" />
+                  ) : (
+                    <div className="w-32 h-20 rounded-[var(--radius-sm)] border border-dashed border-[var(--color-border)] bg-[var(--color-surface)] flex items-center justify-center text-xs text-[var(--color-muted)]">
+                      No photo
+                    </div>
+                  )}
+                  <div className="flex-1 flex flex-col gap-1.5">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      disabled={readOnly || vehiclePhotoUploading}
+                      onChange={async e => {
+                        const file = e.target.files?.[0]
+                        if (!file) return
+                        setVehiclePhotoUploading(true); setErr(null)
+                        try {
+                          const ext = (file.name.split('.').pop() ?? 'jpg').toLowerCase()
+                          const path = `vehicles/quote-${existing?.id ?? lead?.id ?? Date.now()}-${Date.now()}.${ext}`
+                          const up = await supabase.storage.from('media').upload(path, file, { upsert: true, contentType: file.type })
+                          if (up.error) throw up.error
+                          const { data: pub } = supabase.storage.from('media').getPublicUrl(path)
+                          setVehiclePhotoUrl(pub.publicUrl)
+                        } catch (err) {
+                          setErr((err as Error).message)
+                        } finally {
+                          setVehiclePhotoUploading(false)
+                        }
+                      }}
+                      className="text-xs"
+                    />
+                    {vehiclePhotoUrl && !readOnly && (
+                      <button
+                        type="button"
+                        onClick={() => setVehiclePhotoUrl('')}
+                        className="self-start text-xs text-[var(--color-muted)] hover:text-[var(--color-foreground)]"
+                      >
+                        Remove photo
+                      </button>
+                    )}
+                    {vehiclePhotoUploading && <span className="text-xs text-[var(--color-muted)]">Uploading…</span>}
+                  </div>
+                </div>
+              </div>
             </div>
           </Step>
         )}
@@ -1167,6 +1465,76 @@ function Step({ label, children }: { label: string; children: React.ReactNode })
     <div className="mb-8">
       <h2 className="text-xs font-medium text-[var(--color-muted)] uppercase tracking-wide mb-3">{label}</h2>
       {children}
+    </div>
+  )
+}
+
+function PlatformSwitchDialog({
+  toPlatformName, dropped, onCancel, onConfirm,
+}: {
+  toPlatformName: string
+  dropped: { id: string; name: string; reason: 'platform' | 'auto-add' }[]
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  const platformDrops = dropped.filter(d => d.reason === 'platform')
+  const autoAddDrops = dropped.filter(d => d.reason === 'auto-add')
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Confirm platform switch"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={onCancel}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        className="w-full max-w-md rounded-[var(--radius-md)] bg-[var(--color-surface)] border border-[var(--color-border)] shadow-xl p-5"
+      >
+        <h3 className="text-base font-medium mb-1">Switch to {toPlatformName}?</h3>
+        <p className="text-sm text-[var(--color-muted)] mb-4">
+          The options below are tied to the current vehicle and will be removed.
+          Auto-added tyres will re-run against the new platform.
+        </p>
+        {platformDrops.length > 0 && (
+          <div className="mb-3">
+            <div className="text-xs font-medium text-[var(--color-muted)] uppercase tracking-wide mb-1.5">
+              Not available on {toPlatformName}
+            </div>
+            <ul className="text-sm space-y-1">
+              {platformDrops.map(d => (
+                <li key={d.id} className="text-[var(--color-foreground)]">• {d.name}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {autoAddDrops.length > 0 && (
+          <div className="mb-3">
+            <div className="text-xs font-medium text-[var(--color-muted)] uppercase tracking-wide mb-1.5">
+              Auto-added — will re-add on the new platform
+            </div>
+            <ul className="text-sm space-y-1">
+              {autoAddDrops.map(d => (
+                <li key={d.id} className="text-[var(--color-foreground)]">• {d.name}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        <div className="flex justify-end gap-2 pt-3 border-t border-[var(--color-border)]">
+          <button
+            onClick={onCancel}
+            className="h-9 px-4 rounded-[var(--radius-sm)] border border-[var(--color-border)] text-sm hover:bg-[var(--color-surface-raised)]"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="h-9 px-4 rounded-[var(--radius-sm)] bg-[var(--color-accent)] text-white text-sm hover:opacity-90"
+          >
+            Switch & remove {platformDrops.length} option{platformDrops.length === 1 ? '' : 's'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

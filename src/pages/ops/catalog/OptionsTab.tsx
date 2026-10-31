@@ -163,6 +163,8 @@ function baseFormDb(data: CatalogOptionForm, builderId: string) {
     sort: data.sort,
     active: data.active,
     sold_as_set: data.sold_as_set,
+    description: data.description,
+    lead_image_url: data.lead_image_url,
   }
 }
 
@@ -685,6 +687,83 @@ function InlinePriceEdit({ value, onSave }: { value: number; onSave: (cents: num
   )
 }
 
+// ─── Lead image picker (Lookbook PDF hero) ──────────────────────────────────
+//
+// Reads catalog_option_images for one option and shows a grid of
+// thumbnails. Clicking a thumbnail stores its URL as the override;
+// clicking the current pick clears it (fall back to the first by sort).
+
+function LeadImagePicker({
+  optionId, swatchUrl, value, onPick,
+}: {
+  optionId: string
+  swatchUrl: string | null
+  value: string
+  onPick: (url: string) => void
+}) {
+  const { data: images = [] } = useQuery({
+    queryKey: ['catalog', 'option-images', optionId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('catalog_option_images')
+        .select('url, sort')
+        .eq('option_id', optionId)
+        .order('sort', { ascending: true })
+      if (error) throw error
+      return data as { url: string; sort: number }[]
+    },
+  })
+
+  const defaultUrl = images[0]?.url ?? swatchUrl ?? null
+  const effective = value || defaultUrl
+
+  if (images.length === 0) return null
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <p className="text-xs text-[var(--color-muted)]">
+          Lead image <span className="text-[var(--color-muted)]">(Lookbook hero · {images.length} available)</span>
+        </p>
+        {value && (
+          <button
+            type="button"
+            onClick={() => onPick('')}
+            className="text-xs text-[var(--color-muted)] hover:text-[var(--color-foreground)]"
+          >
+            Clear override
+          </button>
+        )}
+      </div>
+      <div className="grid grid-cols-6 gap-1.5">
+        {images.map(img => {
+          const picked = img.url === effective
+          return (
+            <button
+              key={img.url}
+              type="button"
+              onClick={() => onPick(img.url)}
+              className={`relative aspect-square rounded-sm overflow-hidden border transition ${
+                picked
+                  ? 'border-[var(--color-accent)] ring-1 ring-[var(--color-accent)]'
+                  : 'border-[var(--color-border)] hover:border-[var(--color-accent)]'
+              }`}
+              title={img.url}
+            >
+              <img src={img.url} alt="" className="w-full h-full object-cover" />
+              {picked && (
+                <span className="absolute inset-x-0 bottom-0 bg-[var(--color-accent)] text-white text-[9px] uppercase tracking-wide text-center py-0.5">
+                  Lead
+                </span>
+              )}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 // ─── Full edit form (modal / inline for new) ─────────────────────────────────
 
 interface EditFormProps {
@@ -723,9 +802,11 @@ function OptionEditForm({ option, groupId, tiers, platforms, costBased, showTier
           category_id: option.category_id ?? '',
           origin_id: option.origin_id ?? '',
           cost: option.cost_cents == null ? null : option.cost_cents / 100,
+          description: option.description ?? '',
+          lead_image_url: option.lead_image_url ?? '',
         }
       : { price: 0, included_in_tier_ids: [], sort: 0, active: true, sold_as_set: false,
-          category_id: '', origin_id: '', cost: null },
+          category_id: '', origin_id: '', cost: null, description: '', lead_image_url: '' },
   })
 
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(option?.platform_ids ?? [])
@@ -861,6 +942,27 @@ function OptionEditForm({ option, groupId, tiers, platforms, costBased, showTier
             })}
           </div>
         </div>
+
+        <div>
+          <label className="text-xs text-[var(--color-muted)] mb-1 block">
+            Description <span className="text-[var(--color-muted)]">(Lookbook PDF)</span>
+          </label>
+          <textarea
+            {...register('description')}
+            rows={3}
+            placeholder="Shopify body copy, first two sentences. Edit to override."
+            className={`${inputClass} h-auto py-2 resize-y`}
+          />
+        </div>
+
+        {option && (
+          <LeadImagePicker
+            optionId={option.id}
+            swatchUrl={option.swatch_image_url}
+            value={watch('lead_image_url') ?? ''}
+            onPick={url => setValue('lead_image_url', url, { shouldDirty: true })}
+          />
+        )}
 
         <div className="flex gap-2 justify-end pt-2 border-t border-[var(--color-border)]">
           <button type="button" onClick={onCancel}

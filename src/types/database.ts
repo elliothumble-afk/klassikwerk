@@ -21,6 +21,7 @@ export type Database = {
           role: 'customer' | 'ops' | 'partner' | 'operator'
           full_name: string | null
           phone: string | null
+          title: string | null
           created_at: string
           updated_at: string
         }
@@ -30,6 +31,7 @@ export type Database = {
           role?: 'customer' | 'ops' | 'partner' | 'operator'
           full_name?: string | null
           phone?: string | null
+          title?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -38,6 +40,7 @@ export type Database = {
           role?: 'customer' | 'ops' | 'partner' | 'operator'
           full_name?: string | null
           phone?: string | null
+          title?: string | null
           updated_at?: string
         }
         Relationships: []
@@ -630,6 +633,11 @@ export type Database = {
           notes: string | null
           token: string
           labour_source: 'in_house' | 'partner_shop' | null
+          theme_words: string | null
+          vehicle_colour: string | null
+          vehicle_colour_hex: string | null
+          vehicle_year: number | null
+          vehicle_photo_url: string | null
           created_at: string
           updated_at: string
         }
@@ -648,6 +656,11 @@ export type Database = {
           notes?: string | null
           token?: string
           labour_source?: 'in_house' | 'partner_shop' | null
+          theme_words?: string | null
+          vehicle_colour?: string | null
+          vehicle_colour_hex?: string | null
+          vehicle_year?: number | null
+          vehicle_photo_url?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -665,6 +678,11 @@ export type Database = {
           notes?: string | null
           token?: string
           labour_source?: 'in_house' | 'partner_shop' | null
+          theme_words?: string | null
+          vehicle_colour?: string | null
+          vehicle_colour_hex?: string | null
+          vehicle_year?: number | null
+          vehicle_photo_url?: string | null
           updated_at?: string
         }
         Relationships: []
@@ -1106,6 +1124,8 @@ export type Database = {
           manual_parts_sell_cents: number | null
           auto_add_with_group_id: string | null
           cost_cents: number | null
+          description: string | null
+          lead_image_url: string | null
           created_at: string
           updated_at: string
         }
@@ -1133,6 +1153,8 @@ export type Database = {
           manual_parts_sell_cents?: number | null
           auto_add_with_group_id?: string | null
           cost_cents?: number | null
+          description?: string | null
+          lead_image_url?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -1159,6 +1181,8 @@ export type Database = {
           manual_parts_sell_cents?: number | null
           auto_add_with_group_id?: string | null
           cost_cents?: number | null
+          description?: string | null
+          lead_image_url?: string | null
           updated_at?: string
         }
         Relationships: []

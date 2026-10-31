@@ -23,6 +23,17 @@ const FONT_BUNDLE: Record<string, FontFile[]> = {
     { src: '/fonts/Inter-Medium.ttf',   fontWeight: 'medium' },
     { src: '/fonts/Inter-SemiBold.ttf',  fontWeight: 'semibold' },
   ],
+  // Variable TTFs cover the full weight range in a single file.
+  'Cormorant Garamond': [
+    { src: '/fonts/CormorantGaramond-VF.ttf', fontWeight: 'normal' },
+    { src: '/fonts/CormorantGaramond-VF.ttf', fontWeight: 'medium' },
+    { src: '/fonts/CormorantGaramond-VF.ttf', fontWeight: 'semibold' },
+  ],
+  'DM Sans': [
+    { src: '/fonts/DMSans-VF.ttf', fontWeight: 'normal' },
+    { src: '/fonts/DMSans-VF.ttf', fontWeight: 'medium' },
+    { src: '/fonts/DMSans-VF.ttf', fontWeight: 'semibold' },
+  ],
 }
 
 const registered = new Set<string>()

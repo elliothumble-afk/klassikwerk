@@ -553,8 +553,35 @@ interface ShopifyProductImage { src: string }
 interface ShopifyProduct {
   handle: string
   title: string
+  body_html: string | null
   variants: ShopifyProductVariant[]
   images: ShopifyProductImage[]
+}
+
+/** Shopify's body_html → first two sentences of plain text. We strip
+ *  tags, collapse whitespace, split on sentence terminators, and
+ *  concatenate the first two. Preserves em-dashes and smart quotes. */
+function bodyToDescription(html: string | null | undefined): string | null {
+  if (!html) return null
+  const stripped = html
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!stripped) return null
+  const sentences = stripped
+    .split(/(?<=[.!?])\s+(?=[A-Z"])/)
+    .map(s => s.trim())
+    .filter(Boolean)
+  if (sentences.length === 0) return stripped.slice(0, 400)
+  return sentences.slice(0, 2).join(' ').slice(0, 600)
 }
 
 const SHOPIFY_CATEGORIES = ['exterior', 'interior', 'alloy-wheels'] as const
@@ -577,6 +604,119 @@ async function shopifyFetch(url: string, maxRetries = 5): Promise<Response> {
 
 function stripTags(s: string): string {
   return s.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
+}
+
+/** Fetch a Shopify collection's banner image via /collections/<slug>.json
+ *  and return `collection.image.src`. Returns null on any error, including
+ *  a missing image field. */
+async function fetchCollectionImage(baseUrl: string, slug: string): Promise<string | null> {
+  try {
+    const r = await shopifyFetch(`${baseUrl}/collections/${slug}.json`)
+    if (!r.ok) return null
+    const body = await r.json() as { collection?: { image?: { src?: string } | null } }
+    return body.collection?.image?.src ?? null
+  } catch {
+    return null
+  }
+}
+
+/** Fetch an image's intrinsic width + height by reading the file
+ *  header. Supports JPEG, PNG and WebP (the three formats Shopify
+ *  returns). Returns null on any error. We fetch the first 64KB which
+ *  is enough for every SOF marker in a reasonable JPEG and well past
+ *  the IHDR/VP8X headers for PNG/WebP. */
+async function probeImageSize(url: string): Promise<{ width: number; height: number } | null> {
+  try {
+    const r = await fetch(url, { headers: { 'User-Agent': UA, Range: 'bytes=0-65535' } })
+    if (!r.ok && r.status !== 206) return null
+    const buf = new Uint8Array(await r.arrayBuffer())
+    return readImageDimensions(buf)
+  } catch {
+    return null
+  }
+}
+
+function readImageDimensions(buf: Uint8Array): { width: number; height: number } | null {
+  if (buf.length < 24) return null
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
+  // PNG: 89 50 4E 47 0D 0A 1A 0A, IHDR at offset 16 (width) and 20 (height), big-endian.
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) {
+    return { width: dv.getUint32(16), height: dv.getUint32(20) }
+  }
+  // WebP: 'RIFF' .... 'WEBP' at 0..11.
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46
+      && buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) {
+    // Chunk at offset 12: 'VP8 ', 'VP8L', or 'VP8X'.
+    const tag = String.fromCharCode(buf[12], buf[13], buf[14], buf[15])
+    if (tag === 'VP8X' && buf.length >= 30) {
+      // 3-byte little-endian width-1 / height-1 at offsets 24 / 27.
+      const w = 1 + (buf[24] | (buf[25] << 8) | (buf[26] << 16))
+      const h = 1 + (buf[27] | (buf[28] << 8) | (buf[29] << 16))
+      return { width: w, height: h }
+    }
+    if (tag === 'VP8L' && buf.length >= 25) {
+      // 14-bit width-1 and height-1 packed little-endian starting at offset 21.
+      const b0 = buf[21], b1 = buf[22], b2 = buf[23], b3 = buf[24]
+      const w = 1 + (((b1 & 0x3F) << 8) | b0)
+      const h = 1 + (((b3 & 0x0F) << 10) | (b2 << 2) | ((b1 & 0xC0) >> 6))
+      return { width: w, height: h }
+    }
+    if (tag === 'VP8 ' && buf.length >= 30) {
+      // Frame-tag + 'start code' 9D 01 2A, then little-endian width (14 bits) + height (14 bits).
+      // Start code at offset 23 for the simple lossy container.
+      if (buf[23] === 0x9D && buf[24] === 0x01 && buf[25] === 0x2A) {
+        const w = (buf[26] | (buf[27] << 8)) & 0x3FFF
+        const h = (buf[28] | (buf[29] << 8)) & 0x3FFF
+        return { width: w, height: h }
+      }
+    }
+    return null
+  }
+  // JPEG: starts with FF D8. Walk SOF markers.
+  if (buf[0] === 0xFF && buf[1] === 0xD8) {
+    let i = 2
+    while (i < buf.length - 8) {
+      if (buf[i] !== 0xFF) { i++; continue }
+      // Skip padding FFs.
+      while (i < buf.length && buf[i] === 0xFF) i++
+      const marker = buf[i]; i++
+      // Standalone markers (no length).
+      if (marker === 0xD8 || marker === 0xD9 || (marker >= 0xD0 && marker <= 0xD7)) continue
+      if (i + 1 >= buf.length) return null
+      const segLen = dv.getUint16(i)
+      // SOF0..SOF15 excluding DHT (C4), DAC (CC), DNL (DC): the common SOF markers.
+      const isSof = (marker >= 0xC0 && marker <= 0xCF) && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC
+      if (isSof && i + 7 < buf.length) {
+        const h = dv.getUint16(i + 3)
+        const w = dv.getUint16(i + 5)
+        return { width: w, height: h }
+      }
+      i += segLen
+    }
+  }
+  return null
+}
+
+/** Last-resort hero: fetch /collections/<slug>/products.json?limit=50 and
+ *  return the first image of the most expensive product (by variant
+ *  price, descending). Null if no products. */
+async function fetchHighestPricedProductImage(baseUrl: string, slug: string): Promise<string | null> {
+  try {
+    const r = await shopifyFetch(`${baseUrl}/collections/${slug}/products.json?limit=50&page=1`)
+    if (!r.ok) return null
+    const body = await r.json() as { products?: Array<{ images?: Array<{ src?: string }>; variants?: Array<{ price?: string }> }> }
+    const products = body.products ?? []
+    const ranked = products
+      .map(p => ({
+        img: p.images?.[0]?.src ?? null,
+        price: Math.max(0, ...(p.variants ?? []).map(v => Number(v.price ?? '0'))),
+      }))
+      .filter(p => !!p.img)
+      .sort((a, b) => b.price - a.price)
+    return ranked[0]?.img ?? null
+  } catch {
+    return null
+  }
 }
 
 function slugify(s: string): string {
@@ -801,11 +941,57 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
   }
 
   // ─── Upsert platforms ──────────────────────────────────────────────
+  // Pre-read any existing hero_image_url + hero_source so we don't
+  // blow away a manually-pinned hero on resync. The sync is only
+  // allowed to overwrite rows it previously wrote (hero_source='sync')
+  // or that were never set.
+  const existingHero = new Map<string, { hero_image_url: string | null; hero_source: string | null }>()
+  const existingPlatRes = await admin.from('catalog_platforms')
+    .select('external_id, hero_image_url, hero_source')
+    .eq('builder_id', builder.id)
+  if (existingPlatRes.error) throw existingPlatRes.error
+  for (const r of (existingPlatRes.data ?? []) as { external_id: string | null; hero_image_url: string | null; hero_source: string | null }[]) {
+    if (!r.external_id) continue
+    existingHero.set(r.external_id, { hero_image_url: r.hero_image_url, hero_source: r.hero_source })
+  }
+
+  // Resolve a hero image per vehicle in parallel: exterior collection
+  // banner → interior → wheels → highest-priced product in exterior.
+  // The first non-null wins. We also probe the chosen image for its
+  // intrinsic width/height so the Lookbook renderer can decide the
+  // page-2 layout without a client-side Image round-trip.
+  const HERO_CATEGORY_ORDER: ShopifyCategory[] = ['exterior', 'interior', 'alloy-wheels']
+  interface ResolvedHero { url: string | null; width: number | null; height: number | null }
+  const heroByVehicleSlug = new Map<string, ResolvedHero>()
+  await Promise.all(resolved.map(async ({ vehicle, canonicals }) => {
+    const chosen = async (url: string): Promise<ResolvedHero> => {
+      const dims = await probeImageSize(url)
+      return { url, width: dims?.width ?? null, height: dims?.height ?? null }
+    }
+    for (const cat of HERO_CATEGORY_ORDER) {
+      const slug = canonicals[cat]
+      if (!slug) continue
+      const img = await fetchCollectionImage(baseUrl, slug)
+      if (img) { heroByVehicleSlug.set(vehicle.slug, await chosen(img)); return }
+    }
+    for (const cat of HERO_CATEGORY_ORDER) {
+      const slug = canonicals[cat]
+      if (!slug) continue
+      const img = await fetchHighestPricedProductImage(baseUrl, slug)
+      if (img) { heroByVehicleSlug.set(vehicle.slug, await chosen(img)); return }
+    }
+    heroByVehicleSlug.set(vehicle.slug, { url: null, width: null, height: null })
+  }))
+
   const platformIdByVehicle = new Map<string, string>()  // v.slug → id
   const seenPlatformExternalIds = new Set<string>()
+  let heroesWritten = 0
   for (const { vehicle } of resolved) {
     const externalId = `shopify:platform:${vehicle.slug}`
-    const ins = await admin.from('catalog_platforms').upsert({
+    const existing = existingHero.get(externalId)
+    const canWriteHero = !existing?.hero_image_url || existing.hero_source === 'sync'
+    const resolvedHero = heroByVehicleSlug.get(vehicle.slug) ?? { url: null, width: null, height: null }
+    const payload: Record<string, unknown> = {
       builder_id: builder.id,
       slug: vehicle.slug,
       name: vehicle.name,
@@ -815,7 +1001,18 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
       active: true,
       synced: true,
       external_id: externalId,
-    }, { onConflict: 'builder_id,external_id' }).select('id').single()
+    }
+    if (canWriteHero && resolvedHero.url) {
+      payload.hero_image_url = resolvedHero.url
+      payload.hero_image_width = resolvedHero.width
+      payload.hero_image_height = resolvedHero.height
+      payload.hero_source = 'sync'
+      if (existing?.hero_image_url !== resolvedHero.url) heroesWritten += 1
+    }
+    const ins = await admin.from('catalog_platforms').upsert(
+      payload,
+      { onConflict: 'builder_id,external_id' },
+    ).select('id').single()
     if (ins.error) throw ins.error
     platformIdByVehicle.set(vehicle.slug, (ins.data as any).id)
     seenPlatformExternalIds.add(externalId)
@@ -846,6 +1043,8 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     source_currency: string
     category_id: string | null
     swatch_image_url: string | null
+    description: string | null
+    image_urls: string[]
     active: boolean
     sold_as_set: boolean
     group_id: string
@@ -915,6 +1114,9 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
               categoryId = pickCategoryId(cat, (product.tags as string[]) ?? [])
             }
 
+            const imageUrls = (product.images ?? []).map(img => img.src).filter((v): v is string => !!v)
+            const description = bodyToDescription(product.body_html)
+
             const existing = byExternalId.get(externalId)
             if (!existing || priority > existing.group_priority) {
               byExternalId.set(externalId, {
@@ -928,6 +1130,8 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
                 source_currency: 'GBP',
                 category_id: categoryId,
                 swatch_image_url: image,
+                description,
+                image_urls: imageUrls,
                 active,
                 sold_as_set: soldAsSet,
                 group_id: groupId,
@@ -1053,6 +1257,7 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     web_price_cents: o.web_price_cents,
     source_currency: o.source_currency,
     category_id: o.category_id,
+    description: o.description,
     included_in_tier_ids: [],
     swatch_image_url: o.swatch_image_url,
     sort: 0,
@@ -1107,6 +1312,46 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
   }
 
   const totalUpserted = allRows.length
+
+  // ─── Rebuild catalog_option_images for ACTIVE synced options ──────
+  // Wipe-then-reinsert mirrors the platform-link approach so stale
+  // images from superseded Shopify handles don't accumulate. Only
+  // active options get image rows; inactive rows have no customer-
+  // visible surface. The Lookbook PDF reads the first by sort as the
+  // hero when the option doesn't have a lead_image_url set.
+  const activeOptionIds: string[] = []
+  const imageRows: { option_id: string; url: string; sort: number }[] = []
+  for (const o of byExternalId.values()) {
+    if (!o.active) continue
+    const optionId = upsertedIdByExternal.get(o.external_id)
+    if (!optionId) continue
+    activeOptionIds.push(optionId)
+    o.image_urls.forEach((url, i) => imageRows.push({ option_id: optionId, url, sort: i }))
+  }
+  // Delete the current image set for every active synced option.
+  const IMG_CHUNK = 100
+  for (let i = 0; i < activeOptionIds.length; i += IMG_CHUNK) {
+    const chunk = activeOptionIds.slice(i, i + IMG_CHUNK)
+    const del = await admin.from('catalog_option_images').delete().in('option_id', chunk)
+    if (del.error) throw del.error
+  }
+  // Dedupe within each option in case Shopify repeats a src across
+  // variant pins — the (option_id, url) unique constraint would reject
+  // the whole batch otherwise.
+  const seenPerOption = new Map<string, Set<string>>()
+  const dedupedImageRows = imageRows.filter(r => {
+    const seen = seenPerOption.get(r.option_id) ?? new Set<string>()
+    if (seen.has(r.url)) return false
+    seen.add(r.url); seenPerOption.set(r.option_id, seen)
+    return true
+  })
+  let imagesInserted = 0
+  for (let i = 0; i < dedupedImageRows.length; i += IMG_CHUNK) {
+    const chunk = dedupedImageRows.slice(i, i + IMG_CHUNK)
+    const ins = await admin.from('catalog_option_images').insert(chunk)
+    if (ins.error) throw ins.error
+    imagesInserted += chunk.length
+  }
 
   // ─── Deactivate stale rows via updated_at (survives URL-length limits) ─
   // Anything synced + still-active that wasn't touched this run is stale.
@@ -1191,5 +1436,7 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     per_platform: perPlatformNamed,
     fx_rate: fx,
     kit_markup: markup,
+    images_inserted: imagesInserted,
+    platform_heroes_written: heroesWritten,
   }
 }

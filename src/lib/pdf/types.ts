@@ -97,6 +97,85 @@ export interface QuotePdfInput {
   pricing_mode: 'simple' | 'cost_based'
 }
 
+// ─── Lookbook PDF input ───────────────────────────────────────────
+// A richer bundle than QuotePdfInput: the renderer walks each
+// selected option's description + images, groups them by category
+// section (lookbook_section) in lookbook_sort order, and lays them
+// out on 16:9 landscape pages.
+export interface LookbookFinish {
+  set_name: string
+  name: string
+  /** `#RRGGBB` if the ops user seeded one. Null → render as text pill. */
+  swatch_hex: string | null
+}
+
+export interface LookbookOption {
+  option_id: string
+  name: string
+  code: string | null
+  description: string | null
+  image_url: string | null
+  swatch_image_url: string | null
+  // Fully resolved line price (parts × qty + install).
+  line_price_cents: number
+  parts_sell_cents: number | null
+  quantity: number
+  sold_as_set: boolean
+  category_name: string | null
+  section: string | null       // lookbook_section ("Other" when null)
+  section_sort: number
+  finishes: LookbookFinish[]
+  finish_note: string | null
+  shopify_tags: string[]
+}
+
+export interface LookbookTyre {
+  name: string
+  code: string | null
+  description: string | null
+  /** Line price (already parts × qty + install), for the Investment page. */
+  line_price_cents: number
+  quantity: number
+  sold_as_set: boolean
+}
+
+export interface LookbookPdfInput {
+  quote_id: string
+  version: number
+  price_cents: number
+  created_at: string
+  builder: BuilderLike
+  brand: BrandLike & { lookbook_statement: string | null }
+  terms: TermsLike
+  operator_contact: OperatorContact
+  // Ops user who sent the quote — Closing page sign-off.
+  closing_signer: {
+    name: string | null
+    title: string | null
+    phone: string | null
+    email: string | null
+  }
+  platform: PlatformLike & { lookbook_copy: string | null }
+  tier: TierLike
+  options: LookbookOption[]
+  tyres: LookbookTyre[]
+  wheel_options: LookbookOption[]
+  customer: CustomerLike | null
+  customer_first_name: string | null
+  theme_words: string | null
+  vehicle_colour: string | null
+  vehicle_year: number | null
+  /** Resolved by renderPdf: customer-uploaded photo → platform.hero →
+   *  the lead image of the highest-priced option on the quote. Never
+   *  a stock grey box; the LookbookPdf trusts this to be set. */
+  page2_hero_url: string | null
+  /** True when the hero image's aspect ratio is wider than 1.6:1
+   *  (Shopify collection banner territory). Portrait / square (<= 1.6)
+   *  stays as the half-page layout; wider becomes a full-bleed top
+   *  band so the banner isn't centre-cropped into a tall slice. */
+  page2_hero_is_wide: boolean
+}
+
 export interface ContractPdfInput {
   build_id: string
   title: string

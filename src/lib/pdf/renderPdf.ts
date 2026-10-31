@@ -5,6 +5,7 @@ import type {
   BuilderLike, BrandLike, TermsLike, OperatorContact,
   PlatformLike, TierLike, OptionLineForPdf,
   QuotePdfInput, ContractPdfInput, CustomerLike,
+  LookbookPdfInput, LookbookOption, LookbookTyre,
 } from './types'
 
 function money(cents: number | null | undefined): string {
@@ -35,6 +36,7 @@ export async function renderQuotePdfToStorage(quoteId: string): Promise<string> 
     .from('quotes')
     .select(`
       id, version, price_cents, created_at, builder_id, platform_id, tier_id, lead_id,
+      theme_words, vehicle_colour,
       lead:leads(phone, customer:customers(full_name, email))
     `)
     .eq('id', quoteId)
@@ -48,7 +50,16 @@ export async function renderQuotePdfToStorage(quoteId: string): Promise<string> 
     builder_id: string
     platform_id: string
     tier_id: string
+    theme_words: string | null
+    vehicle_colour: string | null
     lead: { phone: string | null; customer: { full_name: string | null; email: string | null } | null } | null
+  }
+
+  // Peek at pricing mode — cost_based builders get the Lookbook PDF.
+  const modeRes = await supabase.from('builder_terms')
+    .select('pricing_mode').eq('builder_id', quote.builder_id).maybeSingle()
+  if ((modeRes.data as { pricing_mode?: 'simple' | 'cost_based' } | null)?.pricing_mode === 'cost_based') {
+    return renderLookbookPdfToStorage(quoteId)
   }
 
   const [builderRes, brandRes, termsRes, platformRes, tierRes, qoRes] = await Promise.all([
@@ -331,5 +342,291 @@ export async function renderContractPdfToStorage(buildId: string): Promise<strin
     caption: `${tpl.title} v${tpl.version}`,
   })
   if (ins.error) throw ins.error
+  return url
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Lookbook (cost_based builders)
+// ─────────────────────────────────────────────────────────────────────
+
+/** Phase 6: cost_based builders get a 16:9 landscape "lookbook"
+ *  quote PDF with one image-led page per selected option. */
+export async function renderLookbookPdfToStorage(quoteId: string): Promise<string> {
+  const qRes = await supabase.from('quotes')
+    .select(`
+      id, version, price_cents, created_at, builder_id, platform_id, tier_id, lead_id,
+      theme_words, vehicle_colour, vehicle_colour_hex, vehicle_year, vehicle_photo_url,
+      lead:leads(phone, customer:customers(full_name, email))
+    `)
+    .eq('id', quoteId).single()
+  if (qRes.error) throw qRes.error
+  const quote = qRes.data as unknown as {
+    id: string; version: number; price_cents: number; created_at: string
+    builder_id: string; platform_id: string; tier_id: string
+    theme_words: string | null; vehicle_colour: string | null
+    vehicle_colour_hex: string | null; vehicle_year: number | null; vehicle_photo_url: string | null
+    lead: { phone: string | null; customer: { full_name: string | null; email: string | null } | null } | null
+  }
+
+  const [builderRes, brandRes, termsRes, platformRes, tierRes, qoRes, eventsRes] = await Promise.all([
+    supabase.from('builders').select('*, operator:operators(contact)').eq('id', quote.builder_id).single(),
+    supabase.from('builder_brand').select('*').eq('builder_id', quote.builder_id).maybeSingle(),
+    supabase.from('builder_terms').select('*').eq('builder_id', quote.builder_id).maybeSingle(),
+    supabase.from('catalog_platforms').select('*').eq('id', quote.platform_id).single(),
+    supabase.from('catalog_tiers').select('*').eq('id', quote.tier_id).single(),
+    // install_price_cents lives on catalog_options; here we read the
+    // per-line snapshot (parts × qty + labour + materials = line price).
+    supabase.from('quote_options')
+      .select('id, option_id, quantity, finish_note, parts_sell_cents, labour_cents, materials_cents, price_cents_at_selection, quote_option_finishes(finish_set_id, finish_id, catalog_finish_sets(name, sort), catalog_finishes(name, swatch_hex))')
+      .eq('quote_id', quote.id),
+    // Who sent/created the quote? Grab the most recent sent-or-created
+    // event with a by_profile_id for the Closing sign-off.
+    supabase.from('quote_events')
+      .select('kind, by_profile_id, created_at')
+      .eq('quote_id', quote.id)
+      .in('kind', ['sent', 'created'])
+      .not('by_profile_id', 'is', null)
+      .order('created_at', { ascending: false })
+      .limit(1),
+  ])
+  if (builderRes.error) throw builderRes.error
+  if (brandRes.error) throw brandRes.error
+  if (termsRes.error) throw termsRes.error
+  if (platformRes.error) throw platformRes.error
+  if (tierRes.error) throw tierRes.error
+  if (qoRes.error) throw qoRes.error
+  if (eventsRes.error) throw eventsRes.error
+
+  type BrandWithLookbook = BrandLike & { lookbook_statement: string | null }
+  type PlatformWithLookbook = PlatformLike & { lookbook_copy: string | null }
+  const builderRow = builderRes.data as unknown as BuilderLike & { operator: { contact: OperatorContact } | null }
+  const brand = brandRes.data as unknown as BrandWithLookbook
+  const terms = termsRes.data as TermsLike
+  const platform = platformRes.data as unknown as PlatformWithLookbook
+  const tier = tierRes.data as TierLike
+
+  // Ops signer — profile row behind the most recent sent/created event.
+  let signerName: string | null = null
+  let signerTitle: string | null = null
+  let signerPhone: string | null = null
+  let signerEmail: string | null = null
+  const senderId = ((eventsRes.data ?? []) as { by_profile_id: string | null }[])?.[0]?.by_profile_id
+  if (senderId) {
+    const pRes = await supabase.from('profiles')
+      .select('full_name, title, phone, user_id')
+      .eq('id', senderId).maybeSingle()
+    if (pRes.data) {
+      const p = pRes.data as { full_name: string | null; title: string | null; phone: string | null; user_id: string }
+      signerName = p.full_name
+      signerTitle = p.title
+      signerPhone = p.phone
+      // Email lives on auth.users — the admin can't be queried from the
+      // browser, so fall back to the operator contact email below.
+    }
+  }
+  const operatorContact: OperatorContact = builderRow.operator?.contact ?? {}
+  signerEmail = signerEmail ?? operatorContact.email ?? null
+  signerPhone = signerPhone ?? operatorContact.phone ?? null
+  signerName  = signerName  ?? operatorContact.person ?? null
+  signerTitle = signerTitle ?? null
+
+  // ─── Option enrichment ───────────────────────────────────────────
+  interface QoFinishRow {
+    finish_set_id: string; finish_id: string
+    catalog_finish_sets: { name: string; sort: number } | null
+    catalog_finishes: { name: string; swatch_hex: string | null } | null
+  }
+  const qoRows = qoRes.data as unknown as {
+    id: string; option_id: string; quantity: number; finish_note: string | null
+    parts_sell_cents: number | null; labour_cents: number | null; materials_cents: number | null
+    price_cents_at_selection: number
+    quote_option_finishes: QoFinishRow[]
+  }[]
+
+  const optionIds = qoRows.map(r => r.option_id)
+  if (optionIds.length === 0) throw new Error('Quote has no options — nothing to put in the lookbook.')
+
+  const [optsRes, imagesRes, groupsRes] = await Promise.all([
+    supabase.from('catalog_options')
+      .select('id, name, code, group_id, category_id, swatch_image_url, lead_image_url, description, sold_as_set, parts_sell_cents, install_price_cents')
+      .in('id', optionIds),
+    supabase.from('catalog_option_images').select('option_id, url, sort').in('option_id', optionIds),
+    supabase.from('catalog_option_groups').select('id, slug, name'),
+  ])
+  if (optsRes.error) throw optsRes.error
+  if (imagesRes.error) throw imagesRes.error
+  if (groupsRes.error) throw groupsRes.error
+
+  // Categories for section + sort.
+  const catIds = Array.from(new Set((optsRes.data ?? []).map(o => (o as { category_id: string | null }).category_id).filter((v): v is string => !!v)))
+  const catsRes = catIds.length
+    ? await supabase.from('catalog_categories')
+        .select('id, name, lookbook_section, lookbook_sort').in('id', catIds)
+    : { data: [] as unknown[] }
+  if ('error' in catsRes && catsRes.error) throw catsRes.error
+  const categoryById = new Map<string, { name: string; section: string | null; sort: number }>()
+  for (const c of (catsRes.data ?? []) as { id: string; name: string; lookbook_section: string | null; lookbook_sort: number }[]) {
+    categoryById.set(c.id, { name: c.name, section: c.lookbook_section, sort: c.lookbook_sort ?? 999 })
+  }
+
+  // Lead image for each option — ops override wins, otherwise the
+  // first image by sort, otherwise the swatch.
+  const imagesByOption = new Map<string, { url: string; sort: number }[]>()
+  for (const r of (imagesRes.data ?? []) as { option_id: string; url: string; sort: number }[]) {
+    const list = imagesByOption.get(r.option_id) ?? []
+    list.push({ url: r.url, sort: r.sort })
+    imagesByOption.set(r.option_id, list)
+  }
+  for (const list of imagesByOption.values()) list.sort((a, b) => a.sort - b.sort)
+
+  // Group lookup — tyres live in the manual "tyres" slug group, wheels
+  // live under shopify:group:alloy-wheels. Everything else sits in
+  // its category's section.
+  const groups = (groupsRes.data ?? []) as { id: string; slug: string; name: string }[]
+  const tyresGroupId = groups.find(g => g.slug === 'tyres')?.id ?? null
+  const wheelsGroupId = groups.find(g => g.slug === 'shopify-alloy-wheels' || g.name === 'Alloy wheels')?.id ?? null
+
+  const qoByOption = new Map(qoRows.map(r => [r.option_id, r]))
+  const options: LookbookOption[] = []
+  const tyres: LookbookTyre[] = []
+  const wheelOptions: LookbookOption[] = []
+  for (const o of (optsRes.data ?? []) as unknown as {
+    id: string; name: string; code: string | null; group_id: string; category_id: string | null
+    swatch_image_url: string | null; lead_image_url: string | null; description: string | null
+    sold_as_set: boolean; parts_sell_cents: number | null; install_price_cents: number | null
+  }[]) {
+    const qo = qoByOption.get(o.id)!
+    const qty = qo.quantity ?? 1
+    // Line price reads straight off the quote_options snapshot:
+    //   parts_sell_cents is already × qty (set at save time)
+    //   labour_cents + materials_cents form the install portion.
+    const partsSell = qo.parts_sell_cents
+      ?? (o.parts_sell_cents ?? qo.price_cents_at_selection) * (o.sold_as_set ? 1 : qty)
+    const installPart = (qo.labour_cents ?? 0) + (qo.materials_cents ?? 0)
+    const linePrice = partsSell + installPart
+
+    const finishes = (qo.quote_option_finishes ?? [])
+      .slice()
+      .sort((a, b) => (a.catalog_finish_sets?.sort ?? 0) - (b.catalog_finish_sets?.sort ?? 0))
+      .map(f => ({
+        set_name: f.catalog_finish_sets?.name ?? '',
+        name: f.catalog_finishes?.name ?? '',
+        swatch_hex: f.catalog_finishes?.swatch_hex ?? null,
+      }))
+      .filter(f => f.name)
+
+    const cat = o.category_id ? categoryById.get(o.category_id) : null
+    const img = o.lead_image_url ?? imagesByOption.get(o.id)?.[0]?.url ?? o.swatch_image_url
+
+    const lookbook: LookbookOption = {
+      option_id: o.id,
+      name: o.name,
+      code: o.code,
+      description: o.description,
+      image_url: img,
+      swatch_image_url: o.swatch_image_url,
+      line_price_cents: linePrice,
+      parts_sell_cents: o.parts_sell_cents,
+      quantity: qty,
+      sold_as_set: o.sold_as_set,
+      category_name: cat?.name ?? null,
+      section: cat?.section ?? null,
+      section_sort: cat?.sort ?? 999,
+      finishes,
+      finish_note: qo.finish_note,
+      // Shopify tags aren't persisted; the Lookbook renderer parses
+      // size out of the option name as a graceful fallback.
+      shopify_tags: [],
+    }
+
+    // Tyres get a one-liner on the Wheels page. Wheels become cards.
+    // Everything else is a full option page.
+    if (o.group_id === tyresGroupId) {
+      tyres.push({
+        name: o.name,
+        code: o.code,
+        description: o.description,
+        line_price_cents: linePrice,
+        quantity: qty,
+        sold_as_set: o.sold_as_set,
+      })
+    } else if (o.group_id === wheelsGroupId) {
+      wheelOptions.push(lookbook)
+    } else {
+      options.push(lookbook)
+    }
+  }
+
+  // Sort options by section then name so the pages flow left-to-right
+  // in the right order.
+  options.sort((a, b) => a.section_sort - b.section_sort || (a.name ?? '').localeCompare(b.name ?? ''))
+
+  const customerFullName = quote.lead?.customer?.full_name ?? null
+  const customerFirstName = customerFullName ? customerFullName.split(/\s+/)[0] : null
+
+  // Page 2 hero: customer-uploaded photo wins; otherwise the platform
+  // hero; otherwise fall back to the image of the highest-priced non-
+  // wheel/tyre option on the quote. Never ship a grey box.
+  const platformRow = platform as {
+    hero_image_url?: string | null
+    hero_image_width?: number | null
+    hero_image_height?: number | null
+  }
+  const platformHero = platformRow.hero_image_url ?? null
+  const topOptionImage = [...options]
+    .sort((a, b) => b.line_price_cents - a.line_price_cents)[0]?.image_url ?? null
+  const page2HeroUrl = quote.vehicle_photo_url
+    ?? platformHero
+    ?? topOptionImage
+
+  // Decide between the half-page portrait layout (customer photos,
+  // product renders) and the full-width banner layout (Shopify
+  // collection images) from the stored intrinsic ratio on
+  // catalog_platforms. The ratio is only known for the platform hero
+  // — a customer-uploaded photo or an option image stays as portrait.
+  const usingPlatformHero = page2HeroUrl === platformHero
+  const page2HeroIsWide = usingPlatformHero
+    && !!platformRow.hero_image_width
+    && !!platformRow.hero_image_height
+    && (platformRow.hero_image_width / platformRow.hero_image_height) > 1.6
+
+  const input: LookbookPdfInput = {
+    quote_id: quote.id,
+    version: quote.version,
+    price_cents: quote.price_cents,
+    created_at: quote.created_at,
+    builder: { name: builderRow.name, legal_name: builderRow.legal_name, slug: builderRow.slug },
+    brand,
+    terms,
+    operator_contact: operatorContact,
+    closing_signer: { name: signerName, title: signerTitle, phone: signerPhone, email: signerEmail },
+    platform,
+    tier,
+    options,
+    tyres,
+    wheel_options: wheelOptions,
+    customer: (quote.lead?.customer ?? null) as CustomerLike | null,
+    customer_first_name: customerFirstName,
+    theme_words: quote.theme_words,
+    vehicle_colour: quote.vehicle_colour,
+    vehicle_year: quote.vehicle_year,
+    page2_hero_url: page2HeroUrl,
+    page2_hero_is_wide: page2HeroIsWide,
+  }
+
+  const [{ LookbookPdf }, { registerBrandFonts }] = await Promise.all([
+    import('./LookbookPdf'),
+    import('./fonts'),
+  ])
+  // The Lookbook always uses Cormorant Garamond + DM Sans regardless
+  // of the brand's font_display / font_body — the design language is
+  // builder-neutral until someone asks for it to vary.
+  registerBrandFonts('Cormorant Garamond', 'DM Sans')
+  const blob = await pdfBlob(LookbookPdf(input))
+
+  const path = `document/lookbook_${quote.id}_v${quote.version}_${Date.now()}.pdf`
+  const url = await uploadPdf(path, blob)
+  const upd = await supabase.from('quotes').update({ pdf_url: url }).eq('id', quote.id)
+  if (upd.error) throw upd.error
   return url
 }

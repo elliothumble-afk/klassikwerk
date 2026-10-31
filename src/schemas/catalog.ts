@@ -39,6 +39,12 @@ export const catalogOptionSchema = z.object({
   origin_id: z.string().uuid().nullable().or(z.literal('')).transform(v => v || null),
   // Operator cost per unit. Blank → cost = sell for margin purposes.
   cost: z.coerce.number().min(0).nullable().or(z.literal('')).transform(v => v === '' || v == null ? null : Number(v)),
+  // Lookbook PDF copy. Sync populates from Shopify body_html; ops can
+  // override and the override wins on resync.
+  description: z.string().nullable().or(z.literal('')).transform(v => v || null),
+  // Chosen hero image for the Lookbook option page. Null = fall back to
+  // the first catalog_option_images row by sort, then swatch.
+  lead_image_url: z.string().url().nullable().or(z.literal('')).transform(v => v || null),
 })
 
 export type PlatformForm = z.infer<typeof platformSchema>

@@ -295,7 +295,9 @@ export type Database = {
           brokerage_cents: number
           items_per_shipment: number
           aluminium_share_pct: number
-          hh_fee_pct: number
+          commission_flat_cents: number
+          commission_bonus_cents: number
+          commission_bonus_threshold_cents: number
           pricing_mode: 'simple' | 'cost_based'
           in_house_labour_cost_cents: number
           default_labour_source: 'in_house' | 'partner_shop'
@@ -325,7 +327,9 @@ export type Database = {
           brokerage_cents?: number
           items_per_shipment?: number
           aluminium_share_pct?: number
-          hh_fee_pct?: number
+          commission_flat_cents?: number
+          commission_bonus_cents?: number
+          commission_bonus_threshold_cents?: number
           pricing_mode?: 'simple' | 'cost_based'
           in_house_labour_cost_cents?: number
           default_labour_source?: 'in_house' | 'partner_shop'
@@ -354,7 +358,9 @@ export type Database = {
           brokerage_cents?: number
           items_per_shipment?: number
           aluminium_share_pct?: number
-          hh_fee_pct?: number
+          commission_flat_cents?: number
+          commission_bonus_cents?: number
+          commission_bonus_threshold_cents?: number
           pricing_mode?: 'simple' | 'cost_based'
           in_house_labour_cost_cents?: number
           default_labour_source?: 'in_house' | 'partner_shop'
@@ -638,6 +644,7 @@ export type Database = {
           vehicle_colour_hex: string | null
           vehicle_year: number | null
           vehicle_photo_url: string | null
+          commission_cents: number | null
           created_at: string
           updated_at: string
         }
@@ -661,6 +668,7 @@ export type Database = {
           vehicle_colour_hex?: string | null
           vehicle_year?: number | null
           vehicle_photo_url?: string | null
+          commission_cents?: number | null
           created_at?: string
           updated_at?: string
         }
@@ -683,6 +691,7 @@ export type Database = {
           vehicle_colour_hex?: string | null
           vehicle_year?: number | null
           vehicle_photo_url?: string | null
+          commission_cents?: number | null
           updated_at?: string
         }
         Relationships: []

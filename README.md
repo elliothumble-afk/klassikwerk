@@ -412,6 +412,68 @@ UPDATE profiles SET role = 'operator'
   WHERE user_id = (SELECT id FROM auth.users WHERE email = 'elliot.humble@gmail.com');
 ```
 
+## Scheduled jobs (pg_cron + pg_net)
+
+Two scheduled jobs run against the Supabase Postgres instance via
+`pg_cron` + `pg_net`. Both are **set up once** in the Supabase SQL
+editor — they can't live in a migration because they need the
+project's service-role key as a literal.
+
+```sql
+-- One-time: enable the extensions (they're on by default on new
+-- hosted projects; this is idempotent).
+CREATE EXTENSION IF NOT EXISTS pg_cron;
+CREATE EXTENSION IF NOT EXISTS pg_net;
+
+-- Replace <SERVICE_ROLE_KEY> with the key from
+-- Supabase → Project Settings → API. Keep it out of git.
+ALTER DATABASE postgres SET app.service_role_key = '<SERVICE_ROLE_KEY>';
+
+-- Nightly catalog sync — fires at 07:00 UTC (~03:00 ET during DST,
+-- ~02:00 ET during standard time) for every active builder whose
+-- catalog is not maintained by hand.
+SELECT cron.schedule(
+  'nightly-sync-builder-catalog',
+  '0 7 * * *',
+  $$
+    SELECT net.http_post(
+      url     := 'https://vvuccbskbswtfvxplxxm.supabase.co/functions/v1/sync-builder-catalog',
+      headers := jsonb_build_object(
+        'Authorization', 'Bearer ' || current_setting('app.service_role_key', true),
+        'Content-Type',  'application/json'
+      ),
+      body    := jsonb_build_object('builder_id', b.id)
+    )
+      FROM builders b
+     WHERE b.active = true AND b.catalog_source <> 'manual';
+  $$
+);
+
+-- Daily FX refresh — fires at 07:15 UTC. Updates fx_rate for every
+-- builder with fx_auto = true from the Frankfurter free API, then
+-- reprices the catalog.
+SELECT cron.schedule(
+  'daily-fx-refresh',
+  '15 7 * * *',
+  $$
+    SELECT net.http_post(
+      url     := 'https://vvuccbskbswtfvxplxxm.supabase.co/functions/v1/refresh-fx-rates',
+      headers := jsonb_build_object(
+        'Authorization', 'Bearer ' || current_setting('app.service_role_key', true),
+        'Content-Type',  'application/json'
+      ),
+      body    := '{}'::jsonb
+    );
+  $$
+);
+```
+
+Each run writes a `sync_runs.summary` row with `{new_options,
+removed_options, price_changes (|Δ| > 5%), uncategorised}`. The last
+three runs show up on Costing with an expandable change list, and
+if `HH_INBOX_EMAIL` + `RESEND_API_KEY` are set the summary is also
+emailed to HH.
+
 ## Stack
 
 - **Frontend**: Vite · React 19 · TypeScript · Tailwind v4 · react-router v7

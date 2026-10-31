@@ -71,7 +71,13 @@ function stripVehicleDecorations(name: string): string {
 // alone — Shopify writers who typed "Side Vents and CTC badges"
 // knew what they were doing.
 const KEEP_AS_IS = new Set([
+  // Builder/brand acronyms + wheel/finish codes.
   'AMG', 'CTC', 'RS', 'DC', 'LED', 'KO3', 'G22', 'G63', 'G350', 'G400',
+  // Roman numerals used in trim designations (Series II, Mk III, …).
+  'II', 'III', 'IV',
+  // Tyre + engine tokens. V8/P525/P400/D300 already survive the single-
+  // letter+digits regex but we list them explicitly so intent is clear.
+  'LT', 'V8', 'P525', 'P400', 'D300',
 ])
 // Articles / conjunctions / short prepositions that stay lowercase
 // mid-string in English title case.

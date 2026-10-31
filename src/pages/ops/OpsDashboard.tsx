@@ -16,6 +16,22 @@ const STAGE_LABEL: Record<LeadStage, string> = {
   lost: 'Lost',
 }
 
+function money(cents: number): string {
+  return `$${(cents / 100).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+}
+
+/** First day of the current calendar month in UTC — used as the lower
+ *  bound on approved_at when computing month-to-date totals. */
+function monthStartIso(): string {
+  const d = new Date()
+  const start = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1))
+  return start.toISOString()
+}
+
+function monthLabel(): string {
+  return new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' })
+}
+
 export function OpsDashboard() {
   const { selected } = useOpsBuilderSelection()
 
@@ -24,56 +40,97 @@ export function OpsDashboard() {
     enabled: Boolean(selected?.id),
     queryFn: async () => {
       const builderId = selected!.id
-      const [leadsRes, quotesRes, buildsRes, sentWithSnapsRes, termsRes] = await Promise.all([
+      const monthIso = monthStartIso()
+      const [leadsRes, quotesRes, buildsRes, approvedThisMonthRes] = await Promise.all([
         supabase.from('leads').select('stage').eq('builder_id', builderId),
         supabase.from('quotes').select('id, version, price_cents, status, created_at, lead:leads(customer:customers(full_name, email))').eq('builder_id', builderId).eq('status', 'sent').order('sent_at', { ascending: false }).limit(10),
         supabase.from('builds').select('id, stage, price_cents').eq('builder_id', builderId).not('stage', 'in', '(closed)'),
-        // All sent/approved quotes with their option snapshots for the
-        // margin-after-HH calculation. Snapshots are only populated for
-        // cost_based quotes; simple-mode quotes contribute nothing.
+        // Approved quotes this month, with the snapshot columns needed
+        // to compute HH gross margin per quote + the rep from the
+        // most-recent "sent" event (fallback: "created"). The snapshot
+        // keeps month-end totals honest even if terms change later.
         supabase.from('quotes').select(`
-          id, price_cents, status,
-          quote_options(parts_sell_cents, landed_cost_cents, labour_cents, materials_cents, partner_cost_cents)
-        `).eq('builder_id', builderId).in('status', ['sent','approved']),
-        supabase.from('builder_terms').select('hh_fee_pct, pricing_mode').eq('builder_id', builderId).maybeSingle(),
+          id, price_cents, commission_cents, approved_at, builder_id,
+          quote_options(landed_cost_cents, partner_cost_cents, materials_cents),
+          quote_events(kind, by_profile_id, created_at)
+        `)
+          .eq('builder_id', builderId)
+          .eq('status', 'approved')
+          .gte('approved_at', monthIso),
       ])
       if (leadsRes.error) throw leadsRes.error
       if (quotesRes.error) throw quotesRes.error
       if (buildsRes.error) throw buildsRes.error
-      if (sentWithSnapsRes.error) throw sentWithSnapsRes.error
-      if (termsRes.error) throw termsRes.error
+      if (approvedThisMonthRes.error) throw approvedThisMonthRes.error
       const stageCounts = new Map<LeadStage, number>(LEAD_STAGES.map(s => [s, 0]))
       for (const l of leadsRes.data ?? []) stageCounts.set(l.stage as LeadStage, (stageCounts.get(l.stage as LeadStage) ?? 0) + 1)
 
-      // Average margin after HH, across quotes whose option rows carry
-      // a cost snapshot. Null when there are none (simple-mode builder).
-      const hhPct = Number((termsRes.data as { hh_fee_pct?: number } | null)?.hh_fee_pct ?? 0.05)
-      let marginPctSum = 0
-      let marginCount = 0
-      for (const q of (sentWithSnapsRes.data as unknown as { price_cents: number; quote_options: { parts_sell_cents: number | null; landed_cost_cents: number | null; labour_cents: number | null; materials_cents: number | null; partner_cost_cents: number | null }[] }[]) ?? []) {
-        const sale = q.price_cents ?? 0
-        if (sale <= 0) continue
-        const hasSnap = q.quote_options.some(r => r.landed_cost_cents != null)
-        if (!hasSnap) continue
-        let landed = 0, partner = 0, materials = 0
-        for (const r of q.quote_options) {
-          landed    += r.landed_cost_cents ?? 0
-          partner   += r.partner_cost_cents ?? 0
-          materials += r.materials_cents ?? 0
-        }
-        const hhFee = Math.round(sale * hhPct)
-        const margin = sale - landed - partner - materials - hhFee
-        marginPctSum += margin / sale
-        marginCount += 1
+      // HH gross margin & commission totals from approved quotes.
+      // Commission uses the snapshot column on the quote (never
+      // recomputed from today's terms); gross margin trusts the
+      // quote_options cost snapshots. Rep is the by_profile_id of the
+      // latest "sent" event, falling back to "created".
+      type QRow = {
+        id: string
+        price_cents: number
+        commission_cents: number | null
+        quote_options: { landed_cost_cents: number | null; partner_cost_cents: number | null; materials_cents: number | null }[]
+        quote_events: { kind: string; by_profile_id: string | null; created_at: string }[]
       }
-      const avgMarginPct = marginCount > 0 ? marginPctSum / marginCount : null
+      const approvedRows = (approvedThisMonthRes.data as unknown as QRow[]) ?? []
+
+      let totalGross = 0
+      let totalCommission = 0
+      const perRep = new Map<string | null, { commission: number; quotes: number }>()
+      for (const q of approvedRows) {
+        const sale = q.price_cents ?? 0
+        const landed    = q.quote_options.reduce((a, r) => a + (r.landed_cost_cents    ?? 0), 0)
+        const partner   = q.quote_options.reduce((a, r) => a + (r.partner_cost_cents   ?? 0), 0)
+        const materials = q.quote_options.reduce((a, r) => a + (r.materials_cents      ?? 0), 0)
+        const commission = q.commission_cents ?? 0
+        const gross = sale - landed - partner - materials - commission
+        totalGross += gross
+        totalCommission += commission
+        // Pick the rep: most recent 'sent' with a by_profile_id, else 'created'.
+        const events = q.quote_events.slice().sort((a, b) =>
+          b.created_at.localeCompare(a.created_at))
+        const rep = events.find(e => e.kind === 'sent' && e.by_profile_id)?.by_profile_id
+          ?? events.find(e => e.kind === 'created' && e.by_profile_id)?.by_profile_id
+          ?? null
+        const bucket = perRep.get(rep) ?? { commission: 0, quotes: 0 }
+        bucket.commission += commission
+        bucket.quotes += 1
+        perRep.set(rep, bucket)
+      }
+
+      // Resolve rep profile_ids to display names.
+      const repIds = Array.from(perRep.keys()).filter((v): v is string => !!v)
+      let nameById = new Map<string, string>()
+      if (repIds.length > 0) {
+        const profRes = await supabase.from('profiles')
+          .select('id, full_name').in('id', repIds)
+        if (profRes.error) throw profRes.error
+        for (const p of (profRes.data ?? []) as { id: string; full_name: string | null }[]) {
+          nameById.set(p.id, p.full_name ?? '—')
+        }
+      }
+      const commissionRows = Array.from(perRep.entries())
+        .map(([id, b]) => ({
+          repId: id,
+          repName: id ? (nameById.get(id) ?? '—') : 'Unassigned',
+          commission: b.commission,
+          quotes: b.quotes,
+        }))
+        .sort((a, b) => b.commission - a.commission)
 
       return {
         stageCounts,
         awaiting: quotesRes.data ?? [],
         builds: buildsRes.data ?? [],
-        avgMarginPct,
-        marginSampleSize: marginCount,
+        totalGross,
+        totalCommission,
+        approvedCount: approvedRows.length,
+        commissionRows,
       }
     },
   })
@@ -94,19 +151,45 @@ export function OpsDashboard() {
       <div className="max-w-6xl mx-auto">
         <h1 className="text-2xl mb-6" style={{ fontFamily: 'var(--font-display)' }}>Dashboard</h1>
 
-        {data.avgMarginPct != null && (() => {
-          const pct = data.avgMarginPct * 100
-          const colour = pct < 20 ? 'text-[var(--color-danger)]' : pct < 25 ? 'text-amber-600' : 'text-[var(--color-success)]'
-          return (
-            <section className="mb-10 inline-block rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-5 py-3">
-              <div className="text-xs uppercase tracking-wide text-[var(--color-muted)]">Avg margin after HH · sent + approved</div>
-              <div className={`text-2xl mt-1 ${colour}`} style={{ fontFamily: 'var(--font-display)' }}>
-                {pct.toFixed(1)}%
-                <span className="text-xs text-[var(--color-muted)] ml-2">· {data.marginSampleSize} quote{data.marginSampleSize === 1 ? '' : 's'}</span>
-              </div>
-            </section>
-          )
-        })()}
+        <section className="mb-10 grid gap-4 sm:grid-cols-2">
+          <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-5 py-4">
+            <div className="text-xs uppercase tracking-wide text-[var(--color-muted)]">
+              HH gross margin · {monthLabel()}
+            </div>
+            <div className="text-2xl mt-1" style={{ fontFamily: 'var(--font-display)' }}>
+              {money(data.totalGross)}
+              <span className="text-xs text-[var(--color-muted)] ml-2">
+                · {data.approvedCount} approved quote{data.approvedCount === 1 ? '' : 's'}
+              </span>
+            </div>
+          </div>
+          <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-5 py-4">
+            <div className="text-xs uppercase tracking-wide text-[var(--color-muted)]">
+              Commission owed · {monthLabel()}
+            </div>
+            {data.commissionRows.length === 0 ? (
+              <div className="text-sm text-[var(--color-muted)] mt-2">No approved quotes this month.</div>
+            ) : (
+              <ul className="mt-2 divide-y divide-[var(--color-border)]">
+                {data.commissionRows.map(r => (
+                  <li key={r.repId ?? 'unassigned'} className="py-1.5 flex items-center justify-between text-sm">
+                    <span>
+                      {r.repName}
+                      <span className="text-xs text-[var(--color-muted)] ml-2">
+                        · {r.quotes} quote{r.quotes === 1 ? '' : 's'}
+                      </span>
+                    </span>
+                    <span className="font-mono">{money(r.commission)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="text-xs text-[var(--color-muted)] mt-2 pt-2 border-t border-[var(--color-border)] flex justify-between">
+              <span>Total</span>
+              <span className="font-mono">{money(data.totalCommission)}</span>
+            </div>
+          </div>
+        </section>
 
         <section className="mb-10">
           <h2 className="text-sm font-medium text-[var(--color-muted)] mb-3">Leads by stage</h2>

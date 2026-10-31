@@ -79,7 +79,7 @@ export function QuoteEditor() {
           .eq('builder_id', builderId).order('sort'),
         supabase.from('catalog_options').select('*').eq('builder_id', builderId).eq('active', true).order('sort'),
         supabase.from('builder_terms')
-          .select('option_mode, pricing_mode, partner_shop_rate_cents, in_house_labour_cost_cents, default_labour_source, hh_fee_pct, labour_rate_cents, paint_rate_cents')
+          .select('option_mode, pricing_mode, partner_shop_rate_cents, in_house_labour_cost_cents, default_labour_source, commission_flat_cents, commission_bonus_cents, commission_bonus_threshold_cents, labour_rate_cents, paint_rate_cents')
           .eq('builder_id', builderId).maybeSingle(),
       ])
       if (plat.error) throw plat.error
@@ -101,7 +101,7 @@ export function QuoteEditor() {
         optionPlatforms = (op.data ?? []) as typeof optionPlatforms
       }
 
-      const tData = terms.data as (Pick<BuilderTerms, 'option_mode' | 'pricing_mode' | 'partner_shop_rate_cents' | 'in_house_labour_cost_cents' | 'default_labour_source' | 'hh_fee_pct' | 'labour_rate_cents' | 'paint_rate_cents'> | null)
+      const tData = terms.data as (Pick<BuilderTerms, 'option_mode' | 'pricing_mode' | 'partner_shop_rate_cents' | 'in_house_labour_cost_cents' | 'default_labour_source' | 'commission_flat_cents' | 'commission_bonus_cents' | 'commission_bonus_threshold_cents' | 'labour_rate_cents' | 'paint_rate_cents'> | null)
       const optionMode = tData?.option_mode ?? 'priced'
       const pricingMode = tData?.pricing_mode ?? 'simple'
 
@@ -136,7 +136,9 @@ export function QuoteEditor() {
         defaultLabourSource: (tData?.default_labour_source ?? 'partner_shop') as 'in_house' | 'partner_shop',
         labourRateCents: tData?.labour_rate_cents ?? 20000,
         paintRateCents: tData?.paint_rate_cents ?? 20000,
-        hhFeePct: Number(tData?.hh_fee_pct ?? 0.05),
+        commissionFlatCents: tData?.commission_flat_cents ?? 50000,
+        commissionBonusCents: tData?.commission_bonus_cents ?? 50000,
+        commissionBonusThresholdCents: tData?.commission_bonus_threshold_cents ?? 5000000,
         categories,
         finishSets,
         finishes,
@@ -441,10 +443,11 @@ export function QuoteEditor() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selection, quantities, catalog, tier, includedOnly])
 
-  // Margin (ops only, cost_based builders): landed + partner labour +
-  // materials + HH fee. Everything per-line, with quantity multiplying
-  // landed parts but not labour/materials. Only renders when the
-  // snapshot columns are present.
+  // HH margin per job (ops only, cost_based builders). Humble House
+  // sells the job and manages the outsourced work; the panel reports
+  // sale − parts landed − outsourced labour & materials − sales
+  // commission. The commission is a flat per-quote fee with an
+  // optional bonus kicker when the sale clears a threshold.
   const marginSummary = useMemo(() => {
     if (!tier || !catalog || catalog.pricingMode !== 'cost_based') return null
     const categoryById = new Map(catalog.categories.map(c => [c.id, c]))
@@ -464,11 +467,11 @@ export function QuoteEditor() {
       }
     }
     const sale = total
-    const hhFee = Math.round(sale * catalog.hhFeePct)
-    const grossBefore = sale - landed - labour - materials
-    const grossAfter = grossBefore - hhFee
-    const marginPct = sale > 0 ? grossAfter / sale : 0
-    return { sale, landed, labour, materials, hhFee, grossBefore, grossAfter, marginPct }
+    const bonusHit = sale >= catalog.commissionBonusThresholdCents
+    const commission = catalog.commissionFlatCents + (bonusHit ? catalog.commissionBonusCents : 0)
+    const grossMargin = sale - landed - labour - materials - commission
+    const marginPct = sale > 0 ? grossMargin / sale : 0
+    return { sale, landed, labour, materials, commission, bonusHit, grossMargin, marginPct }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selection, quantities, finishByOption, catalog, tier, total, effectiveLabourSource])
 
@@ -729,6 +732,7 @@ export function QuoteEditor() {
           .update({
             platform_id: platformId, tier_id: tierId, price_cents: total, notes,
             labour_source: effectiveLabourSource,
+            commission_cents: marginSummary?.commission ?? null,
             theme_words: themeWords.trim() || null,
             vehicle_colour: vehicleColour.trim() || null,
             vehicle_year: vehicleYear.trim() ? Number(vehicleYear) : null,
@@ -759,6 +763,7 @@ export function QuoteEditor() {
         status: 'draft',
         notes,
         labour_source: effectiveLabourSource,
+        commission_cents: marginSummary?.commission ?? null,
         theme_words: themeWords.trim() || null,
         vehicle_colour: vehicleColour.trim() || null,
         vehicle_year: vehicleYear.trim() ? Number(vehicleYear) : null,
@@ -1411,16 +1416,22 @@ export function QuoteEditor() {
                 <div><div className="text-[var(--color-muted)]">Parts landed</div><div className="text-sm">{money(m.landed)}</div></div>
                 <div>
                   <div className="text-[var(--color-muted)]">
-                    Labour cost + materials {effectiveLabourSource === 'in_house' ? '(in-house)' : '(partner shop)'}
+                    {effectiveLabourSource === 'in_house' ? 'In-house labour + materials' : 'Partner shop labour + materials'}
                   </div>
                   <div className="text-sm">{money(m.labour + m.materials)}</div>
                 </div>
-                <div><div className="text-[var(--color-muted)]">HH fee</div><div className="text-sm">{money(m.hhFee)}</div></div>
+                <div>
+                  <div className="text-[var(--color-muted)]">Sales commission</div>
+                  <div className="text-sm">
+                    {money(m.commission)}
+                    {m.bonusHit && <span className="text-[var(--color-muted)] ml-1">incl. bonus</span>}
+                  </div>
+                </div>
               </div>
               <div className="mt-3 flex items-end justify-between pt-3 border-t border-[var(--color-border)]">
                 <div>
-                  <div className="text-xs text-[var(--color-muted)]">Gross margin after HH</div>
-                  <div className={`text-lg ${colour}`}>{money(m.grossAfter)}</div>
+                  <div className="text-xs text-[var(--color-muted)]">HH gross margin</div>
+                  <div className={`text-lg ${colour}`}>{money(m.grossMargin)}</div>
                 </div>
                 <div className={`text-2xl font-mono ${colour}`}>{pct.toFixed(1)}%</div>
               </div>

@@ -100,7 +100,9 @@ function TermsTab({ builderId, reprice }: { builderId: string; reprice: () => Pr
         brokerage_cents: draft.brokerage_cents,
         items_per_shipment: draft.items_per_shipment,
         aluminium_share_pct: draft.aluminium_share_pct,
-        hh_fee_pct: draft.hh_fee_pct,
+        commission_flat_cents: draft.commission_flat_cents,
+        commission_bonus_cents: draft.commission_bonus_cents,
+        commission_bonus_threshold_cents: draft.commission_bonus_threshold_cents,
       }
       const { error } = await supabase.from('builder_terms').update(patch).eq('builder_id', builderId)
       if (error) throw error
@@ -163,7 +165,9 @@ function TermsTab({ builderId, reprice }: { builderId: string; reprice: () => Pr
           {num('brokerage_cents', 'Brokerage $ per shipment', 100)}
           {num('items_per_shipment', 'Items per shipment')}
           {num('aluminium_share_pct', 'Aluminium share (wheels)')}
-          {num('hh_fee_pct', 'HH fee % of sale (internal)')}
+          {num('commission_flat_cents', 'Sales commission $ per quote', 100)}
+          {num('commission_bonus_cents', 'Commission bonus $ (above threshold)', 100)}
+          {num('commission_bonus_threshold_cents', 'Bonus threshold $ (sale price)', 100)}
         </>}
       </div>
 

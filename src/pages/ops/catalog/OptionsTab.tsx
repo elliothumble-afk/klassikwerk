@@ -1186,7 +1186,14 @@ export function OptionsTab() {
       const payload = optionFormToDb(data, selected.id, mode)
       if (id) {
         const { builder_id: _bid, ...update } = payload
-        const { error } = await supabase.from('catalog_options').update(update).eq('id', id)
+        // When ops edits the description, flip description_locked so
+        // the next sync doesn't overwrite the override with Shopify
+        // body_html. Only flip when the value actually changed.
+        const descriptionChanged = existing && (update.description ?? null) !== (existing.description ?? null)
+        const updateWithLocks = descriptionChanged
+          ? { ...update, description_locked: (update.description ?? null) !== null }
+          : update
+        const { error } = await supabase.from('catalog_options').update(updateWithLocks).eq('id', id)
         if (error) throw error
         await supabase.from('catalog_option_platforms').delete().eq('option_id', id)
         if (platformIds.length > 0) {

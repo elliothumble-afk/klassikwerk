@@ -298,6 +298,8 @@ export type Database = {
           commission_flat_cents: number
           commission_bonus_cents: number
           commission_bonus_threshold_cents: number
+          fx_auto: boolean
+          fx_last_updated_at: string | null
           pricing_mode: 'simple' | 'cost_based'
           in_house_labour_cost_cents: number
           default_labour_source: 'in_house' | 'partner_shop'
@@ -330,6 +332,8 @@ export type Database = {
           commission_flat_cents?: number
           commission_bonus_cents?: number
           commission_bonus_threshold_cents?: number
+          fx_auto?: boolean
+          fx_last_updated_at?: string | null
           pricing_mode?: 'simple' | 'cost_based'
           in_house_labour_cost_cents?: number
           default_labour_source?: 'in_house' | 'partner_shop'
@@ -361,6 +365,8 @@ export type Database = {
           commission_flat_cents?: number
           commission_bonus_cents?: number
           commission_bonus_threshold_cents?: number
+          fx_auto?: boolean
+          fx_last_updated_at?: string | null
           pricing_mode?: 'simple' | 'cost_based'
           in_house_labour_cost_cents?: number
           default_labour_source?: 'in_house' | 'partner_shop'
@@ -1127,6 +1133,8 @@ export type Database = {
           web_price_cents: number | null
           source_currency: string
           category_locked: boolean
+          description_locked: boolean
+          origin_locked: boolean
           parts_sell_cents: number | null
           install_price_cents: number | null
           landed_cost_cents: number | null
@@ -1154,6 +1162,8 @@ export type Database = {
           category_id?: string | null
           origin_id?: string | null
           category_locked?: boolean
+          description_locked?: boolean
+          origin_locked?: boolean
           web_price_cents?: number | null
           source_currency?: string
           parts_sell_cents?: number | null
@@ -1182,6 +1192,8 @@ export type Database = {
           category_id?: string | null
           origin_id?: string | null
           category_locked?: boolean
+          description_locked?: boolean
+          origin_locked?: boolean
           web_price_cents?: number | null
           source_currency?: string
           parts_sell_cents?: number | null

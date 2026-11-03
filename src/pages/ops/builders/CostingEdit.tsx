@@ -65,8 +65,159 @@ export function CostingEdit() {
         {tab === 'finishes' && <FinishesTab builderId={id!} reprice={reprice} />}
 
         {status && <p className="mt-4 text-xs text-[var(--color-success)]">{status}</p>}
+
+        {/* Last three sync runs. Shows change-list per run (new /
+            removed / price-changed / uncategorised) from the structured
+            summary written by sync-builder-catalog. */}
+        <SyncRunsPanel builderId={id!} />
       </div>
     </div>
+  )
+}
+
+// ─── FX field: auto / manual + "updated DD MMM" annotation ─────────
+function FxField({ d, setDraft }: {
+  d: Partial<BuilderTerms>
+  setDraft: (d: Partial<BuilderTerms>) => void
+}) {
+  const auto = d.fx_auto !== false
+  const asOf = d.fx_last_updated_at
+    ? new Date(d.fx_last_updated_at).toLocaleDateString('en-US', { day: '2-digit', month: 'short' })
+    : null
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <label className="text-xs text-[var(--color-muted)]">FX (GBP → USD)</label>
+        <label className="text-xs text-[var(--color-muted)] inline-flex items-center gap-1">
+          <input
+            type="checkbox"
+            checked={auto}
+            onChange={e => setDraft({ ...d, fx_auto: e.target.checked })}
+          />
+          Auto
+        </label>
+      </div>
+      <input
+        type="number"
+        step="any"
+        value={d.fx_rate != null ? Number(d.fx_rate) : ''}
+        onChange={e => setDraft({ ...d, fx_rate: Number(e.target.value) })}
+        disabled={auto}
+        className="h-9 w-full px-3 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] text-sm disabled:opacity-70"
+      />
+      <div className="text-xs text-[var(--color-muted)] mt-1">
+        Rate {Number(d.fx_rate ?? 0).toFixed(4)}
+        {auto && asOf && <> · updated {asOf}</>}
+        {!auto && <> · manual override</>}
+      </div>
+    </div>
+  )
+}
+
+// ─── Last 3 sync runs with expandable change list ──────────────────
+function SyncRunsPanel({ builderId }: { builderId: string }) {
+  const q = useQuery({
+    queryKey: ['sync-runs', builderId],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('sync_runs')
+        .select('id, started_at, finished_at, status, error, summary')
+        .eq('builder_id', builderId)
+        .order('started_at', { ascending: false })
+        .limit(3)
+      if (error) throw error
+      return data as unknown as SyncRunRow[]
+    },
+  })
+  const [open, setOpen] = useState<string | null>(null)
+  if (!q.data || q.data.length === 0) return null
+  return (
+    <section className="mt-8">
+      <h2 className="text-sm font-medium text-[var(--color-muted)] mb-2">Last 3 sync runs</h2>
+      <ul className="divide-y divide-[var(--color-border)] rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)]">
+        {q.data.map(r => (
+          <SyncRunRow key={r.id} row={r} isOpen={open === r.id} onToggle={() => setOpen(open === r.id ? null : r.id)} />
+        ))}
+      </ul>
+    </section>
+  )
+}
+
+interface SyncRunRow {
+  id: string
+  started_at: string
+  finished_at: string | null
+  status: 'running' | 'success' | 'error'
+  error: string | null
+  summary: {
+    new_options?: { name: string }[]
+    removed_options?: { name: string }[]
+    price_changes?: { name: string; from_cents: number; to_cents: number; delta_pct: number }[]
+    uncategorised?: { name: string }[]
+  } | null
+}
+
+function SyncRunRow({ row, isOpen, onToggle }: { row: SyncRunRow; isOpen: boolean; onToggle: () => void }) {
+  const started = new Date(row.started_at)
+  const s = row.summary ?? {}
+  const added = s.new_options?.length ?? 0
+  const removed = s.removed_options?.length ?? 0
+  const priced = s.price_changes?.length ?? 0
+  const uncat = s.uncategorised?.length ?? 0
+  const summaryLine = row.status === 'error'
+    ? row.error ?? 'error'
+    : `${added} new · ${removed} removed · ${priced} price change${priced === 1 ? '' : 's'} · ${uncat} uncategorised`
+  const money = (c: number) => `$${(c / 100).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full flex items-center justify-between px-4 py-2.5 text-left text-sm hover:bg-[var(--color-background)] transition"
+      >
+        <span>
+          <span className={row.status === 'error' ? 'text-[var(--color-danger)]' : ''}>
+            {started.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+          </span>
+          <span className="text-xs text-[var(--color-muted)] ml-3">{summaryLine}</span>
+        </span>
+        <span className="text-xs text-[var(--color-muted)]">{isOpen ? '▾' : '▸'}</span>
+      </button>
+      {isOpen && (
+        <div className="px-4 pb-3 pt-1 space-y-2 text-xs">
+          {added > 0 && (
+            <div>
+              <div className="font-medium text-[var(--color-muted)] mb-0.5">New options</div>
+              <ul className="list-disc pl-5 space-y-0.5">{s.new_options!.map((o, i) => <li key={i}>{o.name}</li>)}</ul>
+            </div>
+          )}
+          {removed > 0 && (
+            <div>
+              <div className="font-medium text-[var(--color-muted)] mb-0.5">Removed</div>
+              <ul className="list-disc pl-5 space-y-0.5">{s.removed_options!.map((o, i) => <li key={i}>{o.name}</li>)}</ul>
+            </div>
+          )}
+          {priced > 0 && (
+            <div>
+              <div className="font-medium text-[var(--color-muted)] mb-0.5">Price changes (|Δ| &gt; 5%)</div>
+              <ul className="list-disc pl-5 space-y-0.5">
+                {s.price_changes!.map((p, i) =>
+                  <li key={i}>{p.name}: {money(p.from_cents)} → {money(p.to_cents)} ({p.delta_pct > 0 ? '+' : ''}{p.delta_pct}%)</li>,
+                )}
+              </ul>
+            </div>
+          )}
+          {uncat > 0 && (
+            <div>
+              <div className="font-medium text-[var(--color-muted)] mb-0.5">Uncategorised</div>
+              <ul className="list-disc pl-5 space-y-0.5">{s.uncategorised!.map((o, i) => <li key={i}>{o.name}</li>)}</ul>
+            </div>
+          )}
+          {added + removed + priced + uncat === 0 && (
+            <div className="text-[var(--color-muted)]">No changes.</div>
+          )}
+        </div>
+      )}
+    </li>
   )
 }
 
@@ -103,6 +254,7 @@ function TermsTab({ builderId, reprice }: { builderId: string; reprice: () => Pr
         commission_flat_cents: draft.commission_flat_cents,
         commission_bonus_cents: draft.commission_bonus_cents,
         commission_bonus_threshold_cents: draft.commission_bonus_threshold_cents,
+        fx_auto: draft.fx_auto,
       }
       const { error } = await supabase.from('builder_terms').update(patch).eq('builder_id', builderId)
       if (error) throw error
@@ -143,7 +295,10 @@ function TermsTab({ builderId, reprice }: { builderId: string; reprice: () => Pr
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        {num('fx_rate', 'FX (source → USD)')}
+        <FxField
+          d={d}
+          setDraft={setDraft}
+        />
         {costBased && <>
           {num('trade_discount_pct', 'Trade discount (0.25 = 25%)')}
           {num('labour_rate_cents', 'Billed labour $/hr', 100)}

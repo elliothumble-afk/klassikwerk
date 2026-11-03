@@ -847,7 +847,13 @@ function discoverVehiclesFromModels(html: string): DiscoveredVehicle[] {
     let m: RegExpExecArray | null
     while ((m = anchorRe.exec(part)) !== null) {
       const href = m[1]
-      if (!href.startsWith('/collections/')) continue
+      // Accept both relative "/collections/<slug>" and absolute
+      // "https://.../collections/<slug>" variants. CTC's models-range
+      // intermittently emits absolute URLs for newer vehicles (LC 250,
+      // G-Wagon G350/400), which the old relative-only check silently
+      // skipped — the vehicle looked like it had no exterior anchors
+      // and the sync pulled an empty collection.
+      if (!/\/collections\/[a-z0-9][a-z0-9-]*/i.test(href)) continue
       const label = stripTags(m[2])
       const cat = anchorTextToCategory(label)
       if (!cat) continue

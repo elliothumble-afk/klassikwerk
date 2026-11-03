@@ -1162,9 +1162,14 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
             const image = (product.images ?? [])[0]?.src ?? null
             const sku = variant.sku && variant.sku.trim() ? variant.sku.trim() : null
             // Shopify "360° Tour" interior listings have no SKU and a
-            // zero price — syncing them active would spam the editor
-            // with "Set a price" warnings. Honour available + priced + skued.
-            const active = Boolean(variant.available) && priceCents > 0 && Boolean(sku)
+            // zero price — those shouldn't sync. For everything else
+            // we honour priced + skued and IGNORE variant.available.
+            // CTC flags built-to-order items as available=false but
+            // they're very much orderable (the £9,750 Wide Track
+            // Bodykit, for example, is a made-to-order product).
+            // Products CTC genuinely retires drop out of the feed
+            // entirely, which the sweep handles separately.
+            const active = priceCents > 0 && Boolean(sku)
             const priority = CATEGORY_PRIORITY[cat]
             // Alloy-wheel kit SKUs end in -KIT (e.g. WACTF1258M1R-KIT).
             // Their price IS the kit price, not the per-wheel price —

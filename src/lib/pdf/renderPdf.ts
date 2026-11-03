@@ -913,3 +913,335 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
   if (upd.error) throw upd.error
   return url
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Purchase Order (Phase 7)
+// ─────────────────────────────────────────────────────────────────────
+
+// Supplier-view finish filter. The customer's exterior paint pick
+// (Body-colour paint, Raptor coating) isn't the supplier's business —
+// we paint ourselves — so swap it for "Unpainted / as supplied".
+// Interior colour/pattern + wheel finishes pass through.
+function supplierFinishView(finish: string | null): string | null {
+  if (!finish) return finish
+  const parts = finish.split(/\s*·\s*/).map(p => p.trim()).filter(Boolean)
+  const isPaint = (p: string) => /body[-\s]?colour\s*paint|body[-\s]?color\s*paint|^raptor\b/i.test(p)
+  if (parts.some(isPaint)) return 'Unpainted / as supplied'
+  return finish
+}
+
+export async function renderPurchaseOrderPdfToStorage(poId: string): Promise<string> {
+  const poRes = await supabase.from('purchase_orders')
+    .select('id, build_id, supplier_id, number, status, currency, subtotal_cents, created_at')
+    .eq('id', poId).single()
+  if (poRes.error) throw poRes.error
+  const po = poRes.data as {
+    id: string; build_id: string; supplier_id: string; number: string
+    status: 'draft' | 'sent' | 'confirmed' | 'received'
+    currency: string; subtotal_cents: number; created_at: string
+  }
+
+  const [supplierRes, linesRes, buildRes] = await Promise.all([
+    supabase.from('suppliers')
+      .select('name, email, cc_email, address, order_notes, lead_time_days')
+      .eq('id', po.supplier_id).single(),
+    supabase.from('purchase_order_lines')
+      .select('sku, description, qty, unit_cost_cents, finish, note, created_at')
+      .eq('po_id', po.id).order('created_at'),
+    supabase.from('builds')
+      .select('id, builder_id, platform_id, customer_id, vehicle_id, slot_year, slot_number')
+      .eq('id', po.build_id).single(),
+  ])
+  if (supplierRes.error) throw supplierRes.error
+  if (linesRes.error) throw linesRes.error
+  if (buildRes.error) throw buildRes.error
+  const supplier = supplierRes.data as {
+    name: string; email: string | null; cc_email: string | null
+    address: string | null; order_notes: string | null; lead_time_days: number | null
+  }
+  const lines = (linesRes.data ?? []) as {
+    sku: string | null; description: string; qty: number
+    unit_cost_cents: number; finish: string | null; note: string | null
+  }[]
+  const build = buildRes.data as {
+    id: string; builder_id: string; platform_id: string
+    customer_id: string | null; vehicle_id: string | null
+    slot_year: number | null; slot_number: number | null
+  }
+
+  const [brandRes, builderRes, platformRes, customerRes, vehicleRes] = await Promise.all([
+    supabase.from('builder_brand').select('*').eq('builder_id', build.builder_id).maybeSingle(),
+    supabase.from('builders').select('name, legal_name, operator:operators(name, brand, contact)').eq('id', build.builder_id).single(),
+    supabase.from('catalog_platforms').select('name').eq('id', build.platform_id).single(),
+    build.customer_id
+      ? supabase.from('customers').select('full_name, email').eq('id', build.customer_id).maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+    build.vehicle_id
+      ? supabase.from('vehicles').select('vin, year').eq('id', build.vehicle_id).maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+  ])
+  if (brandRes.error) throw brandRes.error
+  if (builderRes.error) throw builderRes.error
+  if (platformRes.error) throw platformRes.error
+  if ('error' in customerRes && customerRes.error) throw customerRes.error
+  if ('error' in vehicleRes && vehicleRes.error) throw vehicleRes.error
+
+  const brand = brandRes.data as {
+    logo_url: string | null; wordmark_text: string | null; color_accent: string
+    font_display: string; font_body: string
+  } | null
+  const builderRow = builderRes.data as unknown as {
+    name: string; legal_name: string | null
+    operator: {
+      name: string | null
+      brand: { logo_url?: string; wordmark_text?: string; color_accent?: string; font_display?: string; font_body?: string } | null
+      contact: { name?: string; address?: string; phone?: string; email?: string } | null
+    } | null
+  }
+  const platform = platformRes.data as { name: string }
+  const customer = (customerRes.data ?? null) as { full_name: string | null; email: string | null } | null
+  const vehicle = (vehicleRes.data ?? null) as { vin: string | null; year: number | null } | null
+
+  const opName = builderRow.operator?.name ?? 'Humble House'
+  const opBrand = builderRow.operator?.brand ?? {}
+  const opContact = builderRow.operator?.contact ?? {}
+  const shipTo = {
+    name: opName,
+    address: opContact.address ?? '',
+    phone: opContact.phone ?? null,
+    email: opContact.email ?? null,
+  }
+
+  const buildNumber = build.slot_year && build.slot_number
+    ? `${build.slot_year}-${String(build.slot_number).padStart(3, '0')}`
+    : build.id.slice(0, 8)
+
+  const input = {
+    po_number: po.number,
+    created_at: po.created_at,
+    status: po.status,
+    currency: po.currency,
+    subtotal_cents: po.subtotal_cents,
+    supplier,
+    ship_to: shipTo,
+    brand: {
+      // HH-letterhead: prefer the operator's brand so the PO reads as
+      // Humble House → supplier, not as the end builder → supplier.
+      logo_url: opBrand.logo_url ?? brand?.logo_url ?? null,
+      wordmark_text: opBrand.wordmark_text ?? opName,
+      color_accent: opBrand.color_accent ?? brand?.color_accent ?? '#1C1C1A',
+      font_display: opBrand.font_display ?? brand?.font_display ?? 'Cormorant Garamond',
+      font_body: opBrand.font_body ?? brand?.font_body ?? 'DM Sans',
+    },
+    vehicle: {
+      platform: platform.name,
+      year: vehicle?.year?.toString() ?? null,
+      vin: vehicle?.vin ?? null,
+    },
+    build_number: buildNumber,
+    customer_name: customer?.full_name ?? customer?.email ?? '—',
+    // Finish filter: a PO only reveals finishes the supplier can act
+    // on. Interior colour / pattern and wheel finishes stay. Exterior
+    // paint picks (Body-colour paint, Raptor) are internal and get
+    // replaced with "Unpainted / as supplied" so the supplier ships
+    // raw. "No finish (…)" strings pass through untouched — the
+    // supplier already knows the item is being delivered as-is.
+    lines: lines.map(l => ({
+      sku: l.sku, description: l.description, qty: l.qty,
+      unit_cost_cents: l.unit_cost_cents,
+      finish: supplierFinishView(l.finish),
+      note: l.note,
+    })),
+  }
+
+  const [{ PurchaseOrderPdf }, { registerBrandFonts }] = await Promise.all([
+    import('./PurchaseOrderPdf'),
+    import('./fonts'),
+  ])
+  registerBrandFonts(input.brand.font_display, input.brand.font_body)
+  const blob = await pdfBlob(PurchaseOrderPdf(input))
+
+  const path = `document/po_${po.number}_${Date.now()}.pdf`
+  const url = await uploadPdf(path, blob)
+  const upd = await supabase.from('purchase_orders')
+    .update({ pdf_url: url, updated_at: new Date().toISOString() })
+    .eq('id', po.id)
+  if (upd.error) throw upd.error
+  return url
+}
+
+
+// ─────────────────────────────────────────────────────────────────────
+// Build sheet (Phase 7)
+// ─────────────────────────────────────────────────────────────────────
+
+export async function renderBuildSheetPdfToStorage(buildId: string): Promise<string> {
+  const buildRes = await supabase.from('builds')
+    .select('id, builder_id, platform_id, customer_id, vehicle_id, quote_id, slot_year, slot_number, install_instructions')
+    .eq('id', buildId).single()
+  if (buildRes.error) throw buildRes.error
+  const build = buildRes.data as {
+    id: string; builder_id: string; platform_id: string
+    customer_id: string | null; vehicle_id: string | null; quote_id: string | null
+    slot_year: number | null; slot_number: number | null
+    install_instructions: string | null
+  }
+
+  const [brandRes, builderRes, platformRes, customerRes, vehicleRes, boRes, quoteRes] = await Promise.all([
+    supabase.from('builder_brand').select('logo_url, wordmark_text, font_display, font_body').eq('builder_id', build.builder_id).maybeSingle(),
+    supabase.from('builders').select('name, operator:operators(name, contact)').eq('id', build.builder_id).single(),
+    supabase.from('catalog_platforms').select('name').eq('id', build.platform_id).single(),
+    build.customer_id
+      ? supabase.from('customers').select('full_name, email').eq('id', build.customer_id).maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+    build.vehicle_id
+      ? supabase.from('vehicles').select('vin, year, colour_original, mileage').eq('id', build.vehicle_id).maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+    supabase.from('build_options')
+      .select('id, option_id, quantity, instruction')
+      .eq('build_id', buildId),
+    build.quote_id
+      ? supabase.from('quote_options')
+          .select('option_id, finish_note, labour_cents, materials_cents, quote_option_finishes(catalog_finish_sets(name, sort), catalog_finishes(name))')
+          .eq('quote_id', build.quote_id)
+      : Promise.resolve({ data: [] as unknown[], error: null }),
+  ])
+  if (brandRes.error) throw brandRes.error
+  if (builderRes.error) throw builderRes.error
+  if (platformRes.error) throw platformRes.error
+  if ('error' in customerRes && customerRes.error) throw customerRes.error
+  if ('error' in vehicleRes && vehicleRes.error) throw vehicleRes.error
+  if (boRes.error) throw boRes.error
+  if ('error' in quoteRes && quoteRes.error) throw quoteRes.error
+
+  const brand = brandRes.data as { logo_url: string | null; wordmark_text: string | null; font_display: string; font_body: string } | null
+  const builderRow = builderRes.data as unknown as { name: string; operator: { name: string | null; contact: { name?: string; phone?: string; email?: string } | null } | null }
+  const platform = platformRes.data as { name: string }
+  const customer = (customerRes.data ?? null) as { full_name: string | null; email: string | null } | null
+  const vehicle = (vehicleRes.data ?? null) as { vin: string | null; year: number | null; colour_original: string | null; mileage: number | null } | null
+  const buildOpts = (boRes.data ?? []) as { id: string; option_id: string; quantity: number; instruction: string | null }[]
+  const qoRows = (quoteRes.data ?? []) as unknown as { option_id: string; finish_note: string | null; labour_cents: number | null; materials_cents: number | null; quote_option_finishes: { catalog_finish_sets: { name: string; sort: number } | null; catalog_finishes: { name: string } | null }[] }[]
+
+  const optionIds = buildOpts.map(bo => bo.option_id)
+  let optionData: Array<{ id: string; name: string; code: string | null; kit_sku: string | null; category_id: string | null; lead_image_url: string | null; swatch_image_url: string | null }> = []
+  let categoryById = new Map<string, { name: string; section: string | null; install_hours: number | null; paint_hours: number | null; materials_cents: number | null; sort: number }>()
+  let imagesByOption = new Map<string, string>()
+
+  if (optionIds.length) {
+    const [optsRes, imgsRes] = await Promise.all([
+      supabase.from('catalog_options').select('id, name, code, kit_sku, category_id, lead_image_url, swatch_image_url').in('id', optionIds),
+      supabase.from('catalog_option_images').select('option_id, url, sort').in('option_id', optionIds).order('sort'),
+    ])
+    if (optsRes.error) throw optsRes.error
+    if (imgsRes.error) throw imgsRes.error
+    optionData = (optsRes.data ?? []) as unknown as typeof optionData
+    for (const r of (imgsRes.data ?? []) as { option_id: string; url: string; sort: number }[]) {
+      if (!imagesByOption.has(r.option_id) && !/\.gif(?:\?|$)/i.test(r.url)) {
+        imagesByOption.set(r.option_id, r.url)
+      }
+    }
+    const catIds = Array.from(new Set(optionData.map(o => o.category_id).filter((v): v is string => !!v)))
+    if (catIds.length) {
+      const catsRes = await supabase.from('catalog_categories')
+        .select('id, name, lookbook_section, lookbook_sort, install_hours, paint_hours, paint_materials_cents').in('id', catIds)
+      if (catsRes.error) throw catsRes.error
+      for (const c of (catsRes.data ?? []) as unknown as { id: string; name: string; lookbook_section: string | null; lookbook_sort: number; install_hours: number | null; paint_hours: number | null; paint_materials_cents: number | null }[]) {
+        categoryById.set(c.id, { name: c.name, section: c.lookbook_section, install_hours: c.install_hours, paint_hours: c.paint_hours, materials_cents: c.paint_materials_cents, sort: c.lookbook_sort ?? 999 })
+      }
+    }
+  }
+
+  const optionById = new Map(optionData.map(o => [o.id, o]))
+  const qoByOption = new Map(qoRows.map(r => [r.option_id, r]))
+
+  // Build line list, sorted by category sort then name.
+  const lines = buildOpts
+    .map(bo => {
+      const o = optionById.get(bo.option_id)
+      if (!o) return null
+      const cat = o.category_id ? categoryById.get(o.category_id) : null
+      const qo = qoByOption.get(bo.option_id)
+      const finishes = qo?.quote_option_finishes
+        ? (qo.quote_option_finishes
+            .slice()
+            .sort((a, b) => (a.catalog_finish_sets?.sort ?? 0) - (b.catalog_finish_sets?.sort ?? 0))
+            .map(x => x.catalog_finishes?.name).filter(Boolean) as string[]).join(' · ')
+        : null
+      return {
+        section: cat?.section ?? 'Other',
+        sectionSort: cat?.sort ?? 999,
+        name: o.name,
+        sku: o.kit_sku ?? o.code ?? null,
+        qty: bo.quantity,
+        finishes: finishes || null,
+        finish_note: qo?.finish_note ?? null,
+        instruction: bo.instruction,
+        install_hours: cat?.install_hours ?? null,
+        paint_hours: cat?.paint_hours ?? null,
+        materials_cents: qo?.materials_cents ?? cat?.materials_cents ?? null,
+        size: null,
+        thumbnail_url: imagesByOption.get(o.id) ?? o.lead_image_url ?? o.swatch_image_url ?? null,
+      }
+    })
+    .filter((v): v is NonNullable<typeof v> => !!v)
+    .sort((a, b) => a.sectionSort - b.sectionSort || a.name.localeCompare(b.name))
+
+  const buildNumber = build.slot_year && build.slot_number
+    ? `${build.slot_year}-${String(build.slot_number).padStart(3, '0')}`
+    : build.id.slice(0, 8)
+
+  // Version: count existing build sheet media rows for this build.
+  const mediaRes = await supabase.from('media')
+    .select('id', { count: 'exact', head: true })
+    .eq('build_id', buildId)
+    .ilike('storage_path', 'document/build_sheet_%')
+  const version = (mediaRes.count ?? 0) + 1
+
+  const opContact = builderRow.operator?.contact ?? {}
+  const input = {
+    build_number: buildNumber,
+    customer_name: customer?.full_name ?? customer?.email ?? '—',
+    vehicle: {
+      platform: platform.name,
+      year: vehicle?.year?.toString() ?? null,
+      colour: vehicle?.colour_original ?? null,
+      vin: vehicle?.vin ?? null,
+      mileage_in: vehicle?.mileage?.toString() ?? null,
+    },
+    key_dates: [
+      { label: 'Build created', date: new Date().toLocaleDateString('en-US') },
+    ],
+    hh_contact: {
+      name: builderRow.operator?.name ?? opContact.name ?? 'Humble House',
+      phone: opContact.phone ?? null,
+      email: opContact.email ?? null,
+    },
+    instructions_markdown: build.install_instructions,
+    brand: {
+      logo_url: brand?.logo_url ?? null,
+      wordmark_text: brand?.wordmark_text ?? builderRow.name,
+      font_display: brand?.font_display ?? 'Cormorant Garamond',
+      font_body: brand?.font_body ?? 'DM Sans',
+    },
+    lines,
+    version,
+  }
+
+  const [{ BuildSheetPdf }, { registerBrandFonts }] = await Promise.all([
+    import('./BuildSheetPdf'),
+    import('./fonts'),
+  ])
+  registerBrandFonts(input.brand.font_display, input.brand.font_body)
+  const blob = await pdfBlob(BuildSheetPdf(input))
+
+  const path = `document/build_sheet_${buildId}_v${version}_${Date.now()}.pdf`
+  const url = await uploadPdf(path, blob)
+  const ins = await supabase.from('media').insert({
+    build_id: buildId,
+    storage_path: path,
+    kind: 'document' as const,
+    caption: `Build sheet v${version}`,
+  })
+  if (ins.error) throw ins.error
+  return url
+}

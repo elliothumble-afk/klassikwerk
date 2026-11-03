@@ -174,24 +174,23 @@ function stripLeadingTitle(desc: string | null, cleanedName: string): string {
   if (!desc) return ''
   const trimmed = desc.trim()
   if (!trimmed) return ''
-  // Prefer the em-dash boundary + the first upper-cased word after it,
-  // which matches the Shopify "Title – Platform Prose..." pattern.
-  const dashIdx = trimmed.search(/\s[–—-]\s/)
-  if (dashIdx !== -1 && dashIdx < 90) {
-    const after = trimmed.slice(dashIdx + 3)
-    // Jump to the first sentence-start capital after the platform repeat.
-    const start = after.search(/\s[A-Z][a-z]/)
-    if (start !== -1 && start < 80) return after.slice(start + 1).trim()
-  }
-  // Fallback: first sentence. If it echoes ≥2 title words, drop it.
-  const sentences = trimmed.split(/(?<=[.!?])\s+(?=[A-Z"])/)
-  if (sentences.length >= 2) {
-    const firstWords = new Set(
-      cleanedName.toLowerCase().split(/\s+/).filter(w => w.length > 3),
-    )
-    const firstSentWords = sentences[0].toLowerCase().split(/\W+/)
-    const shared = firstSentWords.filter(w => firstWords.has(w)).length
-    if (shared >= 2) return sentences.slice(1).join(' ').trim()
+  // Shopify often opens interior copy with the title repeated and then
+  // the real prose joined mid-sentence (no punctuation). The user's
+  // rule: only strip a leading platform phrase when it ends at a
+  // sentence boundary — i.e. a period/exclamation/question terminator,
+  // a colon, or a space-dash-space. Never cut inside a sentence.
+  const boundaryMatch = /^(.{3,120}?)(\.\s+|!\s+|\?\s+|:\s+|\s[–—-]\s)/.exec(trimmed)
+  if (boundaryMatch) {
+    const lead = boundaryMatch[1]
+    const leadWords = lead.toLowerCase().split(/\W+/).filter(w => w.length > 3)
+    const titleWords = new Set(cleanedName.toLowerCase().split(/\s+/).filter(w => w.length > 3))
+    const shared = leadWords.filter(w => titleWords.has(w)).length
+    // Only strip when the lead segment visibly echoes the title (≥2
+    // shared four-letter-plus words) — otherwise we'd eat real copy
+    // that merely starts with a short clause.
+    if (shared >= 2) {
+      return trimmed.slice(boundaryMatch[0].length).trim()
+    }
   }
   return trimmed
 }
@@ -251,7 +250,7 @@ export function LookbookPdf(input: LookbookPdfInput) {
     builder, brand, terms, operator_contact, closing_signer,
     platform, all_platform_names, tier, options, tyres, wheel_options,
     customer_first_name, theme_words, vehicle_colour, vehicle_year,
-    page2_hero_url,
+    page2_hero_url, page2_hero_is_cutout, labour_rate_cents,
   } = input
   const currency = terms.currency
   // The Lookbook has a fixed type system (Cormorant Garamond + DM Sans)
@@ -331,8 +330,20 @@ export function LookbookPdf(input: LookbookPdfInput) {
   )
 
   // ─── Shared row renderers ───────────────────────────────────────
-  function investLine(item: string, finish: string, qty: string, price: string, key: string) {
-    return <InvestRow key={key} item={item} finish={finish} qty={qty} price={price} />
+  function investLine(
+    item: string, finish: string, qty: string,
+    parts: string, fitting: string, price: string,
+    key: string, padV?: number,
+  ) {
+    return <InvestRow key={key} item={item} finish={finish} qty={qty}
+      parts={parts} fitting={fitting} price={price} padV={padV} />
+  }
+
+  function fittingCell(hours: number | null, cents: number | null): string {
+    if (cents == null || cents <= 0) return ''
+    const dollars = money(cents, currency)
+    if (hours != null && hours > 0) return `${hours} h · ${dollars}`
+    return dollars
   }
 
   // The at-a-glance "Base vehicle" line should read as "Chassis · Years".
@@ -370,18 +381,66 @@ export function LookbookPdf(input: LookbookPdfInput) {
         <Footer dark />
       </Page>
 
-      {/* ─── 2. Your {platform} — full-bleed hero ─── */}
-      {/* Hero fills the page; a stacked dark-overlay footer carries
-          THE FOUNDATION label, "{year} {platform}" title and vehicle
-          colour. Nothing else lives on this page. */}
+      {/* ─── 2. Your {platform} ─── */}
+      {/* Two render modes decided by the sampled hero. Photos get a
+          full-bleed background + dark overlay band. Cutouts (studio
+          renders on white, detected by near-white corners in
+          renderPdf) get a cream page with the image contained in the
+          upper 62% and a left-aligned text block beneath. */}
       {(() => {
         const title = [vehicle_year ? String(vehicle_year) : null, platform.name]
           .filter(Boolean).join(' ')
+
+        if (page2_hero_is_cutout) {
+          const imageH = Math.round(PAGE_H * 0.62)
+          return (
+            <Page key="page2" size={{ width: PAGE_W, height: PAGE_H }} style={base.cream}>
+              <View style={{
+                position: 'absolute', top: 0, left: 0,
+                width: PAGE_W, height: imageH,
+                paddingTop: 32,
+                justifyContent: 'center', alignItems: 'center',
+              }}>
+                {page2_hero_url && (
+                  <Image
+                    src={page2_hero_url}
+                    style={{
+                      width: PAGE_W - 112,
+                      height: imageH - 48,
+                      objectFit: 'contain',
+                    }}
+                  />
+                )}
+              </View>
+              <View style={{
+                position: 'absolute', left: 56, right: 56, top: imageH + 20,
+              }}>
+                <Text style={base.label}>THE FOUNDATION</Text>
+                <Text style={{
+                  fontFamily: display, fontSize: 36, color: INK,
+                  marginTop: 8, lineHeight: 1.1,
+                }}>
+                  {title}
+                </Text>
+                {vColour?.name && (
+                  <Text style={{
+                    fontFamily: display, fontSize: 16, color: INK + 'B0',
+                    marginTop: 4,
+                  }}>
+                    {vColour.name}
+                  </Text>
+                )}
+              </View>
+            </Page>
+          )
+        }
+
+        // Photo mode: full-bleed hero with a stacked dark overlay
+        // approximating a bottom-to-top gradient without @react-pdf
+        // gradient primitives.
         const footerH = 210
-        // Three stacked semi-transparent panels approximate a dark
-        // bottom-to-top gradient without @react-pdf gradient primitives.
         const bands = [
-          { h: footerH,            opacity: 0.85 },  // bottom (darkest)
+          { h: footerH,                   opacity: 0.85 },
           { h: Math.round(footerH * 0.70), opacity: 0.55 },
           { h: Math.round(footerH * 0.40), opacity: 0.25 },
         ]
@@ -400,7 +459,6 @@ export function LookbookPdf(input: LookbookPdfInput) {
                 }}
               />
             )}
-            {/* Dark gradient-approx overlay. */}
             {bands.map((b, i) => (
               <View key={i} style={{
                 position: 'absolute', left: 0, right: 0, bottom: 0,
@@ -443,7 +501,37 @@ export function LookbookPdf(input: LookbookPdfInput) {
             o.finishes.map(f => f.name).filter(Boolean).join(' · '),
             o.finish_note ?? '',
           ].filter(Boolean).join(' — ')
+          // Chosen colour for the "Shown in X — yours in Y" caption:
+          // prefer the colour set over the pattern set so we don't
+          // echo back the pattern name as "yours in Designo".
+          const chosenColour = o.finishes.find(f => !/pattern/i.test(f.set_name))?.name
+            ?? o.finishes[0]?.name
+            ?? null
+          const shownLine = o.finish_image_source_colour && chosenColour
+            && o.finish_image_source_colour.toLowerCase() !== chosenColour.toLowerCase()
+            ? `Shown in ${o.finish_image_source_colour} — yours in ${chosenColour}`
+            : null
           const half = PAGE_W / 2
+
+          // Null-image: cream, centred text block. Prevents leather
+          // interior options from falling through to a stock OEM shot.
+          if (!img) {
+            return (
+              <Page key={`opt-${o.option_id}`} size={{ width: PAGE_W, height: PAGE_H }} style={base.cream}>
+                <View style={{ padding: 96, height: PAGE_H, justifyContent: 'center' }}>
+                  <Text style={base.label}>{(o.section ?? 'OPTION').toUpperCase()}</Text>
+                  <Text style={[base.h2, { marginTop: 10, fontSize: 36 }]}>{name}</Text>
+                  {desc && (
+                    <Text style={[base.body, { marginTop: 18, maxWidth: PAGE_W - 240 }]}>{desc}</Text>
+                  )}
+                  {finishLine && (
+                    <Text style={[base.body, { marginTop: 16, fontSize: 10, color: BRONZE }]}>{finishLine}</Text>
+                  )}
+                </View>
+              </Page>
+            )
+          }
+
           return (
             <Page key={`opt-${o.option_id}`} size={{ width: PAGE_W, height: PAGE_H }} style={{
               backgroundColor: CREAM, color: INK, fontFamily: body, padding: 0,
@@ -453,11 +541,7 @@ export function LookbookPdf(input: LookbookPdfInput) {
                 width: PAGE_W, height: PAGE_H,
               }}>
                 <View style={{ width: half, height: PAGE_H }}>
-                  {img ? (
-                    <Image src={img} style={{ width: half, height: PAGE_H, objectFit: 'cover' }} />
-                  ) : (
-                    <View style={{ width: half, height: PAGE_H, backgroundColor: CHARCOAL + '18' }} />
-                  )}
+                  <Image src={img} style={{ width: half, height: PAGE_H, objectFit: 'cover' }} />
                 </View>
                 <View style={{ width: half, height: PAGE_H, padding: 48, justifyContent: 'center' }}>
                   <Text style={base.label}>{(o.section ?? 'OPTION').toUpperCase()}</Text>
@@ -468,9 +552,11 @@ export function LookbookPdf(input: LookbookPdfInput) {
                   {finishLine && (
                     <Text style={[base.body, { marginTop: 16, fontSize: 10, color: BRONZE }]}>{finishLine}</Text>
                   )}
+                  {shownLine && (
+                    <Text style={[base.body, { marginTop: 8, fontSize: 9, color: INK + 'A0', fontStyle: 'italic' }]}>{shownLine}</Text>
+                  )}
                 </View>
               </View>
-              {/* No footer — full-bleed image side would overlap. */}
             </Page>
           )
         }),
@@ -587,44 +673,70 @@ export function LookbookPdf(input: LookbookPdfInput) {
       <Page size={{ width: PAGE_W, height: PAGE_H }} style={base.cream}>
         <Text style={base.label}>INVESTMENT</Text>
         <Text style={[base.h2, { marginTop: 2 }]}>Your package</Text>
-        <View style={{ marginTop: 10 }}>
-          <View style={{ flexDirection: 'row', borderBottom: `0.5 solid ${INK}66`, paddingBottom: 5 }}>
-            <Text style={[base.label, { flex: 2 }]}>Item</Text>
-            <Text style={[base.label, { flex: 1.5 }]}>Finish</Text>
-            <Text style={[base.label, { width: 48, textAlign: 'right' }]}>Qty</Text>
-            <Text style={[base.label, { width: 110, textAlign: 'right' }]}>Price</Text>
-          </View>
-          {tier.base_price_cents != null && tier.base_price_cents > 0 && investLine(tier.name, '', '', money(tier.base_price_cents, currency), 'tier')}
-          {sections.flatMap(sec => sec.opts.map(o => investLine(
-            cleanName(o.name, platform.name, o.code, all_platform_names),
-            o.finishes.map(f => f.name).join(', '),
-            o.sold_as_set ? 'Set of 4' : o.quantity > 1 ? `×${o.quantity}` : '',
-            money(o.line_price_cents, currency),
-            o.option_id,
-          )))}
-          {wheel_options.map(w => investLine(
-            cleanName(w.name, platform.name, w.code, all_platform_names),
-            w.finishes.map(f => f.name).join(', '),
-            w.sold_as_set ? 'Set of 4' : w.quantity > 1 ? `×${w.quantity}` : '',
-            money(w.line_price_cents, currency),
-            w.option_id,
-          ))}
-          {tyres.map((t: LookbookTyre, i) => investLine(
-            cleanName(t.name, platform.name, t.code, all_platform_names),
-            '',
-            t.sold_as_set ? 'Set of 4' : t.quantity > 1 ? `×${t.quantity}` : '',
-            money(t.line_price_cents, currency),
-            `tyre-${i}`,
-          ))}
-          <View style={{ flexDirection: 'row', paddingTop: 6, marginTop: 2, borderTop: `0.5 solid ${INK}66` }}>
-            <Text style={[base.body, { flex: 2, fontFamily: display, fontSize: 14 }]}>Total</Text>
-            <Text style={[base.body, { flex: 1.5 }]} />
-            <Text style={[base.body, { width: 48 }]} />
-            <Text style={[base.body, { width: 110, textAlign: 'right', fontFamily: display, fontSize: 14, color: BRONZE }]}>
-              {money(input.price_cents, currency)}
-            </Text>
-          </View>
-        </View>
+        {(() => {
+          // Collate all lines so we can scale padding to fit 16 on one page.
+          const lines: Array<{ item: string; finish: string; qty: string; parts: string; fitting: string; price: string; key: string }> = []
+          if (tier.base_price_cents != null && tier.base_price_cents > 0) {
+            lines.push({
+              item: tier.name, finish: '', qty: '',
+              parts: money(tier.base_price_cents, currency),
+              fitting: '',
+              price: money(tier.base_price_cents, currency),
+              key: 'tier',
+            })
+          }
+          const qtyText = (sold_as_set: boolean, quantity: number) =>
+            sold_as_set ? 'Set of 4' : quantity > 1 ? `×${quantity}` : ''
+          const pushOpt = (o: LookbookOption | (LookbookOption & { from: 'wheel' })) => {
+            lines.push({
+              item: cleanName(o.name, platform.name, o.code, all_platform_names),
+              finish: o.finishes.map(f => f.name).join(', '),
+              qty: qtyText(o.sold_as_set, o.quantity),
+              parts: o.parts_cents != null ? money(o.parts_cents, currency) : '',
+              fitting: fittingCell(o.fitting_hours, o.fitting_cents),
+              price: money(o.line_price_cents, currency),
+              key: o.option_id,
+            })
+          }
+          sections.forEach(sec => sec.opts.forEach(pushOpt))
+          wheel_options.forEach(pushOpt)
+          tyres.forEach((t: LookbookTyre, i) => {
+            lines.push({
+              item: cleanName(t.name, platform.name, t.code, all_platform_names),
+              finish: '',
+              qty: qtyText(t.sold_as_set, t.quantity),
+              parts: money(t.line_price_cents, currency),
+              fitting: '',
+              price: money(t.line_price_cents, currency),
+              key: `tyre-${i}`,
+            })
+          })
+          // Density: 1-10 → 3, 11-13 → 2, 14-16 → 1.
+          const padV = lines.length <= 10 ? 3 : lines.length <= 13 ? 2 : 1
+          return (
+            <View style={{ marginTop: 10 }}>
+              <View style={{ flexDirection: 'row', borderBottom: `0.5 solid ${INK}66`, paddingBottom: 5 }}>
+                <Text style={[base.label, { flex: 2 }]}>Item</Text>
+                <Text style={[base.label, { flex: 1.4 }]}>Finish</Text>
+                <Text style={[base.label, { width: 36, textAlign: 'right' }]}>Qty</Text>
+                <Text style={[base.label, { width: 70, textAlign: 'right' }]}>Parts</Text>
+                <Text style={[base.label, { width: 110, textAlign: 'right' }]}>Fitting</Text>
+                <Text style={[base.label, { width: 90, textAlign: 'right' }]}>Price</Text>
+              </View>
+              {lines.map(l => investLine(l.item, l.finish, l.qty, l.parts, l.fitting, l.price, l.key, padV))}
+              <View style={{ flexDirection: 'row', paddingTop: 6, marginTop: 2, borderTop: `0.5 solid ${INK}66` }}>
+                <Text style={[base.body, { flex: 2, fontFamily: display, fontSize: 14 }]}>Total</Text>
+                <Text style={[base.body, { flex: 1.4 }]} />
+                <Text style={[base.body, { width: 36 }]} />
+                <Text style={[base.body, { width: 70 }]} />
+                <Text style={[base.body, { width: 110 }]} />
+                <Text style={[base.body, { width: 90, textAlign: 'right', fontFamily: display, fontSize: 14, color: BRONZE }]}>
+                  {money(input.price_cents, currency)}
+                </Text>
+              </View>
+            </View>
+          )
+        })()}
 
         {/* Keep PAYMENT SCHEDULE + the "Prices include…" validity note
             on the same page by wrapping both in a non-breaking View.
@@ -645,7 +757,7 @@ export function LookbookPdf(input: LookbookPdfInput) {
             </View>
           )}
           <Text style={[base.small, { marginTop: 8 }]}>
-            Prices include import shipping, duties and fitting. Valid until {validUntil}.
+            Parts include import shipping and duties. Fitting is quoted at {money(labour_rate_cents, currency)}/hr and includes paint and materials where shown. Valid until {validUntil}.
           </Text>
         </View>
         <Footer />
@@ -690,13 +802,17 @@ function GlanceRow({ label, value, padV = 10 }: { label: string; value: string; 
   )
 }
 
-function InvestRow({ item, finish, qty, price }: { item: string; finish: string; qty: string; price: string }) {
+function InvestRow({ item, finish, qty, parts, fitting, price, padV = 3 }: {
+  item: string; finish: string; qty: string; parts: string; fitting: string; price: string; padV?: number
+}) {
   return (
-    <View style={{ flexDirection: 'row', paddingVertical: 3, borderBottom: `0.5 solid ${INK}22` }}>
+    <View style={{ flexDirection: 'row', paddingVertical: padV, borderBottom: `0.5 solid ${INK}22` }}>
       <Text style={{ fontFamily: 'Helvetica', fontSize: 9, flex: 2 }}>{item}</Text>
-      <Text style={{ fontFamily: 'Helvetica', fontSize: 9, flex: 1.5, color: INK + '99' }}>{finish}</Text>
-      <Text style={{ fontFamily: 'Helvetica', fontSize: 9, width: 48, textAlign: 'right', color: INK + '99' }}>{qty}</Text>
-      <Text style={{ fontFamily: 'Helvetica', fontSize: 9, width: 110, textAlign: 'right' }}>{price}</Text>
+      <Text style={{ fontFamily: 'Helvetica', fontSize: 9, flex: 1.4, color: INK + '99' }}>{finish}</Text>
+      <Text style={{ fontFamily: 'Helvetica', fontSize: 9, width: 36, textAlign: 'right', color: INK + '99' }}>{qty}</Text>
+      <Text style={{ fontFamily: 'Helvetica', fontSize: 9, width: 70, textAlign: 'right', color: INK + '99' }}>{parts}</Text>
+      <Text style={{ fontFamily: 'Helvetica', fontSize: 9, width: 110, textAlign: 'right', color: INK + '99' }}>{fitting}</Text>
+      <Text style={{ fontFamily: 'Helvetica', fontSize: 9, width: 90, textAlign: 'right' }}>{price}</Text>
     </View>
   )
 }

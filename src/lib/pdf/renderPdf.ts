@@ -454,30 +454,41 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
   // Rows written by the sync are source='shopify'; ops uploads are
   // 'manual' and take precedence at the same specificity level.
   const finishImagesRes = await supabase.from('catalog_finish_images')
-    .select('finish_id, pattern_finish_id, platform_id, image_url, source')
+    .select('finish_id, pattern_finish_id, platform_id, image_url, source, source_colour_label')
     .eq('builder_id', quote.builder_id)
   if (finishImagesRes.error) throw finishImagesRes.error
-  type FimRow = { finish_id: string; pattern_finish_id: string | null; platform_id: string | null; image_url: string; source: 'shopify' | 'manual' }
+  type FimRow = {
+    finish_id: string | null
+    pattern_finish_id: string | null
+    platform_id: string | null
+    image_url: string
+    source: 'shopify' | 'manual'
+    source_colour_label: string | null
+  }
   const finishImages = (finishImagesRes.data ?? []) as FimRow[]
-  function resolveFinishImage(platformId: string, colourId: string | null, patternId: string | null): string | null {
+  interface ResolvedFim { url: string; sourceColourLabel: string | null; exact: boolean }
+  function resolveFinishImage(platformId: string, colourId: string | null, patternId: string | null): ResolvedFim | null {
     if (!patternId) return null
     const prefer = (a: FimRow, b: FimRow) => (a.source === 'manual' ? -1 : b.source === 'manual' ? 1 : 0)
-    const byLevel = (filterFn: (r: FimRow) => boolean) =>
-      finishImages.filter(filterFn).sort(prefer)[0]?.image_url ?? null
-    // L1: platform + colour + pattern.
+    const pick = (filterFn: (r: FimRow) => boolean, exact: boolean): ResolvedFim | null => {
+      const hit = finishImages.filter(filterFn).sort(prefer)[0]
+      return hit ? { url: hit.image_url, sourceColourLabel: hit.source_colour_label, exact } : null
+    }
+    // L1: exact platform + colour + pattern.
     if (colourId) {
-      const hit = byLevel(r => r.pattern_finish_id === patternId && r.finish_id === colourId && r.platform_id === platformId)
+      const hit = pick(r => r.pattern_finish_id === patternId && r.finish_id === colourId && r.platform_id === platformId, true)
       if (hit) return hit
     }
     // L2: colour + pattern (platform-agnostic).
     if (colourId) {
-      const hit = byLevel(r => r.pattern_finish_id === patternId && r.finish_id === colourId && r.platform_id === null)
+      const hit = pick(r => r.pattern_finish_id === patternId && r.finish_id === colourId && r.platform_id === null, true)
       if (hit) return hit
     }
-    // L3: pattern — any row with this pattern, preferring same platform.
-    const samePlat = byLevel(r => r.pattern_finish_id === patternId && r.platform_id === platformId)
+    // L3: pattern-only on same platform.
+    const samePlat = pick(r => r.pattern_finish_id === patternId && r.finish_id === null && r.platform_id === platformId, false)
     if (samePlat) return samePlat
-    return byLevel(r => r.pattern_finish_id === patternId)
+    // L4: pattern-only, platform-agnostic.
+    return pick(r => r.pattern_finish_id === patternId && r.finish_id === null, false)
   }
 
   const [optsRes, imagesRes, groupsRes] = await Promise.all([
@@ -551,10 +562,9 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
 
     const cat = o.category_id ? categoryById.get(o.category_id) : null
 
-    // Resolve a leather-interior image via the finish-image ladder
-    // before falling back to the option's own lead/first image.
+    // Resolve a leather-interior image via the finish-image ladder.
     // The resolver only fires when there's a pattern finish on the
-    // quote — other categories keep the lead image path unchanged.
+    // quote — other categories keep the lead-image path unchanged.
     const colourFinish = (qo.quote_option_finishes ?? [])
       .find(f => f.catalog_finish_sets?.name === 'Interior colour') ?? null
     const patternFinish = (qo.quote_option_finishes ?? [])
@@ -562,10 +572,33 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
     const finishImg = patternFinish
       ? resolveFinishImage(quote.platform_id, colourFinish?.finish_id ?? null, patternFinish.finish_id)
       : null
-    const img = finishImg
-      ?? o.lead_image_url
-      ?? imagesByOption.get(o.id)?.[0]?.url
-      ?? o.swatch_image_url
+
+    const isLeatherInterior = cat?.name === 'Leather interior'
+    let img: string | null
+    let finishImageSourceColour: string | null = null
+    if (isLeatherInterior) {
+      // Leather interior: never show a stock OEM photo. Use only
+      // the finish-image match; if we don't have one, leave the
+      // image slot blank so the renderer draws a text-only panel.
+      img = finishImg?.url ?? null
+      finishImageSourceColour = finishImg && !finishImg.exact
+        ? finishImg.sourceColourLabel
+        : null
+    } else {
+      img = finishImg?.url
+        ?? o.lead_image_url
+        ?? imagesByOption.get(o.id)?.[0]?.url
+        ?? o.swatch_image_url
+    }
+
+    // Investment columns need the parts + fitting split per option.
+    // parts_cents is parts_sell × qty (already baked into the snapshot
+    // partsSell); fitting = labour + materials; hours = labour/rate.
+    const fittingCents = (qo.labour_cents ?? 0) + (qo.materials_cents ?? 0)
+    const labourRateCents = (terms as unknown as { labour_rate_cents?: number }).labour_rate_cents ?? 20000
+    const fittingHours = labourRateCents > 0 && qo.labour_cents != null
+      ? Math.round(qo.labour_cents / labourRateCents)
+      : null
 
     const lookbook: LookbookOption = {
       option_id: o.id,
@@ -574,7 +607,11 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
       description: o.description,
       image_url: img,
       swatch_image_url: o.swatch_image_url,
+      finish_image_source_colour: finishImageSourceColour,
       line_price_cents: linePrice,
+      parts_cents: partsSell,
+      fitting_cents: fittingCents,
+      fitting_hours: fittingHours,
       parts_sell_cents: o.parts_sell_cents,
       quantity: qty,
       sold_as_set: o.sold_as_set,
@@ -639,6 +676,52 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
     && !!platformRow.hero_image_height
     && (platformRow.hero_image_width / platformRow.hero_image_height) > 1.6
 
+  // Cutout detection: sample the four corners of the hero in a hidden
+  // canvas. ≥3 near-white (within 8 of #FFFFFF) means it's a studio
+  // cutout, not a photograph — the lookbook renders those on cream
+  // without the dark overlay band. Non-browser envs skip detection.
+  async function sampleCutout(url: string | null): Promise<boolean> {
+    if (!url || typeof window === 'undefined' || typeof Image === 'undefined') return false
+    return new Promise<boolean>(resolve => {
+      const img = new Image()
+      const to = setTimeout(() => resolve(false), 5000)
+      img.crossOrigin = 'anonymous'
+      img.onload = () => {
+        clearTimeout(to)
+        try {
+          const w = img.naturalWidth, h = img.naturalHeight
+          if (!w || !h) return resolve(false)
+          const canvas = document.createElement('canvas')
+          const sw = Math.min(240, w), sh = Math.min(240, h)
+          canvas.width = sw; canvas.height = sh
+          const ctx = canvas.getContext('2d')
+          if (!ctx) return resolve(false)
+          ctx.drawImage(img, 0, 0, sw, sh)
+          const samplePatch = (x: number, y: number) => {
+            const d = ctx.getImageData(x, y, 8, 8).data
+            let r = 0, g = 0, b = 0, n = 0
+            for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i+1]; b += d[i+2]; n++ }
+            return [r/n, g/n, b/n]
+          }
+          const corners = [
+            samplePatch(2, 2),
+            samplePatch(sw - 10, 2),
+            samplePatch(2, sh - 10),
+            samplePatch(sw - 10, sh - 10),
+          ]
+          const nearWhite = (c: number[]) =>
+            Math.abs(c[0] - 255) <= 8 && Math.abs(c[1] - 255) <= 8 && Math.abs(c[2] - 255) <= 8
+          resolve(corners.filter(nearWhite).length >= 3)
+        } catch {
+          resolve(false)
+        }
+      }
+      img.onerror = () => { clearTimeout(to); resolve(false) }
+      img.src = url
+    })
+  }
+  const page2HeroIsCutout = await sampleCutout(page2HeroUrl)
+
   const input: LookbookPdfInput = {
     quote_id: quote.id,
     version: quote.version,
@@ -662,6 +745,8 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
     vehicle_year: quote.vehicle_year,
     page2_hero_url: page2HeroUrl,
     page2_hero_is_wide: page2HeroIsWide,
+    page2_hero_is_cutout: page2HeroIsCutout,
+    labour_rate_cents: (terms as unknown as { labour_rate_cents?: number }).labour_rate_cents ?? 20000,
   }
 
   const [{ LookbookPdf }, { registerBrandFonts }] = await Promise.all([

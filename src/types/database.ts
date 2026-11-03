@@ -484,11 +484,12 @@ export type Database = {
           id: string
           builder_id: string
           finish_set_id: string
-          finish_id: string
+          finish_id: string | null
           pattern_finish_id: string | null
           platform_id: string | null
           image_url: string
           source: 'shopify' | 'manual'
+          source_colour_label: string | null
           sort: number
           created_at: string
           updated_at: string
@@ -497,11 +498,12 @@ export type Database = {
           id?: string
           builder_id: string
           finish_set_id: string
-          finish_id: string
+          finish_id?: string | null
           pattern_finish_id?: string | null
           platform_id?: string | null
           image_url: string
           source?: 'shopify' | 'manual'
+          source_colour_label?: string | null
           sort?: number
           created_at?: string
           updated_at?: string
@@ -509,6 +511,7 @@ export type Database = {
         Update: {
           image_url?: string
           source?: 'shopify' | 'manual'
+          source_colour_label?: string | null
           sort?: number
           platform_id?: string | null
           updated_at?: string

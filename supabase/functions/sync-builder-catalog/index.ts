@@ -1496,13 +1496,19 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
       if (f.finish_set_id === patternSetId) patternByLc.set(f.name.toLowerCase(), f.id)
       if (f.finish_set_id === colourSetId)  colourByLc.set(f.name.toLowerCase(), f.id)
     }
-    // Shopify ships richer colour vocab than our catalog's three
-    // Interior colour options. Alias the common ones onto our ids.
-    const aliasToColour = (title: string): string | null => {
-      const lc = title.toLowerCase()
-      if (/\btan\b/.test(lc) || /british\s+tan/.test(lc)) return colourByLc.get('tan') ?? null
-      if (/\bblack\b/.test(lc) || /volcanic\s+black/.test(lc)) return colourByLc.get('black') ?? null
-      return null
+    // Richer Shopify colour vocab aliased to our catalog colours.
+    // Returns both the catalog finish id (when the aliased word maps)
+    // AND the raw label pulled from the title, so pattern-only rows
+    // can still surface "Shown in Volcanic Orange" at render time.
+    const matchColour = (text: string): { id: string | null; label: string | null } => {
+      const lc = text.toLowerCase()
+      if (/british\s+tan/.test(lc))     return { id: colourByLc.get('tan')   ?? null, label: 'British Tan' }
+      if (/\btan\b/.test(lc))           return { id: colourByLc.get('tan')   ?? null, label: 'Tan' }
+      if (/volcanic\s+black/.test(lc))  return { id: colourByLc.get('black') ?? null, label: 'Volcanic Black' }
+      if (/\bblack\b/.test(lc))         return { id: colourByLc.get('black') ?? null, label: 'Black' }
+      const vol = /volcanic\s+([a-z]+)/.exec(lc)
+      if (vol) return { id: null, label: `Volcanic ${vol[1][0].toUpperCase() + vol[1].slice(1)}` }
+      return { id: null, label: null }
     }
     // Clear previous shopify-sourced rows so stale titles don't
     // linger if the Shopify catalog changes. Manual rows (source =
@@ -1513,11 +1519,12 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     const seedRows: Array<{
       builder_id: string
       finish_set_id: string
-      finish_id: string
+      finish_id: string | null
       pattern_finish_id: string
       platform_id: string
       image_url: string
       source: 'shopify'
+      source_colour_label: string | null
     }> = []
     const dedupe = new Set<string>()  // "finish|pattern|platform"
     for (const seed of interiorSeeds) {
@@ -1525,30 +1532,29 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
       // "Clam Shell", "Herringbone", "Comfort", "Sport", …).
       let patternId: string | null = null
       for (const [name, id] of patternByLc) {
-        // Word-boundary match, case-insensitive.
         const re = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\b`, 'i')
         if (re.test(seed.title)) { patternId = id; break }
       }
       if (!patternId) continue  // not a pattern-identifying listing
-      const colourId = aliasToColour(seed.title)
-      // If no colour name is in the title, fall back to writing the
-      // image under every colour so the renderer's (colour+pattern)
-      // step resolves. Otherwise write just the matched colour.
-      const colourIds = colourId ? [colourId] : Array.from(colourByLc.values())
-      for (const fId of colourIds) {
-        const key = `${fId}|${patternId}|${seed.platformId}`
-        if (dedupe.has(key)) continue
-        dedupe.add(key)
-        seedRows.push({
-          builder_id: builder.id,
-          finish_set_id: colourSetId!,
-          finish_id: fId,
-          pattern_finish_id: patternId,
-          platform_id: seed.platformId,
-          image_url: seed.images[0],
-          source: 'shopify',
-        })
-      }
+      const colour = matchColour(seed.title)
+      // Match semantics changed per the brief: both colour AND pattern
+      // must be in the Shopify title/tags for a colour-anchored row;
+      // otherwise store a single pattern-only row with the raw label
+      // (when any was found) so the renderer can caption the swap.
+      const finishId: string | null = colour.id  // null → pattern-only
+      const key = `${finishId ?? '_'}|${patternId}|${seed.platformId}`
+      if (dedupe.has(key)) continue
+      dedupe.add(key)
+      seedRows.push({
+        builder_id: builder.id,
+        finish_set_id: colourSetId!,
+        finish_id: finishId,
+        pattern_finish_id: patternId,
+        platform_id: seed.platformId,
+        image_url: seed.images[0],
+        source: 'shopify',
+        source_colour_label: colour.label,
+      })
     }
     const SEED_CHUNK = 500
     for (let i = 0; i < seedRows.length; i += SEED_CHUNK) {

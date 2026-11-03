@@ -868,14 +868,25 @@ function discoverVehiclesFromModels(html: string): DiscoveredVehicle[] {
 }
 
 async function resolveCanonicalCollection(baseUrl: string, href: string): Promise<string | null> {
+  // Fallback: if the HTML fetch fails or the canonical link isn't
+  // present, we can still use the slug baked into the input href —
+  // Shopify's /collections/<slug>/products.json endpoint tolerates
+  // both the short slug (defender-110-2020-present-exterior) and the
+  // long canonical slug (land-rover-defender-110-2020-present-exterior).
+  const hrefSlugMatch = /\/collections\/([a-z0-9][a-z0-9-]*)/i.exec(href)
+  const hrefSlug = hrefSlugMatch ? hrefSlugMatch[1] : null
   const url = href.startsWith('http') ? href : `${baseUrl}${href}`
-  const r = await shopifyFetch(url)
-  if (!r.ok) return null
-  const html = await r.text()
-  const canonMatch = /<link[^>]+rel=["']canonical["'][^>]*href=["']([^"']+)["']/i.exec(html)
-  const canonicalUrl = canonMatch ? canonMatch[1] : r.url
-  const match = /\/collections\/([a-z0-9][a-z0-9-]*)/i.exec(canonicalUrl)
-  return match ? match[1] : null
+  try {
+    const r = await shopifyFetch(url)
+    if (!r.ok) return hrefSlug
+    const html = await r.text()
+    const canonMatch = /<link[^>]+rel=["']canonical["'][^>]*href=["']([^"']+)["']/i.exec(html)
+    const canonicalUrl = canonMatch ? canonMatch[1] : r.url
+    const match = /\/collections\/([a-z0-9][a-z0-9-]*)/i.exec(canonicalUrl)
+    return match ? match[1] : hrefSlug
+  } catch {
+    return hrefSlug
+  }
 }
 
 async function syncShopify(admin: ReturnType<typeof createClient>, builder: any) {
@@ -994,6 +1005,31 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     }, { onConflict: 'builder_id,external_id' }).select('id').single()
     if (ins.error) throw ins.error
     groupIdByCat.set(cat, (ins.data as any).id)
+  }
+
+  // ─── Performance group (CTC's engine remaps live here) ─────────────
+  // The Tuning System listings sit inside Shopify's "Interior"
+  // collection, so the sync walks them under cat='interior'. We re-
+  // route them into the Performance group below. Nullable so builders
+  // without the group still work.
+  let performanceGroupId: string | null = null
+  let tuningCategoryId: string | null = null
+  if (isCostBased) {
+    const perf = await admin.from('catalog_option_groups')
+      .select('id')
+      .eq('builder_id', builder.id)
+      .eq('external_id', 'shopify:group:performance')
+      .maybeSingle()
+    performanceGroupId = (perf.data as any)?.id ?? null
+    tuningCategoryId = categories.find(c => c.name === 'Tuning')?.id ?? null
+  }
+
+  function isTuningOption(title: string | null | undefined, tags: string[]): boolean {
+    if (title && /tuning\s*system/i.test(title)) return true
+    for (const t of tags) {
+      if (/tuning-system|=tuning-system/i.test(t)) return true
+    }
+    return false
   }
 
   // ─── Resolve canonicals + build platform set ───────────────────────
@@ -1223,6 +1259,18 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
               categoryId = pickCategoryId(cat, (product.tags as string[]) ?? [])
             }
 
+            // Tuning override: CTC files engine remaps under Interior,
+            // but they're performance parts. Lift them into the
+            // Performance group + Tuning category when either the tag
+            // or the title identifies them.
+            const isTuning = isTuningOption(product.title, (product.tags as string[]) ?? [])
+            const effectiveGroupId = isTuning && performanceGroupId
+              ? performanceGroupId
+              : groupId
+            if (isTuning && tuningCategoryId && !existingRow?.category_locked) {
+              categoryId = tuningCategoryId
+            }
+
             const imageUrls = (product.images ?? []).map(img => img.src).filter((v): v is string => !!v)
             const description = bodyToDescription(product.body_html)
 
@@ -1244,7 +1292,7 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
                 image_urls: imageUrls,
                 active,
                 sold_as_set: soldAsSet,
-                group_id: groupId,
+                group_id: effectiveGroupId,
                 group_priority: priority,
                 platform_ids: new Set<string>(existing?.platform_ids ?? []),
               })

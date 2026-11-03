@@ -1129,6 +1129,14 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
   const perPlatform: Record<string, { options: number }> = {}
   let totalVariantsSplit = 0
 
+  // ─── Interior pattern/colour image seeding ─────────────────────
+  // Lookbook interior page needs an image resolver keyed by (colour,
+  // pattern, platform). We harvest Shopify interior product
+  // titles + first images here, then after the main walk match them
+  // to catalog_finishes and bulk-upsert into catalog_finish_images.
+  interface InteriorSeed { platformId: string; title: string; images: string[] }
+  const interiorSeeds: InteriorSeed[] = []
+
   for (const { vehicle, canonicals } of resolved) {
     perPlatform[vehicle.slug] = { options: 0 }
     const platformId = platformIdByVehicle.get(vehicle.slug)!
@@ -1156,6 +1164,23 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
           if (variants.length === 0) continue
           const isMulti = variants.length > 1
           if (isMulti) totalVariantsSplit += variants.length
+
+          // Capture interior products so we can seed finish-image
+          // overrides after the main walk. We only need the title + a
+          // couple of hero images; variant iteration is irrelevant
+          // here.
+          if (cat === 'interior') {
+            // @react-pdf renders JPG and PNG only; a GIF hero (which
+            // Shopify sometimes puts first for animated previews)
+            // silently disappears from the lookbook. Strip them.
+            const imgs = (product.images ?? [])
+              .map(i => i.src).filter((v): v is string => !!v)
+              .filter(u => !/\.gif(?:\?|$)/i.test(u))
+              .slice(0, 3)
+            if (imgs.length > 0 && typeof product.title === 'string') {
+              interiorSeeds.push({ platformId, title: product.title, images: imgs })
+            }
+          }
 
           for (const variant of variants) {
             const suffix = isMulti ? `-${variant.id}` : ''
@@ -1450,6 +1475,90 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     imagesInserted += chunk.length
   }
 
+  // ─── Seed catalog_finish_images from interior Shopify titles ────
+  // Walk collected interior products, extract pattern + colour from
+  // the title (and tags) and insert one row per (pattern[, colour],
+  // platform) with the product's first image. Only rows marked
+  // source = 'shopify' are overwritten; manual uploads survive.
+  let finishImagesSeeded = 0
+  const finishSets = await admin.from('catalog_finish_sets')
+    .select('id, name').eq('builder_id', builder.id)
+  if (finishSets.error) throw finishSets.error
+  const patternSetId = (finishSets.data ?? []).find((s: { name: string }) => s.name === 'Interior pattern')?.id ?? null
+  const colourSetId  = (finishSets.data ?? []).find((s: { name: string }) => s.name === 'Interior colour')?.id ?? null
+  if (patternSetId && interiorSeeds.length > 0) {
+    const finishes = await admin.from('catalog_finishes')
+      .select('id, name, finish_set_id').in('finish_set_id', [patternSetId, colourSetId].filter(Boolean))
+    if (finishes.error) throw finishes.error
+    const patternByLc = new Map<string, string>()
+    const colourByLc  = new Map<string, string>()
+    for (const f of (finishes.data ?? []) as { id: string; name: string; finish_set_id: string }[]) {
+      if (f.finish_set_id === patternSetId) patternByLc.set(f.name.toLowerCase(), f.id)
+      if (f.finish_set_id === colourSetId)  colourByLc.set(f.name.toLowerCase(), f.id)
+    }
+    // Shopify ships richer colour vocab than our catalog's three
+    // Interior colour options. Alias the common ones onto our ids.
+    const aliasToColour = (title: string): string | null => {
+      const lc = title.toLowerCase()
+      if (/\btan\b/.test(lc) || /british\s+tan/.test(lc)) return colourByLc.get('tan') ?? null
+      if (/\bblack\b/.test(lc) || /volcanic\s+black/.test(lc)) return colourByLc.get('black') ?? null
+      return null
+    }
+    // Clear previous shopify-sourced rows so stale titles don't
+    // linger if the Shopify catalog changes. Manual rows (source =
+    // 'manual') survive.
+    const del = await admin.from('catalog_finish_images')
+      .delete().eq('builder_id', builder.id).eq('source', 'shopify')
+    if (del.error) throw del.error
+    const seedRows: Array<{
+      builder_id: string
+      finish_set_id: string
+      finish_id: string
+      pattern_finish_id: string
+      platform_id: string
+      image_url: string
+      source: 'shopify'
+    }> = []
+    const dedupe = new Set<string>()  // "finish|pattern|platform"
+    for (const seed of interiorSeeds) {
+      // Match a pattern name in the title ("Designo", "3D Modular",
+      // "Clam Shell", "Herringbone", "Comfort", "Sport", …).
+      let patternId: string | null = null
+      for (const [name, id] of patternByLc) {
+        // Word-boundary match, case-insensitive.
+        const re = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\b`, 'i')
+        if (re.test(seed.title)) { patternId = id; break }
+      }
+      if (!patternId) continue  // not a pattern-identifying listing
+      const colourId = aliasToColour(seed.title)
+      // If no colour name is in the title, fall back to writing the
+      // image under every colour so the renderer's (colour+pattern)
+      // step resolves. Otherwise write just the matched colour.
+      const colourIds = colourId ? [colourId] : Array.from(colourByLc.values())
+      for (const fId of colourIds) {
+        const key = `${fId}|${patternId}|${seed.platformId}`
+        if (dedupe.has(key)) continue
+        dedupe.add(key)
+        seedRows.push({
+          builder_id: builder.id,
+          finish_set_id: colourSetId!,
+          finish_id: fId,
+          pattern_finish_id: patternId,
+          platform_id: seed.platformId,
+          image_url: seed.images[0],
+          source: 'shopify',
+        })
+      }
+    }
+    const SEED_CHUNK = 500
+    for (let i = 0; i < seedRows.length; i += SEED_CHUNK) {
+      const chunk = seedRows.slice(i, i + SEED_CHUNK)
+      const ins = await admin.from('catalog_finish_images').insert(chunk)
+      if (ins.error) throw ins.error
+      finishImagesSeeded += chunk.length
+    }
+  }
+
   // ─── Deactivate stale rows via updated_at (survives URL-length limits) ─
   // Anything synced + still-active that wasn't touched this run is stale.
   const platformsMissing = await admin.from('catalog_platforms')
@@ -1594,6 +1703,7 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     kit_markup: markup,
     images_inserted: imagesInserted,
     platform_heroes_written: heroesWritten,
+    finish_images_seeded: finishImagesSeeded,
     summary,
   }
 }

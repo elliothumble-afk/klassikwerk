@@ -368,11 +368,12 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
     lead: { phone: string | null; customer: { full_name: string | null; email: string | null } | null } | null
   }
 
-  const [builderRes, brandRes, termsRes, platformRes, tierRes, qoRes, eventsRes] = await Promise.all([
+  const [builderRes, brandRes, termsRes, platformRes, allPlatformsRes, tierRes, qoRes, eventsRes] = await Promise.all([
     supabase.from('builders').select('*, operator:operators(contact)').eq('id', quote.builder_id).single(),
     supabase.from('builder_brand').select('*').eq('builder_id', quote.builder_id).maybeSingle(),
     supabase.from('builder_terms').select('*').eq('builder_id', quote.builder_id).maybeSingle(),
     supabase.from('catalog_platforms').select('*').eq('id', quote.platform_id).single(),
+    supabase.from('catalog_platforms').select('name').eq('builder_id', quote.builder_id),
     supabase.from('catalog_tiers').select('*').eq('id', quote.tier_id).single(),
     // install_price_cents lives on catalog_options; here we read the
     // per-line snapshot (parts × qty + labour + materials = line price).
@@ -393,6 +394,7 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
   if (brandRes.error) throw brandRes.error
   if (termsRes.error) throw termsRes.error
   if (platformRes.error) throw platformRes.error
+  if (allPlatformsRes.error) throw allPlatformsRes.error
   if (tierRes.error) throw tierRes.error
   if (qoRes.error) throw qoRes.error
   if (eventsRes.error) throw eventsRes.error
@@ -445,6 +447,38 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
 
   const optionIds = qoRows.map(r => r.option_id)
   if (optionIds.length === 0) throw new Error('Quote has no options — nothing to put in the lookbook.')
+
+  // Finish-image overrides (interior leather + pattern). Pulled
+  // builder-wide once and resolved per-option in a ladder:
+  //  (platform, colour, pattern) → (colour, pattern) → (pattern) → option image.
+  // Rows written by the sync are source='shopify'; ops uploads are
+  // 'manual' and take precedence at the same specificity level.
+  const finishImagesRes = await supabase.from('catalog_finish_images')
+    .select('finish_id, pattern_finish_id, platform_id, image_url, source')
+    .eq('builder_id', quote.builder_id)
+  if (finishImagesRes.error) throw finishImagesRes.error
+  type FimRow = { finish_id: string; pattern_finish_id: string | null; platform_id: string | null; image_url: string; source: 'shopify' | 'manual' }
+  const finishImages = (finishImagesRes.data ?? []) as FimRow[]
+  function resolveFinishImage(platformId: string, colourId: string | null, patternId: string | null): string | null {
+    if (!patternId) return null
+    const prefer = (a: FimRow, b: FimRow) => (a.source === 'manual' ? -1 : b.source === 'manual' ? 1 : 0)
+    const byLevel = (filterFn: (r: FimRow) => boolean) =>
+      finishImages.filter(filterFn).sort(prefer)[0]?.image_url ?? null
+    // L1: platform + colour + pattern.
+    if (colourId) {
+      const hit = byLevel(r => r.pattern_finish_id === patternId && r.finish_id === colourId && r.platform_id === platformId)
+      if (hit) return hit
+    }
+    // L2: colour + pattern (platform-agnostic).
+    if (colourId) {
+      const hit = byLevel(r => r.pattern_finish_id === patternId && r.finish_id === colourId && r.platform_id === null)
+      if (hit) return hit
+    }
+    // L3: pattern — any row with this pattern, preferring same platform.
+    const samePlat = byLevel(r => r.pattern_finish_id === patternId && r.platform_id === platformId)
+    if (samePlat) return samePlat
+    return byLevel(r => r.pattern_finish_id === patternId)
+  }
 
   const [optsRes, imagesRes, groupsRes] = await Promise.all([
     supabase.from('catalog_options')
@@ -516,7 +550,22 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
       .filter(f => f.name)
 
     const cat = o.category_id ? categoryById.get(o.category_id) : null
-    const img = o.lead_image_url ?? imagesByOption.get(o.id)?.[0]?.url ?? o.swatch_image_url
+
+    // Resolve a leather-interior image via the finish-image ladder
+    // before falling back to the option's own lead/first image.
+    // The resolver only fires when there's a pattern finish on the
+    // quote — other categories keep the lead image path unchanged.
+    const colourFinish = (qo.quote_option_finishes ?? [])
+      .find(f => f.catalog_finish_sets?.name === 'Interior colour') ?? null
+    const patternFinish = (qo.quote_option_finishes ?? [])
+      .find(f => f.catalog_finish_sets?.name === 'Interior pattern') ?? null
+    const finishImg = patternFinish
+      ? resolveFinishImage(quote.platform_id, colourFinish?.finish_id ?? null, patternFinish.finish_id)
+      : null
+    const img = finishImg
+      ?? o.lead_image_url
+      ?? imagesByOption.get(o.id)?.[0]?.url
+      ?? o.swatch_image_url
 
     const lookbook: LookbookOption = {
       option_id: o.id,
@@ -601,6 +650,7 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
     operator_contact: operatorContact,
     closing_signer: { name: signerName, title: signerTitle, phone: signerPhone, email: signerEmail },
     platform,
+    all_platform_names: ((allPlatformsRes.data ?? []) as { name: string }[]).map(r => r.name),
     tier,
     options,
     tyres,

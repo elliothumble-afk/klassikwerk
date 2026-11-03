@@ -156,6 +156,10 @@ export interface LookbookPdfInput {
     email: string | null
   }
   platform: PlatformLike & { lookbook_copy: string | null }
+  /** All builder platform names (full list) — cleanName uses this to
+   *  strip leading platform-name prefixes when there's no `(years)`
+   *  parenthetical to anchor the match. */
+  all_platform_names: string[]
   tier: TierLike
   options: LookbookOption[]
   tyres: LookbookTyre[]

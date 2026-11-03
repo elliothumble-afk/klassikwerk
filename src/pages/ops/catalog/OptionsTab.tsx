@@ -531,6 +531,7 @@ function OptionRow({
 }: OptionRowStandaloneProps) {
   const isManual = !option.synced
   const kitSku = option.code ?? null
+  const skuPlaceholder = (option as { kit_sku_placeholder?: boolean }).kit_sku_placeholder ?? false
   const costCents = option.cost_cents ?? null
 
   return (
@@ -543,7 +544,17 @@ function OptionRow({
       <div className="min-w-0 flex-1">
         <div className="truncate font-medium">{option.name}</div>
         <div className="text-[11px] text-[var(--color-muted)] flex items-center gap-2 mt-0.5">
-          <span className="font-mono truncate max-w-[180px]">{kitSku ?? '—'}</span>
+          <span
+            className={`font-mono truncate max-w-[180px] ${skuPlaceholder ? 'italic text-amber-700/80' : ''}`}
+            title={skuPlaceholder ? 'Placeholder SKU — Shopify didn’t return a Kahn SKU for this row' : undefined}
+          >
+            {kitSku ?? '—'}
+          </span>
+          {skuPlaceholder && (
+            <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 text-[10px] uppercase tracking-wide">
+              No Kahn SKU — confirm on order
+            </span>
+          )}
           {isManual && <span className="px-1.5 py-0.5 rounded bg-[var(--color-surface-raised)] text-[10px] uppercase tracking-wide">Manual</span>}
           <SwatchUploadButton optionId={option.id} onUpload={url => onSwatchUpload(option.id, url)} />
         </div>

@@ -847,7 +847,13 @@ function discoverVehiclesFromModels(html: string): DiscoveredVehicle[] {
     let m: RegExpExecArray | null
     while ((m = anchorRe.exec(part)) !== null) {
       const href = m[1]
-      if (!href.startsWith('/collections/')) continue
+      // Accept both relative "/collections/<slug>" and absolute
+      // "https://.../collections/<slug>" variants. CTC's models-range
+      // intermittently emits absolute URLs for newer vehicles (LC 250,
+      // G-Wagon G350/400), which the old relative-only check silently
+      // skipped — the vehicle looked like it had no exterior anchors
+      // and the sync pulled an empty collection.
+      if (!/\/collections\/[a-z0-9][a-z0-9-]*/i.test(href)) continue
       const label = stripTags(m[2])
       const cat = anchorTextToCategory(label)
       if (!cat) continue
@@ -1105,6 +1111,7 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     name: string
     code: string | null
     kit_sku: string | null
+    kit_sku_placeholder: boolean
     price_cents: number
     web_price_cents: number
     source_currency: string
@@ -1161,14 +1168,22 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
             const priceCents = Math.round(priceGbp * fx * markup * 100)
             const image = (product.images ?? [])[0]?.src ?? null
             const sku = variant.sku && variant.sku.trim() ? variant.sku.trim() : null
-            // Shopify "360° Tour" interior listings have no SKU and a
-            // zero price — syncing them active would spam the editor
-            // with "Set a price" warnings. Honour available + priced + skued.
-            const active = Boolean(variant.available) && priceCents > 0 && Boolean(sku)
+            // Priced-but-no-SKU: Shopify sometimes ships leather
+            // interior / trim listings with a real GBP price and no
+            // Kahn SKU attached. These are still orderable — we need
+            // CTC to confirm the SKU on the PO. Fall back to a
+            // "shopify-<handle>" placeholder so the row syncs, and
+            // flag it so the catalog + PO can label it clearly.
+            // Rows with price=0 remain filtered (that's the 360°-tour
+            // decorative listings).
+            const kitSkuPlaceholder = sku === null
+            const effectiveSku = sku ?? `shopify-${product.handle}${suffix}`
+            const active = priceCents > 0
             const priority = CATEGORY_PRIORITY[cat]
             // Alloy-wheel kit SKUs end in -KIT (e.g. WACTF1258M1R-KIT).
             // Their price IS the kit price, not the per-wheel price —
             // so we must NOT multiply by four in the quote editor.
+            // Placeholder SKUs are never sold-as-set (unknown shape).
             const soldAsSet = cat === 'alloy-wheels' && !!sku && /-KIT$/i.test(sku)
             const webPriceCents = Math.round(priceGbp * 100)
 
@@ -1192,8 +1207,9 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
                 external_id: externalId,
                 slug,
                 name,
-                code: sku,
-                kit_sku: sku,
+                code: effectiveSku,
+                kit_sku: effectiveSku,
+                kit_sku_placeholder: kitSkuPlaceholder,
                 price_cents: priceCents,
                 web_price_cents: webPriceCents,
                 source_currency: 'GBP',
@@ -1332,6 +1348,7 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
       name: o.name,
       code: o.code,
       kit_sku: o.kit_sku,
+      kit_sku_placeholder: o.kit_sku_placeholder,
       price_cents: o.price_cents,
       web_price_cents: o.web_price_cents,
       source_currency: o.source_currency,
@@ -1476,7 +1493,11 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     }
   }
 
+  // Only zero-price rows get filtered out now that no-SKU rows sync
+  // with a placeholder. Keep the historical report key stable so the
+  // Costing summary doesn't break.
   const inactiveZeroOrNoSku = allRows.filter(r => !r.active).length
+  const placeholderSkus = allRows.filter(r => r.kit_sku_placeholder).length
 
   // ─── Reprice cost_based builders ───────────────────────────────────
   // price_cents is otherwise written by this function at the raw web ×
@@ -1564,6 +1585,7 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
       // with no quote reference were deleted outright this run.
       deleted_after_two_misses: optionsDeleted,
       inactive_zero_price_or_no_sku: inactiveZeroOrNoSku,
+      placeholder_sku: placeholderSkus,
       variants_split: totalVariantsSplit,
     },
     platforms_deactivated: platformsMissing.data?.length ?? 0,

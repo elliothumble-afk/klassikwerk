@@ -368,11 +368,12 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
     lead: { phone: string | null; customer: { full_name: string | null; email: string | null } | null } | null
   }
 
-  const [builderRes, brandRes, termsRes, platformRes, tierRes, qoRes, eventsRes] = await Promise.all([
+  const [builderRes, brandRes, termsRes, platformRes, allPlatformsRes, tierRes, qoRes, eventsRes] = await Promise.all([
     supabase.from('builders').select('*, operator:operators(contact)').eq('id', quote.builder_id).single(),
     supabase.from('builder_brand').select('*').eq('builder_id', quote.builder_id).maybeSingle(),
     supabase.from('builder_terms').select('*').eq('builder_id', quote.builder_id).maybeSingle(),
     supabase.from('catalog_platforms').select('*').eq('id', quote.platform_id).single(),
+    supabase.from('catalog_platforms').select('name').eq('builder_id', quote.builder_id),
     supabase.from('catalog_tiers').select('*').eq('id', quote.tier_id).single(),
     // install_price_cents lives on catalog_options; here we read the
     // per-line snapshot (parts × qty + labour + materials = line price).
@@ -393,6 +394,7 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
   if (brandRes.error) throw brandRes.error
   if (termsRes.error) throw termsRes.error
   if (platformRes.error) throw platformRes.error
+  if (allPlatformsRes.error) throw allPlatformsRes.error
   if (tierRes.error) throw tierRes.error
   if (qoRes.error) throw qoRes.error
   if (eventsRes.error) throw eventsRes.error
@@ -446,6 +448,151 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
   const optionIds = qoRows.map(r => r.option_id)
   if (optionIds.length === 0) throw new Error('Quote has no options — nothing to put in the lookbook.')
 
+  // Finish-image overrides (interior leather + pattern). Pulled
+  // builder-wide once and resolved per-option in a ladder:
+  //  (platform, colour, pattern) → (colour, pattern) → (pattern) → option image.
+  // Rows written by the sync are source='shopify'; ops uploads are
+  // 'manual' and take precedence at the same specificity level.
+  const finishImagesRes = await supabase.from('catalog_finish_images')
+    .select('finish_id, pattern_finish_id, platform_id, image_url, source, source_colour_label')
+    .eq('builder_id', quote.builder_id)
+  if (finishImagesRes.error) throw finishImagesRes.error
+  type FimRow = {
+    finish_id: string | null
+    pattern_finish_id: string | null
+    platform_id: string | null
+    image_url: string
+    source: 'shopify' | 'manual'
+    source_colour_label: string | null
+  }
+  const finishImages = (finishImagesRes.data ?? []) as FimRow[]
+  // Finish name map — used to label the "any interior photo" fallback
+  // ("Shown: Clamshell / Volcanic Black — yours in Tan, Designo").
+  const finishIdSet = new Set<string>()
+  for (const r of finishImages) {
+    if (r.finish_id) finishIdSet.add(r.finish_id)
+    if (r.pattern_finish_id) finishIdSet.add(r.pattern_finish_id)
+  }
+  const finishNameById = new Map<string, string>()
+  if (finishIdSet.size > 0) {
+    const fnRes = await supabase.from('catalog_finishes')
+      .select('id, name').in('id', Array.from(finishIdSet))
+    if (!fnRes.error) {
+      for (const r of (fnRes.data ?? []) as { id: string; name: string }[]) {
+        finishNameById.set(r.id, r.name)
+      }
+    }
+  }
+  interface ResolvedFim { url: string; sourceColourLabel: string | null; exact: boolean }
+
+  // Interior images sometimes come back as line drawings / template
+  // layouts (seat-map SVGs rendered as JPG). Skip anything whose URL
+  // or alt text obviously names a diagram, and anything whose pixel
+  // profile reads as "near-zero saturation + mostly white" at 32×32.
+  const DIAGRAM_WORDS = /(template|diagram|pattern|layout|line|seat-map)/i
+  function urlLooksDiagrammatic(url: string | null | undefined): boolean {
+    if (!url) return false
+    return DIAGRAM_WORDS.test(url)
+  }
+  async function sampleDiagrammatic(url: string | null): Promise<boolean> {
+    if (!url || typeof window === 'undefined' || typeof Image === 'undefined') return false
+    return new Promise<boolean>(resolve => {
+      const img = new Image()
+      const to = setTimeout(() => resolve(false), 5000)
+      img.crossOrigin = 'anonymous'
+      img.onload = () => {
+        clearTimeout(to)
+        try {
+          const canvas = document.createElement('canvas')
+          canvas.width = 32; canvas.height = 32
+          const ctx = canvas.getContext('2d')
+          if (!ctx) return resolve(false)
+          ctx.drawImage(img, 0, 0, 32, 32)
+          const d = ctx.getImageData(0, 0, 32, 32).data
+          let satSum = 0, whiteCount = 0, n = 0
+          for (let i = 0; i < d.length; i += 4) {
+            const r = d[i], g = d[i + 1], b = d[i + 2]
+            const maxC = Math.max(r, g, b), minC = Math.min(r, g, b)
+            const sat = maxC === 0 ? 0 : (maxC - minC) / maxC
+            satSum += sat
+            if (r > 240 && g > 240 && b > 240) whiteCount++
+            n++
+          }
+          const avgSat = satSum / n
+          const whiteFrac = whiteCount / n
+          resolve(avgSat < 0.08 && whiteFrac > 0.55)
+        } catch {
+          resolve(false)
+        }
+      }
+      img.onerror = () => { clearTimeout(to); resolve(false) }
+      img.src = url
+    })
+  }
+  async function viableInteriorImage(url: string | null): Promise<boolean> {
+    if (!url) return false
+    // @react-pdf renders JPG/PNG only — a GIF slot silently vanishes.
+    if (/\.gif(?:\?|$)/i.test(url)) return false
+    if (urlLooksDiagrammatic(url)) return false
+    const sampled = await sampleDiagrammatic(url)
+    return !sampled
+  }
+
+  function pickFinishImage(
+    platformId: string, colourId: string | null, patternId: string | null,
+    tier: 'exact' | 'pattern-only',
+  ): ResolvedFim | null {
+    if (!patternId) return null
+    const prefer = (a: FimRow, b: FimRow) => (a.source === 'manual' ? -1 : b.source === 'manual' ? 1 : 0)
+    const pick = (filterFn: (r: FimRow) => boolean, exact: boolean): ResolvedFim | null => {
+      const hit = finishImages.filter(filterFn).sort(prefer)[0]
+      return hit ? { url: hit.image_url, sourceColourLabel: hit.source_colour_label, exact } : null
+    }
+    if (tier === 'exact') {
+      if (!colourId) return null
+      const platHit = pick(r => r.pattern_finish_id === patternId && r.finish_id === colourId && r.platform_id === platformId, true)
+      if (platHit) return platHit
+      return pick(r => r.pattern_finish_id === patternId && r.finish_id === colourId && r.platform_id === null, true)
+    }
+    // pattern-only tier
+    const platHit = pick(r => r.pattern_finish_id === patternId && r.finish_id === null && r.platform_id === platformId, false)
+    if (platHit) return platHit
+    return pick(r => r.pattern_finish_id === patternId && r.finish_id === null, false)
+  }
+
+  // Tier-4 fallback: any leather-interior photo for this platform
+  // (any colour/pattern), then any such photo at all. Walks the
+  // candidates and returns the first that passes the diagram filter
+  // (both URL + pixel probe). Caller builds the caption from the
+  // row's finish names so the shown identity is clear.
+  async function pickAnyInteriorPhoto(platformId: string): Promise<FimRow | null> {
+    const prefer = (a: FimRow, b: FimRow) => (a.source === 'manual' ? -1 : b.source === 'manual' ? 1 : 0)
+    const platformFirst = finishImages
+      .filter(r => r.platform_id === platformId)
+      .sort(prefer)
+    for (const r of platformFirst) {
+      if (await viableInteriorImage(r.image_url)) return r
+    }
+    const anywhere = finishImages
+      .filter(r => r.platform_id !== platformId)
+      .sort(prefer)
+    for (const r of anywhere) {
+      if (await viableInteriorImage(r.image_url)) return r
+    }
+    return null
+  }
+
+  // Build "Pattern / Colour" (or just one if the other is unknown)
+  // from a FimRow. Prefers catalog finish names, falls back to the
+  // raw source_colour_label captured from the Shopify title.
+  function fimIdentity(row: FimRow): string {
+    const pattern = row.pattern_finish_id ? finishNameById.get(row.pattern_finish_id) ?? null : null
+    const colour = row.finish_id
+      ? finishNameById.get(row.finish_id) ?? null
+      : row.source_colour_label ?? null
+    return [pattern, colour].filter((v): v is string => !!v && v.length > 0).join(' / ')
+  }
+
   const [optsRes, imagesRes, groupsRes] = await Promise.all([
     supabase.from('catalog_options')
       .select('id, name, code, group_id, category_id, swatch_image_url, lead_image_url, description, sold_as_set, parts_sell_cents, install_price_cents')
@@ -490,11 +637,12 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
   const options: LookbookOption[] = []
   const tyres: LookbookTyre[] = []
   const wheelOptions: LookbookOption[] = []
-  for (const o of (optsRes.data ?? []) as unknown as {
+  const optRows = (optsRes.data ?? []) as unknown as {
     id: string; name: string; code: string | null; group_id: string; category_id: string | null
     swatch_image_url: string | null; lead_image_url: string | null; description: string | null
     sold_as_set: boolean; parts_sell_cents: number | null; install_price_cents: number | null
-  }[]) {
+  }[]
+  const built = await Promise.all(optRows.map(async (o) => {
     const qo = qoByOption.get(o.id)!
     const qty = qo.quantity ?? 1
     // Line price reads straight off the quote_options snapshot:
@@ -516,7 +664,86 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
       .filter(f => f.name)
 
     const cat = o.category_id ? categoryById.get(o.category_id) : null
-    const img = o.lead_image_url ?? imagesByOption.get(o.id)?.[0]?.url ?? o.swatch_image_url
+
+    const colourFinish = (qo.quote_option_finishes ?? [])
+      .find(f => f.catalog_finish_sets?.name === 'Interior colour') ?? null
+    const patternFinish = (qo.quote_option_finishes ?? [])
+      .find(f => f.catalog_finish_sets?.name === 'Interior pattern') ?? null
+
+    const isLeatherInterior = cat?.name === 'Leather interior'
+    let img: string | null = null
+    let finishImageCaption: string | null = null
+    const chosenColourName = colourFinish?.catalog_finishes?.name ?? null
+    const chosenPatternName = patternFinish?.catalog_finishes?.name ?? null
+
+    if (isLeatherInterior) {
+      // Four-tier resolution for leather-interior options:
+      //   1. exact colour + pattern photo (platform or agnostic)
+      //   2. option's own product photos (first non-diagram)
+      //   3. pattern-only photo (with "Shown in X — yours in Y" when
+      //      the Shopify colour was captured)
+      //   4. any CTC interior photo on this platform (any
+      //      colour/pattern) — captioned with the shown identity so
+      //      the customer knows it's representative, not literal
+      // Diagram detection: URL keyword filter + 32×32 pixel probe
+      // (near-zero saturation + mostly-white). Never a stock OEM.
+      const exactHit = patternFinish
+        ? pickFinishImage(quote.platform_id, colourFinish?.finish_id ?? null, patternFinish.finish_id, 'exact')
+        : null
+      if (exactHit && await viableInteriorImage(exactHit.url)) {
+        img = exactHit.url
+      } else {
+        const ownCandidates = [
+          o.lead_image_url,
+          ...(imagesByOption.get(o.id) ?? []).map(x => x.url),
+          o.swatch_image_url,
+        ].filter((v): v is string => !!v)
+        for (const u of ownCandidates) {
+          if (await viableInteriorImage(u)) { img = u; break }
+        }
+        if (!img) {
+          const patternHit = patternFinish
+            ? pickFinishImage(quote.platform_id, null, patternFinish.finish_id, 'pattern-only')
+            : null
+          if (patternHit && await viableInteriorImage(patternHit.url)) {
+            img = patternHit.url
+            if (patternHit.sourceColourLabel && chosenColourName
+                && patternHit.sourceColourLabel.toLowerCase() !== chosenColourName.toLowerCase()) {
+              finishImageCaption = `Shown in ${patternHit.sourceColourLabel} — yours in ${chosenColourName}`
+            }
+          }
+          if (!img) {
+            const anyHit = await pickAnyInteriorPhoto(quote.platform_id)
+            if (anyHit) {
+              img = anyHit.image_url
+              const shown = fimIdentity(anyHit)
+              const yoursParts = [chosenColourName, chosenPatternName].filter((v): v is string => !!v)
+              const yours = yoursParts.join(', ')
+              if (shown && yours) finishImageCaption = `Shown: ${shown} — yours in ${yours}`
+              else if (shown) finishImageCaption = `Shown: ${shown}`
+            }
+          }
+        }
+      }
+    } else {
+      const finishImg = patternFinish
+        ? pickFinishImage(quote.platform_id, colourFinish?.finish_id ?? null, patternFinish.finish_id, 'exact')
+          ?? pickFinishImage(quote.platform_id, null, patternFinish.finish_id, 'pattern-only')
+        : null
+      img = finishImg?.url
+        ?? o.lead_image_url
+        ?? imagesByOption.get(o.id)?.[0]?.url
+        ?? o.swatch_image_url
+    }
+
+    // Investment columns need the parts + fitting split per option.
+    // parts_cents is parts_sell × qty (already baked into the snapshot
+    // partsSell); fitting = labour + materials; hours = labour/rate.
+    const fittingCents = (qo.labour_cents ?? 0) + (qo.materials_cents ?? 0)
+    const labourRateCents = (terms as unknown as { labour_rate_cents?: number }).labour_rate_cents ?? 20000
+    const fittingHours = labourRateCents > 0 && qo.labour_cents != null
+      ? Math.round(qo.labour_cents / labourRateCents)
+      : null
 
     const lookbook: LookbookOption = {
       option_id: o.id,
@@ -525,7 +752,11 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
       description: o.description,
       image_url: img,
       swatch_image_url: o.swatch_image_url,
+      finish_image_caption: finishImageCaption,
       line_price_cents: linePrice,
+      parts_cents: partsSell,
+      fitting_cents: fittingCents,
+      fitting_hours: fittingHours,
       parts_sell_cents: o.parts_sell_cents,
       quantity: qty,
       sold_as_set: o.sold_as_set,
@@ -539,21 +770,24 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
       shopify_tags: [],
     }
 
+    return { o, lookbook, linePrice, qty }
+  }))
+  for (const b of built) {
     // Tyres get a one-liner on the Wheels page. Wheels become cards.
     // Everything else is a full option page.
-    if (o.group_id === tyresGroupId) {
+    if (b.o.group_id === tyresGroupId) {
       tyres.push({
-        name: o.name,
-        code: o.code,
-        description: o.description,
-        line_price_cents: linePrice,
-        quantity: qty,
-        sold_as_set: o.sold_as_set,
+        name: b.o.name,
+        code: b.o.code,
+        description: b.o.description,
+        line_price_cents: b.linePrice,
+        quantity: b.qty,
+        sold_as_set: b.o.sold_as_set,
       })
-    } else if (o.group_id === wheelsGroupId) {
-      wheelOptions.push(lookbook)
+    } else if (b.o.group_id === wheelsGroupId) {
+      wheelOptions.push(b.lookbook)
     } else {
-      options.push(lookbook)
+      options.push(b.lookbook)
     }
   }
 
@@ -590,6 +824,52 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
     && !!platformRow.hero_image_height
     && (platformRow.hero_image_width / platformRow.hero_image_height) > 1.6
 
+  // Cutout detection: sample the four corners of the hero in a hidden
+  // canvas. ≥3 near-white (within 8 of #FFFFFF) means it's a studio
+  // cutout, not a photograph — the lookbook renders those on cream
+  // without the dark overlay band. Non-browser envs skip detection.
+  async function sampleCutout(url: string | null): Promise<boolean> {
+    if (!url || typeof window === 'undefined' || typeof Image === 'undefined') return false
+    return new Promise<boolean>(resolve => {
+      const img = new Image()
+      const to = setTimeout(() => resolve(false), 5000)
+      img.crossOrigin = 'anonymous'
+      img.onload = () => {
+        clearTimeout(to)
+        try {
+          const w = img.naturalWidth, h = img.naturalHeight
+          if (!w || !h) return resolve(false)
+          const canvas = document.createElement('canvas')
+          const sw = Math.min(240, w), sh = Math.min(240, h)
+          canvas.width = sw; canvas.height = sh
+          const ctx = canvas.getContext('2d')
+          if (!ctx) return resolve(false)
+          ctx.drawImage(img, 0, 0, sw, sh)
+          const samplePatch = (x: number, y: number) => {
+            const d = ctx.getImageData(x, y, 8, 8).data
+            let r = 0, g = 0, b = 0, n = 0
+            for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i+1]; b += d[i+2]; n++ }
+            return [r/n, g/n, b/n]
+          }
+          const corners = [
+            samplePatch(2, 2),
+            samplePatch(sw - 10, 2),
+            samplePatch(2, sh - 10),
+            samplePatch(sw - 10, sh - 10),
+          ]
+          const nearWhite = (c: number[]) =>
+            Math.abs(c[0] - 255) <= 8 && Math.abs(c[1] - 255) <= 8 && Math.abs(c[2] - 255) <= 8
+          resolve(corners.filter(nearWhite).length >= 3)
+        } catch {
+          resolve(false)
+        }
+      }
+      img.onerror = () => { clearTimeout(to); resolve(false) }
+      img.src = url
+    })
+  }
+  const page2HeroIsCutout = await sampleCutout(page2HeroUrl)
+
   const input: LookbookPdfInput = {
     quote_id: quote.id,
     version: quote.version,
@@ -601,6 +881,7 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
     operator_contact: operatorContact,
     closing_signer: { name: signerName, title: signerTitle, phone: signerPhone, email: signerEmail },
     platform,
+    all_platform_names: ((allPlatformsRes.data ?? []) as { name: string }[]).map(r => r.name),
     tier,
     options,
     tyres,
@@ -612,6 +893,8 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
     vehicle_year: quote.vehicle_year,
     page2_hero_url: page2HeroUrl,
     page2_hero_is_wide: page2HeroIsWide,
+    page2_hero_is_cutout: page2HeroIsCutout,
+    labour_rate_cents: (terms as unknown as { labour_rate_cents?: number }).labour_rate_cents ?? 20000,
   }
 
   const [{ LookbookPdf }, { registerBrandFonts }] = await Promise.all([

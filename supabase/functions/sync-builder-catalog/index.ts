@@ -868,14 +868,25 @@ function discoverVehiclesFromModels(html: string): DiscoveredVehicle[] {
 }
 
 async function resolveCanonicalCollection(baseUrl: string, href: string): Promise<string | null> {
+  // Fallback: if the HTML fetch fails or the canonical link isn't
+  // present, we can still use the slug baked into the input href —
+  // Shopify's /collections/<slug>/products.json endpoint tolerates
+  // both the short slug (defender-110-2020-present-exterior) and the
+  // long canonical slug (land-rover-defender-110-2020-present-exterior).
+  const hrefSlugMatch = /\/collections\/([a-z0-9][a-z0-9-]*)/i.exec(href)
+  const hrefSlug = hrefSlugMatch ? hrefSlugMatch[1] : null
   const url = href.startsWith('http') ? href : `${baseUrl}${href}`
-  const r = await shopifyFetch(url)
-  if (!r.ok) return null
-  const html = await r.text()
-  const canonMatch = /<link[^>]+rel=["']canonical["'][^>]*href=["']([^"']+)["']/i.exec(html)
-  const canonicalUrl = canonMatch ? canonMatch[1] : r.url
-  const match = /\/collections\/([a-z0-9][a-z0-9-]*)/i.exec(canonicalUrl)
-  return match ? match[1] : null
+  try {
+    const r = await shopifyFetch(url)
+    if (!r.ok) return hrefSlug
+    const html = await r.text()
+    const canonMatch = /<link[^>]+rel=["']canonical["'][^>]*href=["']([^"']+)["']/i.exec(html)
+    const canonicalUrl = canonMatch ? canonMatch[1] : r.url
+    const match = /\/collections\/([a-z0-9][a-z0-9-]*)/i.exec(canonicalUrl)
+    return match ? match[1] : hrefSlug
+  } catch {
+    return hrefSlug
+  }
 }
 
 async function syncShopify(admin: ReturnType<typeof createClient>, builder: any) {
@@ -994,6 +1005,31 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     }, { onConflict: 'builder_id,external_id' }).select('id').single()
     if (ins.error) throw ins.error
     groupIdByCat.set(cat, (ins.data as any).id)
+  }
+
+  // ─── Performance group (CTC's engine remaps live here) ─────────────
+  // The Tuning System listings sit inside Shopify's "Interior"
+  // collection, so the sync walks them under cat='interior'. We re-
+  // route them into the Performance group below. Nullable so builders
+  // without the group still work.
+  let performanceGroupId: string | null = null
+  let tuningCategoryId: string | null = null
+  if (isCostBased) {
+    const perf = await admin.from('catalog_option_groups')
+      .select('id')
+      .eq('builder_id', builder.id)
+      .eq('external_id', 'shopify:group:performance')
+      .maybeSingle()
+    performanceGroupId = (perf.data as any)?.id ?? null
+    tuningCategoryId = categories.find(c => c.name === 'Tuning')?.id ?? null
+  }
+
+  function isTuningOption(title: string | null | undefined, tags: string[]): boolean {
+    if (title && /tuning\s*system/i.test(title)) return true
+    for (const t of tags) {
+      if (/tuning-system|=tuning-system/i.test(t)) return true
+    }
+    return false
   }
 
   // ─── Resolve canonicals + build platform set ───────────────────────
@@ -1129,6 +1165,14 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
   const perPlatform: Record<string, { options: number }> = {}
   let totalVariantsSplit = 0
 
+  // ─── Interior pattern/colour image seeding ─────────────────────
+  // Lookbook interior page needs an image resolver keyed by (colour,
+  // pattern, platform). We harvest Shopify interior product
+  // titles + first images here, then after the main walk match them
+  // to catalog_finishes and bulk-upsert into catalog_finish_images.
+  interface InteriorSeed { platformId: string; title: string; images: string[] }
+  const interiorSeeds: InteriorSeed[] = []
+
   for (const { vehicle, canonicals } of resolved) {
     perPlatform[vehicle.slug] = { options: 0 }
     const platformId = platformIdByVehicle.get(vehicle.slug)!
@@ -1156,6 +1200,29 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
           if (variants.length === 0) continue
           const isMulti = variants.length > 1
           if (isMulti) totalVariantsSplit += variants.length
+
+          // Capture interior products so we can seed finish-image
+          // overrides after the main walk. We only need the title + a
+          // couple of hero images; variant iteration is irrelevant
+          // here.
+          if (cat === 'interior') {
+            // @react-pdf renders JPG and PNG only; a GIF hero (which
+            // Shopify sometimes puts first for animated previews)
+            // silently disappears from the lookbook. Strip them.
+            // Also skip template / seat-map line drawings — URLs often
+            // name them "DEFENDER-90-DESIGNO.webp" or similar, which
+            // the client renderer's keyword filter also catches but we
+            // prefer not to even insert.
+            const diagramRe = /(template|diagram|pattern|layout|line|seat-map)/i
+            const imgs = (product.images ?? [])
+              .map(i => i.src).filter((v): v is string => !!v)
+              .filter(u => !/\.gif(?:\?|$)/i.test(u))
+              .filter(u => !diagramRe.test(u))
+              .slice(0, 3)
+            if (imgs.length > 0 && typeof product.title === 'string') {
+              interiorSeeds.push({ platformId, title: product.title, images: imgs })
+            }
+          }
 
           for (const variant of variants) {
             const suffix = isMulti ? `-${variant.id}` : ''
@@ -1198,6 +1265,18 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
               categoryId = pickCategoryId(cat, (product.tags as string[]) ?? [])
             }
 
+            // Tuning override: CTC files engine remaps under Interior,
+            // but they're performance parts. Lift them into the
+            // Performance group + Tuning category when either the tag
+            // or the title identifies them.
+            const isTuning = isTuningOption(product.title, (product.tags as string[]) ?? [])
+            const effectiveGroupId = isTuning && performanceGroupId
+              ? performanceGroupId
+              : groupId
+            if (isTuning && tuningCategoryId && !existingRow?.category_locked) {
+              categoryId = tuningCategoryId
+            }
+
             const imageUrls = (product.images ?? []).map(img => img.src).filter((v): v is string => !!v)
             const description = bodyToDescription(product.body_html)
 
@@ -1219,7 +1298,7 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
                 image_urls: imageUrls,
                 active,
                 sold_as_set: soldAsSet,
-                group_id: groupId,
+                group_id: effectiveGroupId,
                 group_priority: priority,
                 platform_ids: new Set<string>(existing?.platform_ids ?? []),
               })
@@ -1450,6 +1529,96 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     imagesInserted += chunk.length
   }
 
+  // ─── Seed catalog_finish_images from interior Shopify titles ────
+  // Walk collected interior products, extract pattern + colour from
+  // the title (and tags) and insert one row per (pattern[, colour],
+  // platform) with the product's first image. Only rows marked
+  // source = 'shopify' are overwritten; manual uploads survive.
+  let finishImagesSeeded = 0
+  const finishSets = await admin.from('catalog_finish_sets')
+    .select('id, name').eq('builder_id', builder.id)
+  if (finishSets.error) throw finishSets.error
+  const patternSetId = (finishSets.data ?? []).find((s: { name: string }) => s.name === 'Interior pattern')?.id ?? null
+  const colourSetId  = (finishSets.data ?? []).find((s: { name: string }) => s.name === 'Interior colour')?.id ?? null
+  if (patternSetId && interiorSeeds.length > 0) {
+    const finishes = await admin.from('catalog_finishes')
+      .select('id, name, finish_set_id').in('finish_set_id', [patternSetId, colourSetId].filter(Boolean))
+    if (finishes.error) throw finishes.error
+    const patternByLc = new Map<string, string>()
+    const colourByLc  = new Map<string, string>()
+    for (const f of (finishes.data ?? []) as { id: string; name: string; finish_set_id: string }[]) {
+      if (f.finish_set_id === patternSetId) patternByLc.set(f.name.toLowerCase(), f.id)
+      if (f.finish_set_id === colourSetId)  colourByLc.set(f.name.toLowerCase(), f.id)
+    }
+    // Richer Shopify colour vocab aliased to our catalog colours.
+    // Returns both the catalog finish id (when the aliased word maps)
+    // AND the raw label pulled from the title, so pattern-only rows
+    // can still surface "Shown in Volcanic Orange" at render time.
+    const matchColour = (text: string): { id: string | null; label: string | null } => {
+      const lc = text.toLowerCase()
+      if (/british\s+tan/.test(lc))     return { id: colourByLc.get('tan')   ?? null, label: 'British Tan' }
+      if (/\btan\b/.test(lc))           return { id: colourByLc.get('tan')   ?? null, label: 'Tan' }
+      if (/volcanic\s+black/.test(lc))  return { id: colourByLc.get('black') ?? null, label: 'Volcanic Black' }
+      if (/\bblack\b/.test(lc))         return { id: colourByLc.get('black') ?? null, label: 'Black' }
+      const vol = /volcanic\s+([a-z]+)/.exec(lc)
+      if (vol) return { id: null, label: `Volcanic ${vol[1][0].toUpperCase() + vol[1].slice(1)}` }
+      return { id: null, label: null }
+    }
+    // Clear previous shopify-sourced rows so stale titles don't
+    // linger if the Shopify catalog changes. Manual rows (source =
+    // 'manual') survive.
+    const del = await admin.from('catalog_finish_images')
+      .delete().eq('builder_id', builder.id).eq('source', 'shopify')
+    if (del.error) throw del.error
+    const seedRows: Array<{
+      builder_id: string
+      finish_set_id: string
+      finish_id: string | null
+      pattern_finish_id: string
+      platform_id: string
+      image_url: string
+      source: 'shopify'
+      source_colour_label: string | null
+    }> = []
+    const dedupe = new Set<string>()  // "finish|pattern|platform"
+    for (const seed of interiorSeeds) {
+      // Match a pattern name in the title ("Designo", "3D Modular",
+      // "Clam Shell", "Herringbone", "Comfort", "Sport", …).
+      let patternId: string | null = null
+      for (const [name, id] of patternByLc) {
+        const re = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\b`, 'i')
+        if (re.test(seed.title)) { patternId = id; break }
+      }
+      if (!patternId) continue  // not a pattern-identifying listing
+      const colour = matchColour(seed.title)
+      // Match semantics changed per the brief: both colour AND pattern
+      // must be in the Shopify title/tags for a colour-anchored row;
+      // otherwise store a single pattern-only row with the raw label
+      // (when any was found) so the renderer can caption the swap.
+      const finishId: string | null = colour.id  // null → pattern-only
+      const key = `${finishId ?? '_'}|${patternId}|${seed.platformId}`
+      if (dedupe.has(key)) continue
+      dedupe.add(key)
+      seedRows.push({
+        builder_id: builder.id,
+        finish_set_id: colourSetId!,
+        finish_id: finishId,
+        pattern_finish_id: patternId,
+        platform_id: seed.platformId,
+        image_url: seed.images[0],
+        source: 'shopify',
+        source_colour_label: colour.label,
+      })
+    }
+    const SEED_CHUNK = 500
+    for (let i = 0; i < seedRows.length; i += SEED_CHUNK) {
+      const chunk = seedRows.slice(i, i + SEED_CHUNK)
+      const ins = await admin.from('catalog_finish_images').insert(chunk)
+      if (ins.error) throw ins.error
+      finishImagesSeeded += chunk.length
+    }
+  }
+
   // ─── Deactivate stale rows via updated_at (survives URL-length limits) ─
   // Anything synced + still-active that wasn't touched this run is stale.
   const platformsMissing = await admin.from('catalog_platforms')
@@ -1594,6 +1763,7 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
     kit_markup: markup,
     images_inserted: imagesInserted,
     platform_heroes_written: heroesWritten,
+    finish_images_seeded: finishImagesSeeded,
     summary,
   }
 }

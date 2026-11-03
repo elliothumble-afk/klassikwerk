@@ -116,8 +116,21 @@ export interface LookbookOption {
   description: string | null
   image_url: string | null
   swatch_image_url: string | null
+  /** Pre-formatted caption for leather-interior options when the
+   *  rendered image isn't an exact colour+pattern match (pattern-only
+   *  with a known shown colour, or the any-interior-photo fallback).
+   *  Null when the match is exact or no caption applies. */
+  finish_image_caption: string | null
   // Fully resolved line price (parts × qty + install).
   line_price_cents: number
+  /** Parts-sell dollars shown in the Investment "Parts" column
+   *  (already × quantity when applicable). Null for legacy quotes. */
+  parts_cents: number | null
+  /** Fitting billed dollars (labour_cents + materials_cents snapshot). */
+  fitting_cents: number | null
+  /** Hours billed for fitting, derived from labour_cents / builder
+   *  labour_rate_cents. Rounded to the nearest hour. */
+  fitting_hours: number | null
   parts_sell_cents: number | null
   quantity: number
   sold_as_set: boolean
@@ -156,6 +169,10 @@ export interface LookbookPdfInput {
     email: string | null
   }
   platform: PlatformLike & { lookbook_copy: string | null }
+  /** All builder platform names (full list) — cleanName uses this to
+   *  strip leading platform-name prefixes when there's no `(years)`
+   *  parenthetical to anchor the match. */
+  all_platform_names: string[]
   tier: TierLike
   options: LookbookOption[]
   tyres: LookbookTyre[]
@@ -174,6 +191,14 @@ export interface LookbookPdfInput {
    *  stays as the half-page layout; wider becomes a full-bleed top
    *  band so the banner isn't centre-cropped into a tall slice. */
   page2_hero_is_wide: boolean
+  /** True when the hero's four corners sample near-white — it's a
+   *  product cutout (studio shot on a white background), not a
+   *  photograph. Cutouts get a cream page + contained image + text
+   *  below; photos get the full-bleed hero + gradient overlay. */
+  page2_hero_is_cutout: boolean
+  /** Builder's billed labour rate ($/hour) — surfaced in the
+   *  Investment footnote and used to format fitting hours. */
+  labour_rate_cents: number
 }
 
 export interface ContractPdfInput {

@@ -479,6 +479,45 @@ export type Database = {
         }
         Relationships: []
       }
+      catalog_finish_images: {
+        Row: {
+          id: string
+          builder_id: string
+          finish_set_id: string
+          finish_id: string | null
+          pattern_finish_id: string | null
+          platform_id: string | null
+          image_url: string
+          source: 'shopify' | 'manual'
+          source_colour_label: string | null
+          sort: number
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          builder_id: string
+          finish_set_id: string
+          finish_id?: string | null
+          pattern_finish_id?: string | null
+          platform_id?: string | null
+          image_url: string
+          source?: 'shopify' | 'manual'
+          source_colour_label?: string | null
+          sort?: number
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          image_url?: string
+          source?: 'shopify' | 'manual'
+          source_colour_label?: string | null
+          sort?: number
+          platform_id?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
       origins: {
         Row: {
           id: string

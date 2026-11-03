@@ -706,6 +706,148 @@ function FinishesTab({ builderId, reprice }: { builderId: string; reprice: () =>
           <Plus size={13} /> Add set
         </button>
       </div>
+
+      <FinishImagesOverridesEditor
+        builderId={builderId}
+        sets={q.data!.sets}
+        finishes={q.data!.finishes}
+      />
+    </div>
+  )
+}
+
+// ─── Finish-image overrides (per colour × pattern) ────────────────
+// Lookbook interior page resolves images in a ladder: (platform,
+// colour, pattern) → (colour, pattern) → (pattern) → the option's
+// own image. The sync seeds pattern+colour rows from Shopify; this
+// editor lets ops upload per (colour, pattern) override images,
+// scoped to "all platforms" so they share across every quote.
+function FinishImagesOverridesEditor({ builderId, sets, finishes }: {
+  builderId: string
+  sets: CatalogFinishSet[]
+  finishes: CatalogFinish[]
+}) {
+  const qc = useQueryClient()
+  const colourSet  = sets.find(s => s.name === 'Interior colour')
+  const patternSet = sets.find(s => s.name === 'Interior pattern')
+  const colours = finishes.filter(f => f.finish_set_id === colourSet?.id)
+  const patterns = finishes.filter(f => f.finish_set_id === patternSet?.id)
+
+  const rowsQ = useQuery({
+    queryKey: ['finish-images', builderId],
+    enabled: Boolean(colourSet?.id && patternSet?.id),
+    queryFn: async () => {
+      const { data, error } = await supabase.from('catalog_finish_images')
+        .select('id, finish_id, pattern_finish_id, platform_id, image_url, source')
+        .eq('builder_id', builderId)
+        .is('platform_id', null)
+        .eq('source', 'manual')
+      if (error) throw error
+      return data as { id: string; finish_id: string; pattern_finish_id: string | null; platform_id: string | null; image_url: string; source: string }[]
+    },
+  })
+
+  const upload = useMutation({
+    mutationFn: async ({ finishId, patternId, file }: { finishId: string; patternId: string; file: File }) => {
+      const ext = (file.name.split('.').pop() ?? 'jpg').toLowerCase()
+      const path = `finish-images/${builderId}/${finishId}-${patternId}-${Date.now()}.${ext}`
+      const up = await supabase.storage.from('media').upload(path, file, { upsert: true, contentType: file.type })
+      if (up.error) throw up.error
+      const { data: pub } = supabase.storage.from('media').getPublicUrl(path)
+      // Replace any existing manual row for this (colour, pattern)
+      // combo so we don't accumulate orphans.
+      await supabase.from('catalog_finish_images')
+        .delete().eq('builder_id', builderId)
+        .eq('finish_id', finishId).eq('pattern_finish_id', patternId)
+        .is('platform_id', null).eq('source', 'manual')
+      const ins = await supabase.from('catalog_finish_images').insert({
+        builder_id: builderId,
+        finish_set_id: colourSet!.id,
+        finish_id: finishId,
+        pattern_finish_id: patternId,
+        platform_id: null,
+        image_url: pub.publicUrl,
+        source: 'manual',
+      })
+      if (ins.error) throw ins.error
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['finish-images', builderId] }),
+  })
+
+  const remove = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from('catalog_finish_images').delete().eq('id', id)
+      if (error) throw error
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['finish-images', builderId] }),
+  })
+
+  if (!colourSet || !patternSet) return null
+  const byCombo = new Map<string, { id: string; url: string }>()
+  for (const r of rowsQ.data ?? []) {
+    if (r.finish_id && r.pattern_finish_id) {
+      byCombo.set(`${r.finish_id}|${r.pattern_finish_id}`, { id: r.id, url: r.image_url })
+    }
+  }
+
+  return (
+    <div className="mt-10 pt-6 border-t border-[var(--color-border)]">
+      <h3 className="text-sm font-medium mb-1">Interior finish images (manual overrides)</h3>
+      <p className="text-xs text-[var(--color-muted)] mb-4">
+        Per colour × pattern image used on the Lookbook interior page. Falls back to the Shopify-seeded image
+        when no override is set. Overrides apply across every platform.
+      </p>
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-xs">
+          <thead>
+            <tr>
+              <th className="text-left pr-3 pb-2 text-[var(--color-muted)]">Colour \ Pattern</th>
+              {patterns.map(p => (
+                <th key={p.id} className="text-left px-2 pb-2 text-[var(--color-muted)]">{p.name}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {colours.map(c => (
+              <tr key={c.id} className="border-t border-[var(--color-border)]">
+                <td className="pr-3 py-2 font-medium">{c.name}</td>
+                {patterns.map(p => {
+                  const existing = byCombo.get(`${c.id}|${p.id}`)
+                  return (
+                    <td key={p.id} className="px-2 py-2 align-top">
+                      {existing ? (
+                        <div className="flex items-center gap-2">
+                          <img src={existing.url} alt="" className="w-12 h-10 object-cover rounded-sm border border-[var(--color-border)]" />
+                          <button
+                            type="button"
+                            onClick={() => remove.mutate(existing.id)}
+                            className="text-[var(--color-muted)] hover:text-[var(--color-danger)] text-[11px]"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ) : (
+                        <label className="inline-block cursor-pointer text-[var(--color-accent)] hover:underline text-[11px]">
+                          Upload
+                          <input
+                            type="file"
+                            accept="image/jpeg,image/png"
+                            className="hidden"
+                            onChange={e => {
+                              const file = e.target.files?.[0]
+                              if (file) upload.mutate({ finishId: c.id, patternId: p.id, file })
+                            }}
+                          />
+                        </label>
+                      )}
+                    </td>
+                  )
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }

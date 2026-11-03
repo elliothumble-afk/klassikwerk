@@ -467,27 +467,77 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
   }
   const finishImages = (finishImagesRes.data ?? []) as FimRow[]
   interface ResolvedFim { url: string; sourceColourLabel: string | null; exact: boolean }
-  function resolveFinishImage(platformId: string, colourId: string | null, patternId: string | null): ResolvedFim | null {
+
+  // Interior images sometimes come back as line drawings / template
+  // layouts (seat-map SVGs rendered as JPG). Skip anything whose URL
+  // or alt text obviously names a diagram, and anything whose pixel
+  // profile reads as "near-zero saturation + mostly white" at 32×32.
+  const DIAGRAM_WORDS = /(template|diagram|pattern|layout|line|seat-map)/i
+  function urlLooksDiagrammatic(url: string | null | undefined): boolean {
+    if (!url) return false
+    return DIAGRAM_WORDS.test(url)
+  }
+  async function sampleDiagrammatic(url: string | null): Promise<boolean> {
+    if (!url || typeof window === 'undefined' || typeof Image === 'undefined') return false
+    return new Promise<boolean>(resolve => {
+      const img = new Image()
+      const to = setTimeout(() => resolve(false), 5000)
+      img.crossOrigin = 'anonymous'
+      img.onload = () => {
+        clearTimeout(to)
+        try {
+          const canvas = document.createElement('canvas')
+          canvas.width = 32; canvas.height = 32
+          const ctx = canvas.getContext('2d')
+          if (!ctx) return resolve(false)
+          ctx.drawImage(img, 0, 0, 32, 32)
+          const d = ctx.getImageData(0, 0, 32, 32).data
+          let satSum = 0, whiteCount = 0, n = 0
+          for (let i = 0; i < d.length; i += 4) {
+            const r = d[i], g = d[i + 1], b = d[i + 2]
+            const maxC = Math.max(r, g, b), minC = Math.min(r, g, b)
+            const sat = maxC === 0 ? 0 : (maxC - minC) / maxC
+            satSum += sat
+            if (r > 240 && g > 240 && b > 240) whiteCount++
+            n++
+          }
+          const avgSat = satSum / n
+          const whiteFrac = whiteCount / n
+          resolve(avgSat < 0.08 && whiteFrac > 0.55)
+        } catch {
+          resolve(false)
+        }
+      }
+      img.onerror = () => { clearTimeout(to); resolve(false) }
+      img.src = url
+    })
+  }
+  async function viableInteriorImage(url: string | null): Promise<boolean> {
+    if (!url) return false
+    if (urlLooksDiagrammatic(url)) return false
+    const sampled = await sampleDiagrammatic(url)
+    return !sampled
+  }
+
+  function pickFinishImage(
+    platformId: string, colourId: string | null, patternId: string | null,
+    tier: 'exact' | 'pattern-only',
+  ): ResolvedFim | null {
     if (!patternId) return null
     const prefer = (a: FimRow, b: FimRow) => (a.source === 'manual' ? -1 : b.source === 'manual' ? 1 : 0)
     const pick = (filterFn: (r: FimRow) => boolean, exact: boolean): ResolvedFim | null => {
       const hit = finishImages.filter(filterFn).sort(prefer)[0]
       return hit ? { url: hit.image_url, sourceColourLabel: hit.source_colour_label, exact } : null
     }
-    // L1: exact platform + colour + pattern.
-    if (colourId) {
-      const hit = pick(r => r.pattern_finish_id === patternId && r.finish_id === colourId && r.platform_id === platformId, true)
-      if (hit) return hit
+    if (tier === 'exact') {
+      if (!colourId) return null
+      const platHit = pick(r => r.pattern_finish_id === patternId && r.finish_id === colourId && r.platform_id === platformId, true)
+      if (platHit) return platHit
+      return pick(r => r.pattern_finish_id === patternId && r.finish_id === colourId && r.platform_id === null, true)
     }
-    // L2: colour + pattern (platform-agnostic).
-    if (colourId) {
-      const hit = pick(r => r.pattern_finish_id === patternId && r.finish_id === colourId && r.platform_id === null, true)
-      if (hit) return hit
-    }
-    // L3: pattern-only on same platform.
-    const samePlat = pick(r => r.pattern_finish_id === patternId && r.finish_id === null && r.platform_id === platformId, false)
-    if (samePlat) return samePlat
-    // L4: pattern-only, platform-agnostic.
+    // pattern-only tier
+    const platHit = pick(r => r.pattern_finish_id === patternId && r.finish_id === null && r.platform_id === platformId, false)
+    if (platHit) return platHit
     return pick(r => r.pattern_finish_id === patternId && r.finish_id === null, false)
   }
 
@@ -535,11 +585,12 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
   const options: LookbookOption[] = []
   const tyres: LookbookTyre[] = []
   const wheelOptions: LookbookOption[] = []
-  for (const o of (optsRes.data ?? []) as unknown as {
+  const optRows = (optsRes.data ?? []) as unknown as {
     id: string; name: string; code: string | null; group_id: string; category_id: string | null
     swatch_image_url: string | null; lead_image_url: string | null; description: string | null
     sold_as_set: boolean; parts_sell_cents: number | null; install_price_cents: number | null
-  }[]) {
+  }[]
+  const built = await Promise.all(optRows.map(async (o) => {
     const qo = qoByOption.get(o.id)!
     const qty = qo.quantity ?? 1
     // Line price reads straight off the quote_options snapshot:
@@ -562,29 +613,52 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
 
     const cat = o.category_id ? categoryById.get(o.category_id) : null
 
-    // Resolve a leather-interior image via the finish-image ladder.
-    // The resolver only fires when there's a pattern finish on the
-    // quote — other categories keep the lead-image path unchanged.
     const colourFinish = (qo.quote_option_finishes ?? [])
       .find(f => f.catalog_finish_sets?.name === 'Interior colour') ?? null
     const patternFinish = (qo.quote_option_finishes ?? [])
       .find(f => f.catalog_finish_sets?.name === 'Interior pattern') ?? null
-    const finishImg = patternFinish
-      ? resolveFinishImage(quote.platform_id, colourFinish?.finish_id ?? null, patternFinish.finish_id)
-      : null
 
     const isLeatherInterior = cat?.name === 'Leather interior'
-    let img: string | null
+    let img: string | null = null
     let finishImageSourceColour: string | null = null
+
     if (isLeatherInterior) {
-      // Leather interior: never show a stock OEM photo. Use only
-      // the finish-image match; if we don't have one, leave the
-      // image slot blank so the renderer draws a text-only panel.
-      img = finishImg?.url ?? null
-      finishImageSourceColour = finishImg && !finishImg.exact
-        ? finishImg.sourceColourLabel
+      // Three-tier resolution for leather-interior options:
+      //   1. colour + pattern photo (platform-specific or agnostic)
+      //   2. the option's own product photos (first non-diagram)
+      //   3. pattern-only photo
+      // Diagram detection: URL/alt keyword filter + 32×32 pixel probe
+      // for near-zero saturation + mostly-white (template line
+      // drawings). Never a stock OEM — if nothing viable, leave null.
+      const exactHit = patternFinish
+        ? pickFinishImage(quote.platform_id, colourFinish?.finish_id ?? null, patternFinish.finish_id, 'exact')
         : null
+      if (exactHit && await viableInteriorImage(exactHit.url)) {
+        img = exactHit.url
+      } else {
+        const ownCandidates = [
+          o.lead_image_url,
+          ...(imagesByOption.get(o.id) ?? []).map(x => x.url),
+          o.swatch_image_url,
+        ].filter((v): v is string => !!v)
+        for (const u of ownCandidates) {
+          if (await viableInteriorImage(u)) { img = u; break }
+        }
+        if (!img) {
+          const patternHit = patternFinish
+            ? pickFinishImage(quote.platform_id, null, patternFinish.finish_id, 'pattern-only')
+            : null
+          if (patternHit && await viableInteriorImage(patternHit.url)) {
+            img = patternHit.url
+            finishImageSourceColour = patternHit.sourceColourLabel
+          }
+        }
+      }
     } else {
+      const finishImg = patternFinish
+        ? pickFinishImage(quote.platform_id, colourFinish?.finish_id ?? null, patternFinish.finish_id, 'exact')
+          ?? pickFinishImage(quote.platform_id, null, patternFinish.finish_id, 'pattern-only')
+        : null
       img = finishImg?.url
         ?? o.lead_image_url
         ?? imagesByOption.get(o.id)?.[0]?.url
@@ -625,21 +699,24 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
       shopify_tags: [],
     }
 
+    return { o, lookbook, linePrice, qty }
+  }))
+  for (const b of built) {
     // Tyres get a one-liner on the Wheels page. Wheels become cards.
     // Everything else is a full option page.
-    if (o.group_id === tyresGroupId) {
+    if (b.o.group_id === tyresGroupId) {
       tyres.push({
-        name: o.name,
-        code: o.code,
-        description: o.description,
-        line_price_cents: linePrice,
-        quantity: qty,
-        sold_as_set: o.sold_as_set,
+        name: b.o.name,
+        code: b.o.code,
+        description: b.o.description,
+        line_price_cents: b.linePrice,
+        quantity: b.qty,
+        sold_as_set: b.o.sold_as_set,
       })
-    } else if (o.group_id === wheelsGroupId) {
-      wheelOptions.push(lookbook)
+    } else if (b.o.group_id === wheelsGroupId) {
+      wheelOptions.push(b.lookbook)
     } else {
-      options.push(lookbook)
+      options.push(b.lookbook)
     }
   }
 

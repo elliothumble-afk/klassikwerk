@@ -1209,9 +1209,15 @@ async function syncShopify(admin: ReturnType<typeof createClient>, builder: any)
             // @react-pdf renders JPG and PNG only; a GIF hero (which
             // Shopify sometimes puts first for animated previews)
             // silently disappears from the lookbook. Strip them.
+            // Also skip template / seat-map line drawings — URLs often
+            // name them "DEFENDER-90-DESIGNO.webp" or similar, which
+            // the client renderer's keyword filter also catches but we
+            // prefer not to even insert.
+            const diagramRe = /(template|diagram|pattern|layout|line|seat-map)/i
             const imgs = (product.images ?? [])
               .map(i => i.src).filter((v): v is string => !!v)
               .filter(u => !/\.gif(?:\?|$)/i.test(u))
+              .filter(u => !diagramRe.test(u))
               .slice(0, 3)
             if (imgs.length > 0 && typeof product.title === 'string') {
               interiorSeeds.push({ platformId, title: product.title, images: imgs })

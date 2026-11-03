@@ -394,7 +394,9 @@ export function LookbookPdf(input: LookbookPdfInput) {
         if (page2_hero_is_cutout) {
           const imageH = Math.round(PAGE_H * 0.62)
           return (
-            <Page key="page2" size={{ width: PAGE_W, height: PAGE_H }} style={base.cream}>
+            <Page key="page2" size={{ width: PAGE_W, height: PAGE_H }} style={{
+              backgroundColor: '#FFFFFF', color: INK, fontFamily: body, padding: 0,
+            }}>
               <View style={{
                 position: 'absolute', top: 0, left: 0,
                 width: PAGE_W, height: imageH,

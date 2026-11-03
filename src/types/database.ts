@@ -878,6 +878,7 @@ export type Database = {
           notes: string | null
           payment_status: 'unpaid' | 'pending' | 'paid' | 'failed'
           quote_id: string | null
+          install_instructions: string | null
           created_at: string
           updated_at: string
         }
@@ -895,6 +896,7 @@ export type Database = {
           notes?: string | null
           payment_status?: 'unpaid' | 'pending' | 'paid' | 'failed'
           quote_id?: string | null
+          install_instructions?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -911,6 +913,7 @@ export type Database = {
           notes?: string | null
           payment_status?: 'unpaid' | 'pending' | 'paid' | 'failed'
           quote_id?: string | null
+          install_instructions?: string | null
           updated_at?: string
         }
         Relationships: []
@@ -922,6 +925,8 @@ export type Database = {
           option_id: string
           price_cents_at_selection: number
           quantity: number
+          instruction: string | null
+          received_at: string | null
           created_at: string
         }
         Insert: {
@@ -930,6 +935,8 @@ export type Database = {
           option_id: string
           price_cents_at_selection: number
           quantity?: number
+          instruction?: string | null
+          received_at?: string | null
           created_at?: string
         }
         Update: {
@@ -937,6 +944,132 @@ export type Database = {
           option_id?: string
           price_cents_at_selection?: number
           quantity?: number
+          instruction?: string | null
+          received_at?: string | null
+        }
+        Relationships: []
+      }
+      suppliers: {
+        Row: {
+          id: string
+          builder_id: string
+          name: string
+          email: string | null
+          cc_email: string | null
+          currency: string
+          address: string | null
+          order_notes: string | null
+          lead_time_days: number | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          builder_id: string
+          name: string
+          email?: string | null
+          cc_email?: string | null
+          currency?: string
+          address?: string | null
+          order_notes?: string | null
+          lead_time_days?: number | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          builder_id?: string
+          name?: string
+          email?: string | null
+          cc_email?: string | null
+          currency?: string
+          address?: string | null
+          order_notes?: string | null
+          lead_time_days?: number | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      purchase_orders: {
+        Row: {
+          id: string
+          build_id: string
+          supplier_id: string
+          number: string
+          status: 'draft' | 'sent' | 'confirmed' | 'received'
+          currency: string
+          subtotal_cents: number
+          pdf_url: string | null
+          sent_at: string | null
+          sent_to: string | null
+          confirmed_at: string | null
+          received_at: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          build_id: string
+          supplier_id: string
+          number: string
+          status?: 'draft' | 'sent' | 'confirmed' | 'received'
+          currency: string
+          subtotal_cents?: number
+          pdf_url?: string | null
+          sent_at?: string | null
+          sent_to?: string | null
+          confirmed_at?: string | null
+          received_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          status?: 'draft' | 'sent' | 'confirmed' | 'received'
+          subtotal_cents?: number
+          pdf_url?: string | null
+          sent_at?: string | null
+          sent_to?: string | null
+          confirmed_at?: string | null
+          received_at?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      purchase_order_lines: {
+        Row: {
+          id: string
+          po_id: string
+          build_option_id: string | null
+          sku: string | null
+          description: string
+          qty: number
+          unit_cost_cents: number
+          finish: string | null
+          note: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          po_id: string
+          build_option_id?: string | null
+          sku?: string | null
+          description: string
+          qty: number
+          unit_cost_cents: number
+          finish?: string | null
+          note?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          build_option_id?: string | null
+          sku?: string | null
+          description?: string
+          qty?: number
+          unit_cost_cents?: number
+          finish?: string | null
+          note?: string | null
+          updated_at?: string
         }
         Relationships: []
       }
@@ -1183,6 +1316,7 @@ export type Database = {
           cost_cents: number | null
           description: string | null
           lead_image_url: string | null
+          supplier_id: string | null
           created_at: string
           updated_at: string
         }

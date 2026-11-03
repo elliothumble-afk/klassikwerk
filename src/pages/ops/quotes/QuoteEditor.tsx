@@ -914,6 +914,10 @@ export function QuoteEditor() {
         quantity: qo.quantity ?? 1,
       }))
       if (rows.length) await supabase.from('build_options').insert(rows)
+      // Phase 7: draft POs per supplier.
+      const poRes = await (supabase as unknown as { rpc: (fn: string, args: Record<string, unknown>) => Promise<{ error: Error | null }> })
+        .rpc('generate_purchase_orders', { p_build_id: buildId })
+      if (poRes.error) throw poRes.error
       await supabase.from('build_stage_events').insert({
         build_id: buildId, from_stage: null, to_stage: 'contract', note: 'Created from quote',
       })

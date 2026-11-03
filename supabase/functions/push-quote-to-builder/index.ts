@@ -50,7 +50,7 @@ Deno.serve(async (req) => {
     const [platformRes, tierRes, qoRes] = await Promise.all([
       admin.from('catalog_platforms').select('slug, external_id, name').eq('id', (await admin.from('quotes').select('platform_id').eq('id', quote.id).single()).data!.platform_id).single(),
       admin.from('catalog_tiers').select('slug, external_id, name').eq('id', (await admin.from('quotes').select('tier_id').eq('id', quote.id).single()).data!.tier_id).single(),
-      admin.from('quote_options').select('option_id, price_cents_at_selection, quantity, finish_note, catalog_options(slug, external_id, name, sold_as_set), quote_option_finishes(finish_set_id, catalog_finish_sets(name, sort), catalog_finishes(name))').eq('quote_id', quote.id),
+      admin.from('quote_options').select('option_id, price_cents_at_selection, quantity, finish_note, catalog_options(slug, external_id, name, sold_as_set, kit_sku, kit_sku_placeholder), quote_option_finishes(finish_set_id, catalog_finish_sets(name, sort), catalog_finishes(name))').eq('quote_id', quote.id),
     ])
     if (platformRes.error) throw platformRes.error
     if (tierRes.error) throw tierRes.error
@@ -86,10 +86,18 @@ Deno.serve(async (req) => {
           .sort((a, b) => (a.catalog_finish_sets?.sort ?? 0) - (b.catalog_finish_sets?.sort ?? 0))
           .map(f => ({ set: f.catalog_finish_sets?.name ?? null, name: f.catalog_finishes?.name ?? null }))
           .filter(f => f.name)
+        const kitSkuPlaceholder = o.catalog_options?.kit_sku_placeholder ?? false
         return {
           slug: o.catalog_options?.slug,
           external_id: o.catalog_options?.external_id,
           name: o.catalog_options?.name,
+          kit_sku: o.catalog_options?.kit_sku ?? null,
+          kit_sku_placeholder: kitSkuPlaceholder,
+          // When the sync didn't get a real Kahn SKU from Shopify, we
+          // use a "shopify-<handle>" placeholder so the row syncs; the
+          // builder's CRM should surface this note so the fulfilment
+          // team knows to confirm the real SKU before ordering.
+          kit_sku_note: kitSkuPlaceholder ? 'No Kahn SKU — confirm on order' : null,
           price_cents_at_selection: o.price_cents_at_selection,
           qty: soldAsSet ? 1 : (o.quantity ?? 1),
           sold_as_set: soldAsSet,

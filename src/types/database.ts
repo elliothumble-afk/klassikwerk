@@ -1135,6 +1135,7 @@ export type Database = {
           category_locked: boolean
           description_locked: boolean
           origin_locked: boolean
+          kit_sku_placeholder: boolean
           parts_sell_cents: number | null
           install_price_cents: number | null
           landed_cost_cents: number | null
@@ -1164,6 +1165,7 @@ export type Database = {
           category_locked?: boolean
           description_locked?: boolean
           origin_locked?: boolean
+          kit_sku_placeholder?: boolean
           web_price_cents?: number | null
           source_currency?: string
           parts_sell_cents?: number | null
@@ -1194,6 +1196,7 @@ export type Database = {
           category_locked?: boolean
           description_locked?: boolean
           origin_locked?: boolean
+          kit_sku_placeholder?: boolean
           web_price_cents?: number | null
           source_currency?: string
           parts_sell_cents?: number | null

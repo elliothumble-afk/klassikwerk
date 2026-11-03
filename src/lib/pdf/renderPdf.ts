@@ -466,6 +466,23 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
     source_colour_label: string | null
   }
   const finishImages = (finishImagesRes.data ?? []) as FimRow[]
+  // Finish name map — used to label the "any interior photo" fallback
+  // ("Shown: Clamshell / Volcanic Black — yours in Tan, Designo").
+  const finishIdSet = new Set<string>()
+  for (const r of finishImages) {
+    if (r.finish_id) finishIdSet.add(r.finish_id)
+    if (r.pattern_finish_id) finishIdSet.add(r.pattern_finish_id)
+  }
+  const finishNameById = new Map<string, string>()
+  if (finishIdSet.size > 0) {
+    const fnRes = await supabase.from('catalog_finishes')
+      .select('id, name').in('id', Array.from(finishIdSet))
+    if (!fnRes.error) {
+      for (const r of (fnRes.data ?? []) as { id: string; name: string }[]) {
+        finishNameById.set(r.id, r.name)
+      }
+    }
+  }
   interface ResolvedFim { url: string; sourceColourLabel: string | null; exact: boolean }
 
   // Interior images sometimes come back as line drawings / template
@@ -514,6 +531,8 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
   }
   async function viableInteriorImage(url: string | null): Promise<boolean> {
     if (!url) return false
+    // @react-pdf renders JPG/PNG only — a GIF slot silently vanishes.
+    if (/\.gif(?:\?|$)/i.test(url)) return false
     if (urlLooksDiagrammatic(url)) return false
     const sampled = await sampleDiagrammatic(url)
     return !sampled
@@ -539,6 +558,39 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
     const platHit = pick(r => r.pattern_finish_id === patternId && r.finish_id === null && r.platform_id === platformId, false)
     if (platHit) return platHit
     return pick(r => r.pattern_finish_id === patternId && r.finish_id === null, false)
+  }
+
+  // Tier-4 fallback: any leather-interior photo for this platform
+  // (any colour/pattern), then any such photo at all. Walks the
+  // candidates and returns the first that passes the diagram filter
+  // (both URL + pixel probe). Caller builds the caption from the
+  // row's finish names so the shown identity is clear.
+  async function pickAnyInteriorPhoto(platformId: string): Promise<FimRow | null> {
+    const prefer = (a: FimRow, b: FimRow) => (a.source === 'manual' ? -1 : b.source === 'manual' ? 1 : 0)
+    const platformFirst = finishImages
+      .filter(r => r.platform_id === platformId)
+      .sort(prefer)
+    for (const r of platformFirst) {
+      if (await viableInteriorImage(r.image_url)) return r
+    }
+    const anywhere = finishImages
+      .filter(r => r.platform_id !== platformId)
+      .sort(prefer)
+    for (const r of anywhere) {
+      if (await viableInteriorImage(r.image_url)) return r
+    }
+    return null
+  }
+
+  // Build "Pattern / Colour" (or just one if the other is unknown)
+  // from a FimRow. Prefers catalog finish names, falls back to the
+  // raw source_colour_label captured from the Shopify title.
+  function fimIdentity(row: FimRow): string {
+    const pattern = row.pattern_finish_id ? finishNameById.get(row.pattern_finish_id) ?? null : null
+    const colour = row.finish_id
+      ? finishNameById.get(row.finish_id) ?? null
+      : row.source_colour_label ?? null
+    return [pattern, colour].filter((v): v is string => !!v && v.length > 0).join(' / ')
   }
 
   const [optsRes, imagesRes, groupsRes] = await Promise.all([
@@ -620,16 +672,21 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
 
     const isLeatherInterior = cat?.name === 'Leather interior'
     let img: string | null = null
-    let finishImageSourceColour: string | null = null
+    let finishImageCaption: string | null = null
+    const chosenColourName = colourFinish?.catalog_finishes?.name ?? null
+    const chosenPatternName = patternFinish?.catalog_finishes?.name ?? null
 
     if (isLeatherInterior) {
-      // Three-tier resolution for leather-interior options:
-      //   1. colour + pattern photo (platform-specific or agnostic)
-      //   2. the option's own product photos (first non-diagram)
-      //   3. pattern-only photo
-      // Diagram detection: URL/alt keyword filter + 32×32 pixel probe
-      // for near-zero saturation + mostly-white (template line
-      // drawings). Never a stock OEM — if nothing viable, leave null.
+      // Four-tier resolution for leather-interior options:
+      //   1. exact colour + pattern photo (platform or agnostic)
+      //   2. option's own product photos (first non-diagram)
+      //   3. pattern-only photo (with "Shown in X — yours in Y" when
+      //      the Shopify colour was captured)
+      //   4. any CTC interior photo on this platform (any
+      //      colour/pattern) — captioned with the shown identity so
+      //      the customer knows it's representative, not literal
+      // Diagram detection: URL keyword filter + 32×32 pixel probe
+      // (near-zero saturation + mostly-white). Never a stock OEM.
       const exactHit = patternFinish
         ? pickFinishImage(quote.platform_id, colourFinish?.finish_id ?? null, patternFinish.finish_id, 'exact')
         : null
@@ -650,7 +707,21 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
             : null
           if (patternHit && await viableInteriorImage(patternHit.url)) {
             img = patternHit.url
-            finishImageSourceColour = patternHit.sourceColourLabel
+            if (patternHit.sourceColourLabel && chosenColourName
+                && patternHit.sourceColourLabel.toLowerCase() !== chosenColourName.toLowerCase()) {
+              finishImageCaption = `Shown in ${patternHit.sourceColourLabel} — yours in ${chosenColourName}`
+            }
+          }
+          if (!img) {
+            const anyHit = await pickAnyInteriorPhoto(quote.platform_id)
+            if (anyHit) {
+              img = anyHit.image_url
+              const shown = fimIdentity(anyHit)
+              const yoursParts = [chosenColourName, chosenPatternName].filter((v): v is string => !!v)
+              const yours = yoursParts.join(', ')
+              if (shown && yours) finishImageCaption = `Shown: ${shown} — yours in ${yours}`
+              else if (shown) finishImageCaption = `Shown: ${shown}`
+            }
           }
         }
       }
@@ -681,7 +752,7 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
       description: o.description,
       image_url: img,
       swatch_image_url: o.swatch_image_url,
-      finish_image_source_colour: finishImageSourceColour,
+      finish_image_caption: finishImageCaption,
       line_price_cents: linePrice,
       parts_cents: partsSell,
       fitting_cents: fittingCents,

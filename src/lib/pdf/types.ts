@@ -116,11 +116,11 @@ export interface LookbookOption {
   description: string | null
   image_url: string | null
   swatch_image_url: string | null
-  /** When the interior image came from a pattern-only finish image
-   *  row (no colour match), the Shopify colour name baked into the
-   *  product title — used for the "Shown in X — yours in Y" caption.
-   *  Null when the match was exact or there was no fallback. */
-  finish_image_source_colour: string | null
+  /** Pre-formatted caption for leather-interior options when the
+   *  rendered image isn't an exact colour+pattern match (pattern-only
+   *  with a known shown colour, or the any-interior-photo fallback).
+   *  Null when the match is exact or no caption applies. */
+  finish_image_caption: string | null
   // Fully resolved line price (parts × qty + install).
   line_price_cents: number
   /** Parts-sell dollars shown in the Investment "Parts" column

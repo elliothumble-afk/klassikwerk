@@ -503,16 +503,7 @@ export function LookbookPdf(input: LookbookPdfInput) {
             o.finishes.map(f => f.name).filter(Boolean).join(' · '),
             o.finish_note ?? '',
           ].filter(Boolean).join(' — ')
-          // Chosen colour for the "Shown in X — yours in Y" caption:
-          // prefer the colour set over the pattern set so we don't
-          // echo back the pattern name as "yours in Designo".
-          const chosenColour = o.finishes.find(f => !/pattern/i.test(f.set_name))?.name
-            ?? o.finishes[0]?.name
-            ?? null
-          const shownLine = o.finish_image_source_colour && chosenColour
-            && o.finish_image_source_colour.toLowerCase() !== chosenColour.toLowerCase()
-            ? `Shown in ${o.finish_image_source_colour} — yours in ${chosenColour}`
-            : null
+          const shownLine = o.finish_image_caption
           const half = PAGE_W / 2
 
           // Null-image: cream, centred text block. Prevents leather

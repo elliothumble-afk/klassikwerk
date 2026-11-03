@@ -117,10 +117,13 @@ export function PurchaseOrderPdf(input: PurchaseOrderPdfInput) {
           </View>
         </View>
 
-        {/* Lines table. */}
+        {/* Lines table.
+            SKU widened to 130 so Kahn's long SKUs
+            (CTCDEF20RIGIDWHEELCOVER / BCWLD2AW-110-VC-Kit) wrap
+            inside the column instead of bleeding into Description. */}
         <View style={{ marginTop: 32 }}>
           <View style={{ flexDirection: 'row', borderBottom: `1 solid ${INK}`, paddingBottom: 4 }}>
-            <Text style={[s.label, { width: 90 }]}>SKU</Text>
+            <Text style={[s.label, { width: 130 }]}>SKU</Text>
             <Text style={[s.label, { flex: 2 }]}>Description</Text>
             <Text style={[s.label, { flex: 1 }]}>Finish / variant</Text>
             <Text style={[s.label, { width: 30, textAlign: 'right' }]}>Qty</Text>
@@ -135,11 +138,14 @@ export function PurchaseOrderPdf(input: PurchaseOrderPdfInput) {
                 flexDirection: 'row', paddingVertical: 6,
                 borderBottom: `0.5 solid ${DIVIDER}`, alignItems: 'flex-start',
               }}>
-                <Text style={[s.small, { width: 90, color: flag ? RED : INK }]}>
+                <Text style={[s.small, {
+                  width: 130, paddingRight: 6,
+                  color: flag ? RED : INK,
+                }]}>
                   {flag ? 'CONFIRM PART NUMBER' : (l.sku ?? '—')}
                 </Text>
-                <Text style={[s.body, { flex: 2 }]}>{l.description}</Text>
-                <Text style={[s.small, { flex: 1 }]}>{l.finish ?? ''}</Text>
+                <Text style={[s.body, { flex: 2, paddingRight: 6 }]}>{l.description}</Text>
+                <Text style={[s.small, { flex: 1, paddingRight: 6 }]}>{l.finish ?? ''}</Text>
                 <Text style={[s.body, { width: 30, textAlign: 'right' }]}>{l.qty}</Text>
                 <Text style={[s.body, { width: 70, textAlign: 'right' }]}>{currencyFmt(l.unit_cost_cents, input.currency)}</Text>
                 <Text style={[s.body, { width: 80, textAlign: 'right' }]}>{currencyFmt(total, input.currency)}</Text>

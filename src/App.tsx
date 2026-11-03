@@ -26,6 +26,7 @@ import { LeadDetail } from '@/pages/ops/leads/LeadDetail'
 import { QuotesList } from '@/pages/ops/quotes/QuotesList'
 import { QuoteEditor } from '@/pages/ops/quotes/QuoteEditor'
 import { ZohoSettings } from '@/pages/ops/settings/ZohoSettings'
+import { OperatorSettings } from '@/pages/ops/settings/OperatorSettings'
 import { OperatorLanding } from '@/pages/public/OperatorLanding'
 import { BuilderShell } from '@/pages/public/BuilderShell'
 import { BuilderHome } from '@/pages/public/BuilderHome'
@@ -115,6 +116,11 @@ export function App() {
                     path: 'settings/zoho',
                     element: <RoleGuard role="operator" />,
                     children: [{ index: true, element: <ZohoSettings /> }],
+                  },
+                  {
+                    path: 'settings/operator',
+                    element: <RoleGuard role="operator" />,
+                    children: [{ index: true, element: <OperatorSettings /> }],
                   },
                 ],
               },

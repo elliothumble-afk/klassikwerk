@@ -918,6 +918,18 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
 // Purchase Order (Phase 7)
 // ─────────────────────────────────────────────────────────────────────
 
+// Supplier-view finish filter. The customer's exterior paint pick
+// (Body-colour paint, Raptor coating) isn't the supplier's business —
+// we paint ourselves — so swap it for "Unpainted / as supplied".
+// Interior colour/pattern + wheel finishes pass through.
+function supplierFinishView(finish: string | null): string | null {
+  if (!finish) return finish
+  const parts = finish.split(/\s*·\s*/).map(p => p.trim()).filter(Boolean)
+  const isPaint = (p: string) => /body[-\s]?colour\s*paint|body[-\s]?color\s*paint|^raptor\b/i.test(p)
+  if (parts.some(isPaint)) return 'Unpainted / as supplied'
+  return finish
+}
+
 export async function renderPurchaseOrderPdfToStorage(poId: string): Promise<string> {
   const poRes = await supabase.from('purchase_orders')
     .select('id, build_id, supplier_id, number, status, currency, subtotal_cents, created_at')
@@ -1028,9 +1040,17 @@ export async function renderPurchaseOrderPdfToStorage(poId: string): Promise<str
     },
     build_number: buildNumber,
     customer_name: customer?.full_name ?? customer?.email ?? '—',
+    // Finish filter: a PO only reveals finishes the supplier can act
+    // on. Interior colour / pattern and wheel finishes stay. Exterior
+    // paint picks (Body-colour paint, Raptor) are internal and get
+    // replaced with "Unpainted / as supplied" so the supplier ships
+    // raw. "No finish (…)" strings pass through untouched — the
+    // supplier already knows the item is being delivered as-is.
     lines: lines.map(l => ({
       sku: l.sku, description: l.description, qty: l.qty,
-      unit_cost_cents: l.unit_cost_cents, finish: l.finish, note: l.note,
+      unit_cost_cents: l.unit_cost_cents,
+      finish: supplierFinishView(l.finish),
+      note: l.note,
     })),
   }
 

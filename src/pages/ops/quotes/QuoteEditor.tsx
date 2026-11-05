@@ -752,24 +752,42 @@ export function QuoteEditor() {
           return existing.id
         }
         // Auto-version: sent / approved → new draft version.
+        // Copy every column from the source row except identity
+        // (id/version), lifecycle fields that must reset
+        // (status/pdf_url/sent_at/approved_at/token) and timestamps
+        // (created_at/updated_at). Editor state overrides the
+        // columns the user may have just edited, so theme_words,
+        // vehicle_*, notes etc. are preserved whether the editor
+        // state is populated or not.
+        const freshRes = await supabase.from('quotes').select('*').eq('id', existing.id).single()
+        if (freshRes.error) throw freshRes.error
+        const src = freshRes.data as Record<string, unknown>
+        const strip = new Set([
+          'id', 'version', 'status', 'pdf_url', 'sent_at', 'approved_at',
+          'token', 'created_at', 'updated_at',
+        ])
+        const base: Record<string, unknown> = {}
+        for (const [k, v] of Object.entries(src)) if (!strip.has(k)) base[k] = v
         await supabase.from('quotes').update({ status: 'superseded' }).eq('id', existing.id)
         const nextVersion = existing.version + 1
-        const ins = await supabase.from('quotes').insert({
-          lead_id: existing.lead_id,
-          builder_id: existing.builder_id,
-          version: nextVersion,
-          platform_id: platformId,
-          tier_id: tierId,
-          price_cents: total,
-          status: 'draft',
-          notes,
+        const overrides: Record<string, unknown> = {
+          platform_id: platformId, tier_id: tierId, price_cents: total, notes,
           labour_source: effectiveLabourSource,
           commission_cents: marginSummary?.commission ?? null,
-          theme_words: themeWords.trim() || null,
-          vehicle_colour: vehicleColour.trim() || null,
-          vehicle_year: vehicleYear.trim() ? Number(vehicleYear) : null,
-          vehicle_photo_url: vehiclePhotoUrl.trim() || null,
-        }).select('id').single()
+          theme_words: themeWords.trim() || src.theme_words || null,
+          vehicle_colour: vehicleColour.trim() || src.vehicle_colour || null,
+          vehicle_year: vehicleYear.trim() ? Number(vehicleYear) : (src.vehicle_year ?? null),
+          vehicle_photo_url: vehiclePhotoUrl.trim() || src.vehicle_photo_url || null,
+        }
+        const insertPayload = {
+          ...base,
+          ...overrides,
+          version: nextVersion,
+          status: 'draft' as const,
+        }
+        const ins = await supabase.from('quotes')
+          .insert(insertPayload as unknown as { lead_id: string; builder_id: string; version: number; platform_id: string; tier_id: string; status: 'draft' })
+          .select('id').single()
         if (ins.error) throw ins.error
         const newId = (ins.data as { id: string }).id
         await writeOptionsAndFinishes(newId, tierId)

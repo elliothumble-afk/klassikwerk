@@ -56,7 +56,7 @@ export function BuildDetail() {
         .from('builds')
         .select(`
           id, stage, price_cents, created_at, builder_id, customer_id, vehicle_id, platform_id,
-          install_instructions,
+          install_instructions, build_number,
           platform:catalog_platforms(name, chassis, years),
           tier:catalog_tiers(name, base_price_cents, lead_time_weeks)
         `)
@@ -72,6 +72,7 @@ export function BuildDetail() {
         vehicle_id: string | null
         platform_id: string
         install_instructions: string | null
+        build_number: number | null
         platform: { name: string; chassis: string; years: string } | null
         tier: { name: string; base_price_cents: number | null; lead_time_weeks: number | null } | null
       }
@@ -219,7 +220,7 @@ export function BuildDetail() {
       <div className="max-w-5xl mx-auto">
         <Link to="/ops/builds" className="text-xs text-[var(--color-muted)] hover:underline">← Builds</Link>
         <h1 className="text-2xl mt-2 mb-4" style={{ fontFamily: 'var(--font-display)' }}>
-          Build {b.id.slice(0, 8)}
+          Build {b.build_number != null ? `#${b.build_number}` : b.id.slice(0, 8)}
         </h1>
         {err && <p className="text-xs text-[var(--color-danger)] mb-3">{err}</p>}
 

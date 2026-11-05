@@ -16,7 +16,7 @@ interface QuoteData {
     lead: { customer: { full_name: string | null; email: string | null } | null } | null
     builder: { id: string; name: string; legal_name: string | null; slug: string }
     platform: { name: string; chassis: string; years: string } | null
-    tier: { name: string; base_price_cents: number | null } | null
+    tier: { name: string; base_price_cents: number | null; description: string | null } | null
   }
   brand: {
     wordmark_text: string | null
@@ -184,8 +184,15 @@ export function QuoteView() {
             <tbody>
               <tr className="border-b border-[var(--color-border)]">
                 <td className="py-2 pr-3 text-[var(--color-muted)]">Tier</td>
-                <td className="py-2 pr-3">{quote.tier?.name}</td>
-                <td className="py-2 text-right">{money(quote.tier?.base_price_cents, currency)}</td>
+                <td className="py-2 pr-3">
+                  {quote.tier?.name}
+                  {quote.tier?.description && (
+                    <div className="text-xs italic text-[var(--color-muted)] mt-1 max-w-xl">
+                      {quote.tier.description}
+                    </div>
+                  )}
+                </td>
+                <td className="py-2 text-right align-top">{money(quote.tier?.base_price_cents, currency)}</td>
               </tr>
               {quote_options.map(qo => {
                 const qty = qo.quantity ?? 1

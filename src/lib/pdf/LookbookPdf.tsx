@@ -343,10 +343,10 @@ export function LookbookPdf(input: LookbookPdfInput) {
   function investLine(
     item: string, finish: string, qty: string,
     parts: string, fitting: string, price: string,
-    key: string, padV?: number,
+    key: string, padV?: number, note?: string | null,
   ) {
     return <InvestRow key={key} item={item} finish={finish} qty={qty}
-      parts={parts} fitting={fitting} price={price} padV={padV} />
+      parts={parts} fitting={fitting} price={price} padV={padV} note={note} />
   }
 
   function fittingCell(hours: number | null, cents: number | null): string {
@@ -645,10 +645,11 @@ export function LookbookPdf(input: LookbookPdfInput) {
         const rows: GlanceRowSpec[] = [
           { label: 'Base vehicle', value: baseVehicle },
           { label: 'Vehicle colour', value: vColour?.name ?? '—' },
-          // At a Glance uses the UNFILTERED allSections so Protection
-          // appears as its own row alongside The Face, Inside, etc.
-          // Only the option-page sequencing is special-cased.
-          ...allSections.map(sec => ({
+          // At a Glance includes every section row. Protection
+          // (lookbook_sort 9999) is intentionally pulled out here
+          // and appended after Wheels + Tyres below so it reads as
+          // the last row on the page.
+          ...sections.map(sec => ({
             label: sec.section,
             value: sec.opts.map(o => cleanName(o.name, platform.name, o.code, all_platform_names)).join('; '),
           })),
@@ -664,6 +665,11 @@ export function LookbookPdf(input: LookbookPdfInput) {
             label: 'Tyres',
             value: tyres.map(t => cleanName(t.name, platform.name, t.code, all_platform_names)).join(' or '),
           }] : []),
+          // Protection row(s) last.
+          ...protectionSections.map(sec => ({
+            label: sec.section,
+            value: sec.opts.map(o => cleanName(o.name, platform.name, o.code, all_platform_names)).join('; '),
+          })),
         ]
         const MAX_PER_PAGE = 14
         const pages: GlanceRowSpec[][] = []
@@ -702,7 +708,7 @@ export function LookbookPdf(input: LookbookPdfInput) {
         <Text style={[base.h2, { marginTop: 2 }]}>Your package</Text>
         {(() => {
           // Collate all lines so we can scale padding to fit 16 on one page.
-          const lines: Array<{ item: string; finish: string; qty: string; parts: string; fitting: string; price: string; key: string }> = []
+          const lines: Array<{ item: string; finish: string; qty: string; parts: string; fitting: string; price: string; key: string; note?: string | null }> = []
           if (tier.base_price_cents != null && tier.base_price_cents > 0) {
             lines.push({
               item: tier.name, finish: '', qty: '',
@@ -710,6 +716,7 @@ export function LookbookPdf(input: LookbookPdfInput) {
               fitting: '',
               price: money(tier.base_price_cents, currency),
               key: 'tier',
+              note: tier.description ?? null,
             })
           }
           const qtyText = (sold_as_set: boolean, quantity: number) =>
@@ -725,10 +732,10 @@ export function LookbookPdf(input: LookbookPdfInput) {
               key: o.option_id,
             })
           }
-          // Investment table iterates allSections so Protection
-          // contributes a line and its parts_cents roll into the
-          // subtotal. Page ordering is the only Protection-special.
-          allSections.forEach(sec => sec.opts.forEach(pushOpt))
+          // Investment table pushes non-Protection sections first,
+          // then wheels + tyres, then Protection rows so they land
+          // at the end of the table (matching At a Glance).
+          sections.forEach(sec => sec.opts.forEach(pushOpt))
           wheel_options.forEach(pushOpt)
           tyres.forEach((t: LookbookTyre, i) => {
             lines.push({
@@ -741,6 +748,7 @@ export function LookbookPdf(input: LookbookPdfInput) {
               key: `tyre-${i}`,
             })
           })
+          protectionSections.forEach(sec => sec.opts.forEach(pushOpt))
           // Density: 1-10 → 3, 11-13 → 2, 14-16 → 1.
           const padV = lines.length <= 10 ? 3 : lines.length <= 13 ? 2 : 1
           return (
@@ -753,7 +761,7 @@ export function LookbookPdf(input: LookbookPdfInput) {
                 <Text style={[base.label, { width: 110, textAlign: 'right' }]}>Fitting</Text>
                 <Text style={[base.label, { width: 90, textAlign: 'right' }]}>Price</Text>
               </View>
-              {lines.map(l => investLine(l.item, l.finish, l.qty, l.parts, l.fitting, l.price, l.key, padV))}
+              {lines.map(l => investLine(l.item, l.finish, l.qty, l.parts, l.fitting, l.price, l.key, padV, l.note))}
               <View style={{ flexDirection: 'row', paddingTop: 6, marginTop: 2, borderTop: `0.5 solid ${INK}66` }}>
                 <Text style={[base.body, { flex: 2, fontFamily: display, fontSize: 14 }]}>Total</Text>
                 <Text style={[base.body, { flex: 1.4 }]} />
@@ -832,17 +840,24 @@ function GlanceRow({ label, value, padV = 10 }: { label: string; value: string; 
   )
 }
 
-function InvestRow({ item, finish, qty, parts, fitting, price, padV = 3 }: {
-  item: string; finish: string; qty: string; parts: string; fitting: string; price: string; padV?: number
+function InvestRow({ item, finish, qty, parts, fitting, price, padV = 3, note }: {
+  item: string; finish: string; qty: string; parts: string; fitting: string; price: string; padV?: number; note?: string | null
 }) {
   return (
-    <View style={{ flexDirection: 'row', paddingVertical: padV, borderBottom: `0.5 solid ${INK}22` }}>
-      <Text style={{ fontFamily: 'Helvetica', fontSize: 9, flex: 2 }}>{item}</Text>
-      <Text style={{ fontFamily: 'Helvetica', fontSize: 9, flex: 1.4, color: INK + '99' }}>{finish}</Text>
-      <Text style={{ fontFamily: 'Helvetica', fontSize: 9, width: 36, textAlign: 'right', color: INK + '99' }}>{qty}</Text>
-      <Text style={{ fontFamily: 'Helvetica', fontSize: 9, width: 70, textAlign: 'right', color: INK + '99' }}>{parts}</Text>
-      <Text style={{ fontFamily: 'Helvetica', fontSize: 9, width: 110, textAlign: 'right', color: INK + '99' }}>{fitting}</Text>
-      <Text style={{ fontFamily: 'Helvetica', fontSize: 9, width: 90, textAlign: 'right' }}>{price}</Text>
+    <View style={{ paddingVertical: padV, borderBottom: `0.5 solid ${INK}22` }}>
+      <View style={{ flexDirection: 'row' }}>
+        <Text style={{ fontFamily: 'Helvetica', fontSize: 9, flex: 2 }}>{item}</Text>
+        <Text style={{ fontFamily: 'Helvetica', fontSize: 9, flex: 1.4, color: INK + '99' }}>{finish}</Text>
+        <Text style={{ fontFamily: 'Helvetica', fontSize: 9, width: 36, textAlign: 'right', color: INK + '99' }}>{qty}</Text>
+        <Text style={{ fontFamily: 'Helvetica', fontSize: 9, width: 70, textAlign: 'right', color: INK + '99' }}>{parts}</Text>
+        <Text style={{ fontFamily: 'Helvetica', fontSize: 9, width: 110, textAlign: 'right', color: INK + '99' }}>{fitting}</Text>
+        <Text style={{ fontFamily: 'Helvetica', fontSize: 9, width: 90, textAlign: 'right' }}>{price}</Text>
+      </View>
+      {note && (
+        <Text style={{ fontFamily: 'Helvetica-Oblique', fontSize: 7.5, color: INK + '99', marginTop: 2, maxWidth: 560 }}>
+          {note}
+        </Text>
+      )}
     </View>
   )
 }

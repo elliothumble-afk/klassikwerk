@@ -874,6 +874,7 @@ export type Database = {
           stage: string
           slot_year: number | null
           slot_number: number | null
+          build_number: number | null
           price_cents: number | null
           notes: string | null
           payment_status: 'unpaid' | 'pending' | 'paid' | 'failed'
@@ -892,6 +893,7 @@ export type Database = {
           stage?: string
           slot_year?: number | null
           slot_number?: number | null
+          build_number?: number | null
           price_cents?: number | null
           notes?: string | null
           payment_status?: 'unpaid' | 'pending' | 'paid' | 'failed'

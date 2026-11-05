@@ -619,6 +619,11 @@ export function LookbookPdf(input: LookbookPdfInput) {
         </Page>
       )}
 
+      {/* ─── Protection pages (after Wheels, before the Statement) ─ */}
+      {protectionSections.flatMap((section, sectionIdx) =>
+        section.opts.map((o, i) => renderOptionPage(section, sectionIdx, o, i)),
+      )}
+
       {/* ─── Statement (green) ──────────────────────────────────── */}
       {brand.lookbook_statement && (
         <Page size={{ width: PAGE_W, height: PAGE_H }} style={base.green}>
@@ -630,11 +635,6 @@ export function LookbookPdf(input: LookbookPdfInput) {
           </View>
           <Footer dark />
         </Page>
-      )}
-
-      {/* ─── Protection pages (after Wheels) ─────────────────────── */}
-      {protectionSections.flatMap((section, sectionIdx) =>
-        section.opts.map((o, i) => renderOptionPage(section, sectionIdx, o, i)),
       )}
 
       {/* ─── At a Glance ────────────────────────────────────────── */}

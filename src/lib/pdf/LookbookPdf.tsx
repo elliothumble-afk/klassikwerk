@@ -645,7 +645,10 @@ export function LookbookPdf(input: LookbookPdfInput) {
         const rows: GlanceRowSpec[] = [
           { label: 'Base vehicle', value: baseVehicle },
           { label: 'Vehicle colour', value: vColour?.name ?? '—' },
-          ...sections.map(sec => ({
+          // At a Glance uses the UNFILTERED allSections so Protection
+          // appears as its own row alongside The Face, Inside, etc.
+          // Only the option-page sequencing is special-cased.
+          ...allSections.map(sec => ({
             label: sec.section,
             value: sec.opts.map(o => cleanName(o.name, platform.name, o.code, all_platform_names)).join('; '),
           })),
@@ -722,7 +725,10 @@ export function LookbookPdf(input: LookbookPdfInput) {
               key: o.option_id,
             })
           }
-          sections.forEach(sec => sec.opts.forEach(pushOpt))
+          // Investment table iterates allSections so Protection
+          // contributes a line and its parts_cents roll into the
+          // subtotal. Page ordering is the only Protection-special.
+          allSections.forEach(sec => sec.opts.forEach(pushOpt))
           wheel_options.forEach(pushOpt)
           tyres.forEach((t: LookbookTyre, i) => {
             lines.push({

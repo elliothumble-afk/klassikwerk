@@ -189,7 +189,13 @@ function stripLeadingTitle(desc: string | null, cleanedName: string): string {
     // shared four-letter-plus words) — otherwise we'd eat real copy
     // that merely starts with a short clause.
     if (shared >= 2) {
-      return trimmed.slice(boundaryMatch[0].length).trim()
+      const rest = trimmed.slice(boundaryMatch[0].length).trim()
+      // Guard: if removing the lead leaves less than 15 words, the
+      // "repeated title" first sentence IS the description — keep
+      // the original rather than render a thin stub.
+      const restWordCount = rest.split(/\s+/).filter(Boolean).length
+      if (restWordCount < 15) return trimmed
+      return rest
     }
   }
   return trimmed
@@ -311,7 +317,11 @@ export function LookbookPdf(input: LookbookPdfInput) {
     g.sort = Math.min(g.sort || Number.MAX_SAFE_INTEGER, o.section_sort)
     sectionMap.set(label, g)
   }
-  const sections = [...sectionMap.values()].sort((a, b) => a.sort - b.sort)
+  const allSections = [...sectionMap.values()].sort((a, b) => a.sort - b.sort)
+  // Protection renders AFTER the Wheels page, not in sort-order with
+  // the body / interior sections. Split it out of the main sequence.
+  const protectionSections = allSections.filter(s => /^protection$/i.test(s.section))
+  const sections = allSections.filter(s => !/^protection$/i.test(s.section))
 
   const validUntil = new Date(new Date(input.created_at).getTime() + (terms.quote_validity_days ?? 30) * 86400_000)
     .toISOString().slice(0, 10)
@@ -344,6 +354,80 @@ export function LookbookPdf(input: LookbookPdfInput) {
     const dollars = money(cents, currency)
     if (hours != null && hours > 0) return `${hours} h · ${dollars}`
     return dollars
+  }
+
+  // Renders one option page. Three layouts:
+  //   • image + half-page text (default)
+  //   • full-bleed green statement page when no image is available —
+  //     mirrors the cover/closing voice so a text-only option (e.g.
+  //     paint protection with no stock photo) still feels designed.
+  //   • exterior-paint "Unpainted / as supplied" has no special case
+  //     here; it uses the regular image layout with whatever photo is
+  //     attached to the option.
+  function renderOptionPage(
+    _section: SectionGroup, sectionIdx: number, o: LookbookOption, i: number,
+  ) {
+    const idx = sectionIdx * 100 + i
+    const imageLeft = idx % 2 === 0
+    const img = o.image_url ?? o.swatch_image_url
+    const name = cleanName(o.name, platform.name, o.code, all_platform_names)
+    const desc = stripLeadingTitle(o.description, name)
+    const finishLine = [
+      o.finishes.map(f => f.name).filter(Boolean).join(' · '),
+      o.finish_note ?? '',
+    ].filter(Boolean).join(' — ')
+    const shownLine = o.finish_image_caption
+    const half = PAGE_W / 2
+
+    // Null-image: full-bleed green statement page, same voice as the
+    // cover and closing. Replaces the earlier empty-cream layout.
+    if (!img) {
+      return (
+        <Page key={`opt-${o.option_id}`} size={{ width: PAGE_W, height: PAGE_H }} style={base.green}>
+          <View style={{ flex: 1, justifyContent: 'center', paddingHorizontal: 72 }}>
+            <Text style={[base.labelLight, { color: CREAM + 'CC' }]}>{(o.section ?? 'OPTION').toUpperCase()}</Text>
+            <Text style={[base.display, { fontSize: 46, color: CREAM, marginTop: 14 }]}>{name}</Text>
+            {desc && (
+              <Text style={[base.bodyLight, { marginTop: 22, maxWidth: 640 }]}>{desc}</Text>
+            )}
+            {finishLine && (
+              <Text style={[base.bodyLight, { marginTop: 20, fontSize: 10, color: CREAM + 'BB' }]}>{finishLine}</Text>
+            )}
+            {shownLine && (
+              <Text style={[base.bodyLight, { marginTop: 10, fontSize: 9, color: CREAM + '99' }]}>{shownLine}</Text>
+            )}
+          </View>
+        </Page>
+      )
+    }
+
+    return (
+      <Page key={`opt-${o.option_id}`} size={{ width: PAGE_W, height: PAGE_H }} style={{
+        backgroundColor: CREAM, color: INK, fontFamily: body, padding: 0,
+      }}>
+        <View style={{
+          flexDirection: imageLeft ? 'row' : 'row-reverse',
+          width: PAGE_W, height: PAGE_H,
+        }}>
+          <View style={{ width: half, height: PAGE_H }}>
+            <Image src={img} style={{ width: half, height: PAGE_H, objectFit: 'cover' }} />
+          </View>
+          <View style={{ width: half, height: PAGE_H, padding: 48, justifyContent: 'center' }}>
+            <Text style={base.label}>{(o.section ?? 'OPTION').toUpperCase()}</Text>
+            <Text style={[base.h2, { marginTop: 10 }]}>{name}</Text>
+            {desc && (
+              <Text style={[base.body, { marginTop: 16 }]}>{desc}</Text>
+            )}
+            {finishLine && (
+              <Text style={[base.body, { marginTop: 16, fontSize: 10, color: BRONZE }]}>{finishLine}</Text>
+            )}
+            {shownLine && (
+              <Text style={[base.body, { marginTop: 8, fontSize: 9, color: INK + 'A0', fontFamily: 'Helvetica-Oblique' }]}>{shownLine}</Text>
+            )}
+          </View>
+        </View>
+      </Page>
+    )
   }
 
   // The at-a-glance "Base vehicle" line should read as "Chassis · Years".
@@ -491,68 +575,10 @@ export function LookbookPdf(input: LookbookPdfInput) {
         )
       })()}
 
-      {/* ─── 4+. One page per selected option (sections ordered) ─ */}
+      {/* ─── 4+. One page per selected option (sections ordered,
+                Protection pushed past the Wheels page below) ─ */}
       {sections.flatMap((section, sectionIdx) =>
-        section.opts.map((o, i) => {
-          const idx = sectionIdx * 100 + i
-          const imageLeft = idx % 2 === 0
-          const img = o.image_url ?? o.swatch_image_url
-          const name = cleanName(o.name, platform.name, o.code, all_platform_names)
-          const desc = stripLeadingTitle(o.description, name)
-          const finishLine = [
-            o.finishes.map(f => f.name).filter(Boolean).join(' · '),
-            o.finish_note ?? '',
-          ].filter(Boolean).join(' — ')
-          const shownLine = o.finish_image_caption
-          const half = PAGE_W / 2
-
-          // Null-image: cream, centred text block. Prevents leather
-          // interior options from falling through to a stock OEM shot.
-          if (!img) {
-            return (
-              <Page key={`opt-${o.option_id}`} size={{ width: PAGE_W, height: PAGE_H }} style={base.cream}>
-                <View style={{ padding: 96, height: PAGE_H, justifyContent: 'center' }}>
-                  <Text style={base.label}>{(o.section ?? 'OPTION').toUpperCase()}</Text>
-                  <Text style={[base.h2, { marginTop: 10, fontSize: 36 }]}>{name}</Text>
-                  {desc && (
-                    <Text style={[base.body, { marginTop: 18, maxWidth: PAGE_W - 240 }]}>{desc}</Text>
-                  )}
-                  {finishLine && (
-                    <Text style={[base.body, { marginTop: 16, fontSize: 10, color: BRONZE }]}>{finishLine}</Text>
-                  )}
-                </View>
-              </Page>
-            )
-          }
-
-          return (
-            <Page key={`opt-${o.option_id}`} size={{ width: PAGE_W, height: PAGE_H }} style={{
-              backgroundColor: CREAM, color: INK, fontFamily: body, padding: 0,
-            }}>
-              <View style={{
-                flexDirection: imageLeft ? 'row' : 'row-reverse',
-                width: PAGE_W, height: PAGE_H,
-              }}>
-                <View style={{ width: half, height: PAGE_H }}>
-                  <Image src={img} style={{ width: half, height: PAGE_H, objectFit: 'cover' }} />
-                </View>
-                <View style={{ width: half, height: PAGE_H, padding: 48, justifyContent: 'center' }}>
-                  <Text style={base.label}>{(o.section ?? 'OPTION').toUpperCase()}</Text>
-                  <Text style={[base.h2, { marginTop: 10 }]}>{name}</Text>
-                  {desc && (
-                    <Text style={[base.body, { marginTop: 16 }]}>{desc}</Text>
-                  )}
-                  {finishLine && (
-                    <Text style={[base.body, { marginTop: 16, fontSize: 10, color: BRONZE }]}>{finishLine}</Text>
-                  )}
-                  {shownLine && (
-                    <Text style={[base.body, { marginTop: 8, fontSize: 9, color: INK + 'A0', fontStyle: 'italic' }]}>{shownLine}</Text>
-                  )}
-                </View>
-              </View>
-            </Page>
-          )
-        }),
+        section.opts.map((o, i) => renderOptionPage(section, sectionIdx, o, i)),
       )}
 
       {/* ─── Wheels page: cards per wheel + tyre sentence ───────── */}
@@ -604,6 +630,11 @@ export function LookbookPdf(input: LookbookPdfInput) {
           </View>
           <Footer dark />
         </Page>
+      )}
+
+      {/* ─── Protection pages (after Wheels) ─────────────────────── */}
+      {protectionSections.flatMap((section, sectionIdx) =>
+        section.opts.map((o, i) => renderOptionPage(section, sectionIdx, o, i)),
       )}
 
       {/* ─── At a Glance ────────────────────────────────────────── */}

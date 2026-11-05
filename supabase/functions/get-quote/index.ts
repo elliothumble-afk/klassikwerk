@@ -23,7 +23,7 @@ Deno.serve(async (req) => {
     const qRes = await admin
       .from('quotes')
       .select(`
-        id, version, price_cents, status, notes, pdf_url, token,
+        id, version, price_cents, tax_cents, total_cents, status, notes, pdf_url, token,
         platform_id, created_at, approved_at,
         lead:leads(customer:customers(full_name, email)),
         builder:builders(id, name, legal_name, slug),

@@ -303,6 +303,10 @@ export type Database = {
           pricing_mode: 'simple' | 'cost_based'
           in_house_labour_cost_cents: number
           default_labour_source: 'in_house' | 'partner_shop'
+          tax_rate_pct: number
+          surtax_pct: number
+          surtax_cap_cents: number
+          tax_label: string
           created_at: string
           updated_at: string
         }
@@ -677,6 +681,8 @@ export type Database = {
           platform_id: string
           tier_id: string
           price_cents: number
+          tax_cents: number
+          total_cents: number
           status: 'draft' | 'sent' | 'approved' | 'superseded'
           pdf_url: string | null
           sent_at: string | null
@@ -701,6 +707,8 @@ export type Database = {
           platform_id: string
           tier_id: string
           price_cents?: number
+          tax_cents?: number
+          total_cents?: number
           status?: 'draft' | 'sent' | 'approved' | 'superseded'
           pdf_url?: string | null
           sent_at?: string | null
@@ -724,6 +732,8 @@ export type Database = {
           platform_id?: string
           tier_id?: string
           price_cents?: number
+          tax_cents?: number
+          total_cents?: number
           status?: 'draft' | 'sent' | 'approved' | 'superseded'
           pdf_url?: string | null
           sent_at?: string | null

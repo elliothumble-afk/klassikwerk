@@ -5,6 +5,7 @@ import { FileText, Send, Save, Copy, Hammer, ExternalLink } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { invokeFn } from '@/lib/fnInvoke'
 import { renderQuotePdfToStorage } from '@/lib/pdf/renderPdf'
+import { computeQuoteTax } from '@/lib/tax'
 import { Spinner } from '@/components/ui/Spinner'
 import type {
   BuilderTerms, CatalogOption, OptionGroup, Platform, Tier, Quote, QuoteOption,
@@ -79,7 +80,7 @@ export function QuoteEditor() {
           .eq('builder_id', builderId).order('sort'),
         supabase.from('catalog_options').select('*').eq('builder_id', builderId).eq('active', true).order('sort'),
         supabase.from('builder_terms')
-          .select('option_mode, pricing_mode, partner_shop_rate_cents, in_house_labour_cost_cents, default_labour_source, commission_flat_cents, commission_bonus_cents, commission_bonus_threshold_cents, labour_rate_cents, paint_rate_cents')
+          .select('option_mode, pricing_mode, partner_shop_rate_cents, in_house_labour_cost_cents, default_labour_source, commission_flat_cents, commission_bonus_cents, commission_bonus_threshold_cents, labour_rate_cents, paint_rate_cents, tax_rate_pct, surtax_pct, surtax_cap_cents, tax_label')
           .eq('builder_id', builderId).maybeSingle(),
       ])
       if (plat.error) throw plat.error
@@ -101,7 +102,7 @@ export function QuoteEditor() {
         optionPlatforms = (op.data ?? []) as typeof optionPlatforms
       }
 
-      const tData = terms.data as (Pick<BuilderTerms, 'option_mode' | 'pricing_mode' | 'partner_shop_rate_cents' | 'in_house_labour_cost_cents' | 'default_labour_source' | 'commission_flat_cents' | 'commission_bonus_cents' | 'commission_bonus_threshold_cents' | 'labour_rate_cents' | 'paint_rate_cents'> | null)
+      const tData = terms.data as (Pick<BuilderTerms, 'option_mode' | 'pricing_mode' | 'partner_shop_rate_cents' | 'in_house_labour_cost_cents' | 'default_labour_source' | 'commission_flat_cents' | 'commission_bonus_cents' | 'commission_bonus_threshold_cents' | 'labour_rate_cents' | 'paint_rate_cents'> & { tax_rate_pct?: number; surtax_pct?: number; surtax_cap_cents?: number; tax_label?: string } | null)
       const optionMode = tData?.option_mode ?? 'priced'
       const pricingMode = tData?.pricing_mode ?? 'simple'
 
@@ -139,6 +140,10 @@ export function QuoteEditor() {
         commissionFlatCents: tData?.commission_flat_cents ?? 50000,
         commissionBonusCents: tData?.commission_bonus_cents ?? 50000,
         commissionBonusThresholdCents: tData?.commission_bonus_threshold_cents ?? 5000000,
+        taxRatePct: Number(tData?.tax_rate_pct ?? 0),
+        surtaxPct: Number(tData?.surtax_pct ?? 0),
+        surtaxCapCents: Number(tData?.surtax_cap_cents ?? 0),
+        taxLabel: tData?.tax_label ?? '',
         categories,
         finishSets,
         finishes,
@@ -674,19 +679,97 @@ export function QuoteEditor() {
   // Insert quote_options for every selected option and link the
   // picked finishes via quote_option_finishes. Shared between the
   // new-quote and the existing-quote resave paths.
-  async function writeOptionsAndFinishes(quoteId: string, tierIdNow: string) {
+  // Compute the tax snapshot the same way the lookbook / /q /
+  // contract will render it: sum each line's parts + labour +
+  // materials, preserving the existing snapshot where it matches the
+  // current (option_id, qty). Zero-rate builders return tax_cents=0.
+  function computeTaxFromPreserve(preserve: Map<string, PreservedSnap>, tierIdNow: string): { base: number; tax: number } {
+    const rates = {
+      tax_rate_pct: catalog?.taxRatePct ?? 0,
+      surtax_pct: catalog?.surtaxPct ?? 0,
+      surtax_cap_cents: catalog?.surtaxCapCents ?? 0,
+    }
+    const tierBase = catalog?.tiers.find(t => t.id === tierIdNow)?.base_price_cents ?? 0
+    const lines = Object.values(selection).flat().map(optionId => {
+      const qty = qtyFor(optionId)
+      const kept = preserve.get(optionId)
+      const snap = kept && kept.quantity === qty
+        ? { parts_sell_cents: kept.parts_sell_cents, labour_cents: kept.labour_cents, materials_cents: kept.materials_cents }
+        : snapshotFor(optionId, qty)
+      return { total_cents: (snap.parts_sell_cents ?? 0) + (snap.labour_cents ?? 0) + (snap.materials_cents ?? 0) }
+    })
+    const r = computeQuoteTax(rates, tierBase, lines)
+    return { base: r.base_cents, tax: r.tax_cents }
+  }
+
+  // Total = tier base + Σ (parts_sell + labour + materials). When a
+  // preserved snapshot exists for an option it's used verbatim; new
+  // options use the current catalog snapshot. Mirrors the write path
+  // so the stored price_cents and the written rows stay consistent.
+  function recomputeTotalFromPreserve(preserve: Map<string, PreservedSnap>, tierIdNow: string): number {
+    const tierBase = catalog?.tiers.find(t => t.id === tierIdNow)?.base_price_cents ?? 0
+    let sum = tierBase
+    for (const optionId of Object.values(selection).flat()) {
+      const qty = qtyFor(optionId)
+      const kept = preserve.get(optionId)
+      if (kept && kept.quantity === qty) {
+        sum += (kept.parts_sell_cents ?? 0)
+          + (kept.labour_cents ?? 0)
+          + (kept.materials_cents ?? 0)
+      } else {
+        const snap = snapshotFor(optionId, qty)
+        sum += (snap.parts_sell_cents ?? 0)
+          + (snap.labour_cents ?? 0)
+          + (snap.materials_cents ?? 0)
+      }
+    }
+    return sum
+  }
+
+  // `preserve`: option_id → { qty, snapshot cols }. When the editor
+  // state picks the same option at the same qty as the preserve entry,
+  // we write the preserved snapshot instead of recomputing from
+  // current catalog_options — so a sync drift between load and save
+  // can't silently reprice an unchanged line. Callers pass the
+  // existing quote_options for an in-place save, or an empty map for
+  // a brand-new quote where the snapshot has to come from the catalog.
+  interface PreservedSnap {
+    quantity: number
+    parts_sell_cents: number | null
+    landed_cost_cents: number | null
+    labour_cents: number | null
+    materials_cents: number | null
+    partner_cost_cents: number | null
+    price_cents_at_selection: number
+  }
+  async function writeOptionsAndFinishes(
+    quoteId: string, tierIdNow: string,
+    preserve: Map<string, PreservedSnap> = new Map(),
+  ) {
     const rows = Object.values(selection).flat().map(optionId => {
       const opt = catalog!.options.find(o => o.id === optionId)!
       const included = opt.included_in_tier_ids.includes(tierIdNow)
       const qty = qtyFor(optionId)
-      return {
+      const kept = preserve.get(optionId)
+      const base = {
         quote_id: quoteId,
         option_id: optionId,
         price_cents_at_selection: included ? 0 : opt.price_cents,
         quantity: qty,
         finish_note: finishNoteByOption[optionId]?.trim() || null,
-        ...snapshotFor(optionId, qty),
       }
+      if (kept && kept.quantity === qty) {
+        return {
+          ...base,
+          price_cents_at_selection: kept.price_cents_at_selection,
+          parts_sell_cents: kept.parts_sell_cents,
+          landed_cost_cents: kept.landed_cost_cents,
+          labour_cents: kept.labour_cents,
+          materials_cents: kept.materials_cents,
+          partner_cost_cents: kept.partner_cost_cents,
+        }
+      }
+      return { ...base, ...snapshotFor(optionId, qty) }
     })
     if (rows.length === 0) return
     const ins = await supabase.from('quote_options').insert(rows).select('id, option_id')
@@ -734,21 +817,42 @@ export function QuoteEditor() {
         // navigate to the new id. This replaces the manual
         // "Revise" step for the common case.
         if (existing.status === 'draft') {
+          // Load the current snapshot BEFORE we delete it so unchanged
+          // options keep their original parts_sell / labour /
+          // materials. Prevents an interim sync drift from silently
+          // repricing lines the user didn't touch.
+          const curRes = await supabase.from('quote_options')
+            .select('option_id, quantity, parts_sell_cents, landed_cost_cents, labour_cents, materials_cents, partner_cost_cents, price_cents_at_selection')
+            .eq('quote_id', existing.id)
+          if (curRes.error) throw curRes.error
+          const preserve = new Map<string, PreservedSnap>()
+          for (const r of (curRes.data ?? []) as unknown as Array<PreservedSnap & { option_id: string }>) {
+            preserve.set(r.option_id, r)
+          }
+          // Recompute price + tax from the preserved-where-possible
+          // snapshot so the stored totals match what the lookbook and
+          // /q will render.
+          const recomputedTotal = recomputeTotalFromPreserve(preserve, tierId)
+          const { tax: recomputedTax } = computeTaxFromPreserve(preserve, tierId)
           const { error: upErr } = await supabase
             .from('quotes')
             .update({
-              platform_id: platformId, tier_id: tierId, price_cents: total, notes,
+              platform_id: platformId, tier_id: tierId,
+              price_cents: recomputedTotal,
+              tax_cents: recomputedTax,
+              total_cents: recomputedTotal + recomputedTax,
+              notes,
               labour_source: effectiveLabourSource,
               commission_cents: marginSummary?.commission ?? null,
               theme_words: themeWords.trim() || null,
               vehicle_colour: vehicleColour.trim() || null,
               vehicle_year: vehicleYear.trim() ? Number(vehicleYear) : null,
               vehicle_photo_url: vehiclePhotoUrl.trim() || null,
-            })
+            } as never)
             .eq('id', existing.id)
           if (upErr) throw upErr
           await supabase.from('quote_options').delete().eq('quote_id', existing.id)
-          await writeOptionsAndFinishes(existing.id, tierId)
+          await writeOptionsAndFinishes(existing.id, tierId, preserve)
           return existing.id
         }
         // Auto-version: sent / approved → new draft version.
@@ -770,8 +874,12 @@ export function QuoteEditor() {
         for (const [k, v] of Object.entries(src)) if (!strip.has(k)) base[k] = v
         await supabase.from('quotes').update({ status: 'superseded' }).eq('id', existing.id)
         const nextVersion = existing.version + 1
+        const freshTax = computeTaxFromPreserve(new Map(), tierId).tax
         const overrides: Record<string, unknown> = {
-          platform_id: platformId, tier_id: tierId, price_cents: total, notes,
+          platform_id: platformId, tier_id: tierId, price_cents: total,
+          tax_cents: freshTax,
+          total_cents: total + freshTax,
+          notes,
           labour_source: effectiveLabourSource,
           commission_cents: marginSummary?.commission ?? null,
           theme_words: themeWords.trim() || src.theme_words || null,
@@ -804,6 +912,7 @@ export function QuoteEditor() {
         .limit(1)
         .maybeSingle()
       const nextVersion = ((vRes.data as { version?: number } | null)?.version ?? 0) + 1
+      const newTax = computeTaxFromPreserve(new Map(), tierId).tax
       const q = await supabase.from('quotes').insert({
         lead_id: lead.id,
         builder_id: lead.builder_id,
@@ -811,6 +920,8 @@ export function QuoteEditor() {
         platform_id: platformId,
         tier_id: tierId,
         price_cents: total,
+        tax_cents: newTax,
+        total_cents: total + newTax,
         status: 'draft',
         notes,
         labour_source: effectiveLabourSource,
@@ -819,7 +930,7 @@ export function QuoteEditor() {
         vehicle_colour: vehicleColour.trim() || null,
         vehicle_year: vehicleYear.trim() ? Number(vehicleYear) : null,
         vehicle_photo_url: vehiclePhotoUrl.trim() || null,
-      }).select('id').single()
+      } as never).select('id').single()
       if (q.error) throw q.error
       const quoteId = (q.data as { id: string }).id
 

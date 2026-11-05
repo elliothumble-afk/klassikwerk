@@ -157,6 +157,9 @@ export interface LookbookPdfInput {
   quote_id: string
   version: number
   price_cents: number
+  tax_cents: number
+  total_cents: number
+  tax_label: string
   created_at: string
   builder: BuilderLike
   brand: BrandLike & { lookbook_statement: string | null }

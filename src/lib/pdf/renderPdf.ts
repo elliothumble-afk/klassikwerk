@@ -301,7 +301,32 @@ export async function renderContractPdfToStorage(buildId: string): Promise<strin
     vehicle_vin: vehicle?.vin ?? '[VIN]',
     vehicle_year: vehicle?.year?.toString() ?? '[year]',
     configuration_table: configurationTable,
-    price_total: money(build.price_cents),
+    // Pull tax snapshot from the source quote (if any). Contract
+    // totals and payment schedule are driven off the tax-inclusive
+    // number so the customer signs for what the lookbook shows.
+    ...(await (async () => {
+      let subtotal = build.price_cents ?? 0
+      let tax = 0
+      let label = ''
+      if (build.quote_id) {
+        const qt = await supabase.from('quotes')
+          .select('price_cents, tax_cents, total_cents').eq('id', build.quote_id).maybeSingle()
+        if (!qt.error && qt.data) {
+          subtotal = qt.data.price_cents ?? subtotal
+          tax = (qt.data as { tax_cents?: number }).tax_cents ?? 0
+        }
+        const tt = await supabase.from('builder_terms')
+          .select('tax_label').eq('builder_id', build.builder_id).maybeSingle()
+        label = (tt.data as { tax_label?: string } | null)?.tax_label ?? ''
+      }
+      const total = subtotal + tax
+      return {
+        price_subtotal: money(subtotal),
+        price_tax: tax > 0 ? money(tax) : '',
+        price_tax_label: label,
+        price_total: money(total),
+      }
+    })()),
     payment_schedule_table: PAYMENT_SCHEDULE_SENTINEL,
     warranty_text: terms?.warranty_text ?? '',
     governing_law: terms?.governing_law ?? '',
@@ -354,14 +379,14 @@ export async function renderContractPdfToStorage(buildId: string): Promise<strin
 export async function renderLookbookPdfToStorage(quoteId: string): Promise<string> {
   const qRes = await supabase.from('quotes')
     .select(`
-      id, version, price_cents, created_at, builder_id, platform_id, tier_id, lead_id,
+      id, version, price_cents, tax_cents, total_cents, created_at, builder_id, platform_id, tier_id, lead_id,
       theme_words, vehicle_colour, vehicle_colour_hex, vehicle_year, vehicle_photo_url,
       lead:leads(phone, customer:customers(full_name, email))
     `)
     .eq('id', quoteId).single()
   if (qRes.error) throw qRes.error
   const quote = qRes.data as unknown as {
-    id: string; version: number; price_cents: number; created_at: string
+    id: string; version: number; price_cents: number; tax_cents: number | null; total_cents: number | null; created_at: string
     builder_id: string; platform_id: string; tier_id: string
     theme_words: string | null; vehicle_colour: string | null
     vehicle_colour_hex: string | null; vehicle_year: number | null; vehicle_photo_url: string | null
@@ -874,6 +899,9 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
     quote_id: quote.id,
     version: quote.version,
     price_cents: quote.price_cents,
+    tax_cents: quote.tax_cents ?? 0,
+    total_cents: (quote.total_cents ?? quote.price_cents + (quote.tax_cents ?? 0)) || quote.price_cents,
+    tax_label: (terms as unknown as { tax_label?: string }).tax_label ?? '',
     created_at: quote.created_at,
     builder: { name: builderRow.name, legal_name: builderRow.legal_name, slug: builderRow.slug },
     brand,

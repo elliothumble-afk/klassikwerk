@@ -762,6 +762,31 @@ export function LookbookPdf(input: LookbookPdfInput) {
                 <Text style={[base.label, { width: 90, textAlign: 'right' }]}>Price</Text>
               </View>
               {lines.map(l => investLine(l.item, l.finish, l.qty, l.parts, l.fitting, l.price, l.key, padV, l.note))}
+              {/* Subtotal + tax (when non-zero) + Total. Zero-rate
+                  builders skip the tax row entirely and the Total row
+                  reads the same as the Subtotal. */}
+              <View style={{ flexDirection: 'row', paddingTop: 6, marginTop: 2, borderTop: `0.5 solid ${INK}66` }}>
+                <Text style={[base.body, { flex: 2, fontSize: 10, color: INK + 'AA' }]}>Subtotal</Text>
+                <Text style={[base.body, { flex: 1.4 }]} />
+                <Text style={[base.body, { width: 36 }]} />
+                <Text style={[base.body, { width: 70 }]} />
+                <Text style={[base.body, { width: 110 }]} />
+                <Text style={[base.body, { width: 90, textAlign: 'right', fontSize: 10, color: INK + 'AA' }]}>
+                  {money(input.price_cents, currency)}
+                </Text>
+              </View>
+              {input.tax_cents > 0 && (
+                <View style={{ flexDirection: 'row', paddingTop: 2 }}>
+                  <Text style={[base.body, { flex: 2, fontSize: 10, color: INK + 'AA' }]}>{input.tax_label || 'Sales tax'}</Text>
+                  <Text style={[base.body, { flex: 1.4 }]} />
+                  <Text style={[base.body, { width: 36 }]} />
+                  <Text style={[base.body, { width: 70 }]} />
+                  <Text style={[base.body, { width: 110 }]} />
+                  <Text style={[base.body, { width: 90, textAlign: 'right', fontSize: 10, color: INK + 'AA' }]}>
+                    {money(input.tax_cents, currency)}
+                  </Text>
+                </View>
+              )}
               <View style={{ flexDirection: 'row', paddingTop: 6, marginTop: 2, borderTop: `0.5 solid ${INK}66` }}>
                 <Text style={[base.body, { flex: 2, fontFamily: display, fontSize: 14 }]}>Total</Text>
                 <Text style={[base.body, { flex: 1.4 }]} />
@@ -769,7 +794,7 @@ export function LookbookPdf(input: LookbookPdfInput) {
                 <Text style={[base.body, { width: 70 }]} />
                 <Text style={[base.body, { width: 110 }]} />
                 <Text style={[base.body, { width: 90, textAlign: 'right', fontFamily: display, fontSize: 14, color: BRONZE }]}>
-                  {money(input.price_cents, currency)}
+                  {money(input.total_cents || input.price_cents, currency)}
                 </Text>
               </View>
             </View>
@@ -788,7 +813,7 @@ export function LookbookPdf(input: LookbookPdfInput) {
                 <ScheduleRow label="Reservation deposit" trigger="On acceptance" value={money(terms.reservation_cents, currency)} />
                 {terms.payment_schedule.map((s, i) => (
                   <ScheduleRow key={i} label={s.label} trigger={triggerLabel(s.trigger)}
-                    value={`${s.percent}% · ${money(Math.round((Math.max(0, input.price_cents - terms.reservation_cents) * s.percent) / 100), currency)}`}
+                    value={`${s.percent}% · ${money(Math.round((Math.max(0, (input.total_cents || input.price_cents) - terms.reservation_cents) * s.percent) / 100), currency)}`}
                   />
                 ))}
               </View>

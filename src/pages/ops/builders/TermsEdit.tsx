@@ -41,6 +41,7 @@ export function TermsEdit() {
 
   const save = useMutation({
     mutationFn: async (next: BuilderTerms) => {
+      const taxFields = next as unknown as { tax_rate_pct?: number; surtax_pct?: number; surtax_cap_cents?: number; tax_label?: string }
       const { error } = await supabase.from('builder_terms').upsert({
         builder_id: next.builder_id,
         reservation_cents: next.reservation_cents,
@@ -53,7 +54,11 @@ export function TermsEdit() {
         option_mode: next.option_mode,
         fx_rate: next.fx_rate,
         kit_markup: next.kit_markup,
-      })
+        tax_rate_pct: taxFields.tax_rate_pct ?? 0,
+        surtax_pct: taxFields.surtax_pct ?? 0,
+        surtax_cap_cents: taxFields.surtax_cap_cents ?? 0,
+        tax_label: taxFields.tax_label ?? '',
+      } as never)
       if (error) throw error
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['builder-terms', id] }),
@@ -179,6 +184,38 @@ export function TermsEdit() {
           <Field label="Warranty text"><textarea value={draft.warranty_text ?? ''} onChange={e => up('warranty_text', e.target.value)} className={`${input} w-full h-20 py-2`} /></Field>
           <Field label="Governing law"><input value={draft.governing_law ?? ''} onChange={e => up('governing_law', e.target.value)} className={`${input} w-full`} /></Field>
           <Field label="Lead-time copy"><input value={draft.lead_time_copy ?? ''} onChange={e => up('lead_time_copy', e.target.value)} className={`${input} w-full`} /></Field>
+        </div>
+
+        <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 mb-6">
+          <h2 className="text-sm font-medium mb-3">Sales tax</h2>
+          <p className="text-xs text-[var(--color-muted)] mb-3">
+            Tax base = tier base + Σ line totals. Tax = base × rate + Σ per-line min(line, cap) × surtax. Leave rates at 0 to disable the tax row.
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Tax rate (decimal, e.g. 0.06)">
+              <input type="number" step="0.0001" min={0}
+                value={(draft as unknown as { tax_rate_pct?: number }).tax_rate_pct ?? 0}
+                onChange={e => up('tax_rate_pct' as keyof BuilderTerms, Number(e.target.value))}
+                className={`${input} w-full`} />
+            </Field>
+            <Field label="Surtax rate (decimal, e.g. 0.005)">
+              <input type="number" step="0.0001" min={0}
+                value={(draft as unknown as { surtax_pct?: number }).surtax_pct ?? 0}
+                onChange={e => up('surtax_pct' as keyof BuilderTerms, Number(e.target.value))}
+                className={`${input} w-full`} />
+            </Field>
+            <Field label="Surtax cap per line (cents)">
+              <input type="number" step="1" min={0}
+                value={(draft as unknown as { surtax_cap_cents?: number }).surtax_cap_cents ?? 0}
+                onChange={e => up('surtax_cap_cents' as keyof BuilderTerms, Number(e.target.value))}
+                className={`${input} w-full`} />
+            </Field>
+            <Field label="Tax label on quote / contract">
+              <input value={(draft as unknown as { tax_label?: string }).tax_label ?? ''}
+                onChange={e => up('tax_label' as keyof BuilderTerms, e.target.value)}
+                className={`${input} w-full`} placeholder="e.g. Florida sales tax (Orange County)" />
+            </Field>
+          </div>
         </div>
 
         <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 mb-6">

@@ -8,6 +8,8 @@ interface QuoteData {
     id: string
     version: number
     price_cents: number
+    tax_cents: number | null
+    total_cents: number | null
     status: 'draft' | 'sent' | 'approved' | 'superseded'
     pdf_url: string | null
     token: string
@@ -35,6 +37,7 @@ interface QuoteData {
     quote_validity_days: number
     quote_intro_copy: string | null
     pricing_mode?: 'simple' | 'cost_based'
+    tax_label?: string | null
   } | null
   quote_options: {
     option_id: string
@@ -160,8 +163,13 @@ export function QuoteView() {
           <div className="text-right">
             <div className="text-xs uppercase text-[var(--color-muted)]">Total</div>
             <div className="text-3xl" style={{ fontFamily: 'var(--font-display)' }}>
-              {money(quote.price_cents, currency)}
+              {money(quote.total_cents ?? quote.price_cents, currency)}
             </div>
+            {(quote.tax_cents ?? 0) > 0 && (
+              <div className="text-xs text-[var(--color-muted)] mt-0.5">
+                Incl. {money(quote.tax_cents, currency)} {terms?.tax_label || 'sales tax'}
+              </div>
+            )}
           </div>
         </div>
 
@@ -234,6 +242,23 @@ export function QuoteView() {
                   </tr>
                 )
               })}
+              <tr className="border-t border-[var(--color-border)]">
+                <td className="py-2 pr-3 text-[var(--color-muted)]">Subtotal</td>
+                <td />
+                <td className="py-2 text-right text-[var(--color-muted)]">{money(quote.price_cents, currency)}</td>
+              </tr>
+              {(quote.tax_cents ?? 0) > 0 && (
+                <tr>
+                  <td className="py-2 pr-3 text-[var(--color-muted)]">{terms?.tax_label || 'Sales tax'}</td>
+                  <td />
+                  <td className="py-2 text-right text-[var(--color-muted)]">{money(quote.tax_cents, currency)}</td>
+                </tr>
+              )}
+              <tr className="border-t border-[var(--color-border)]">
+                <td className="py-2 pr-3 font-medium">Total</td>
+                <td />
+                <td className="py-2 text-right font-medium">{money(quote.total_cents ?? quote.price_cents, currency)}</td>
+              </tr>
             </tbody>
           </table>
           {terms?.pricing_mode === 'cost_based' && quote_options.length > 0 && (
@@ -248,13 +273,17 @@ export function QuoteView() {
             <h3 className="text-sm font-medium mb-3">Payment schedule</h3>
             <table className="w-full text-sm">
               <tbody>
-                {terms!.payment_schedule.map((p, i) => (
-                  <tr key={i} className="border-b border-[var(--color-border)] last:border-0">
-                    <td className="py-2 pr-3">{p.label}</td>
-                    <td className="py-2 text-[var(--color-muted)]">{p.trigger}</td>
-                    <td className="py-2 text-right">{p.percent}%</td>
-                  </tr>
-                ))}
+                {terms!.payment_schedule.map((p, i) => {
+                  const base = quote.total_cents ?? quote.price_cents
+                  const amount = Math.round(base * p.percent / 100)
+                  return (
+                    <tr key={i} className="border-b border-[var(--color-border)] last:border-0">
+                      <td className="py-2 pr-3">{p.label}</td>
+                      <td className="py-2 text-[var(--color-muted)]">{p.trigger}</td>
+                      <td className="py-2 text-right">{p.percent}% · {money(amount, currency)}</td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>

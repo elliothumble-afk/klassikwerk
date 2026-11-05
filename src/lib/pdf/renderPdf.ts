@@ -949,7 +949,7 @@ export async function renderPurchaseOrderPdfToStorage(poId: string): Promise<str
       .select('sku, description, qty, unit_cost_cents, finish, note, created_at')
       .eq('po_id', po.id).order('created_at'),
     supabase.from('builds')
-      .select('id, builder_id, platform_id, customer_id, vehicle_id, slot_year, slot_number')
+      .select('id, builder_id, platform_id, customer_id, vehicle_id, slot_year, slot_number, build_number')
       .eq('id', po.build_id).single(),
   ])
   if (supplierRes.error) throw supplierRes.error
@@ -967,6 +967,7 @@ export async function renderPurchaseOrderPdfToStorage(poId: string): Promise<str
     id: string; builder_id: string; platform_id: string
     customer_id: string | null; vehicle_id: string | null
     slot_year: number | null; slot_number: number | null
+    build_number: number | null
   }
 
   const [brandRes, builderRes, platformRes, customerRes, vehicleRes] = await Promise.all([
@@ -1012,7 +1013,9 @@ export async function renderPurchaseOrderPdfToStorage(poId: string): Promise<str
     email: opContact.email ?? null,
   }
 
-  const buildNumber = build.slot_year && build.slot_number
+  const buildNumber = build.build_number != null
+    ? `#${build.build_number}`
+    : build.slot_year && build.slot_number
     ? `${build.slot_year}-${String(build.slot_number).padStart(3, '0')}`
     : build.id.slice(0, 8)
 
@@ -1077,13 +1080,14 @@ export async function renderPurchaseOrderPdfToStorage(poId: string): Promise<str
 
 export async function renderBuildSheetPdfToStorage(buildId: string): Promise<string> {
   const buildRes = await supabase.from('builds')
-    .select('id, builder_id, platform_id, customer_id, vehicle_id, quote_id, slot_year, slot_number, install_instructions')
+    .select('id, builder_id, platform_id, customer_id, vehicle_id, quote_id, slot_year, slot_number, build_number, install_instructions')
     .eq('id', buildId).single()
   if (buildRes.error) throw buildRes.error
   const build = buildRes.data as {
     id: string; builder_id: string; platform_id: string
     customer_id: string | null; vehicle_id: string | null; quote_id: string | null
     slot_year: number | null; slot_number: number | null
+    build_number: number | null
     install_instructions: string | null
   }
 
@@ -1186,7 +1190,9 @@ export async function renderBuildSheetPdfToStorage(buildId: string): Promise<str
     .filter((v): v is NonNullable<typeof v> => !!v)
     .sort((a, b) => a.sectionSort - b.sectionSort || a.name.localeCompare(b.name))
 
-  const buildNumber = build.slot_year && build.slot_number
+  const buildNumber = build.build_number != null
+    ? `#${build.build_number}`
+    : build.slot_year && build.slot_number
     ? `${build.slot_year}-${String(build.slot_number).padStart(3, '0')}`
     : build.id.slice(0, 8)
 

@@ -28,7 +28,7 @@ Deno.serve(async (req) => {
         lead:leads(customer:customers(full_name, email)),
         builder:builders(id, name, legal_name, slug),
         platform:catalog_platforms(name, chassis, years),
-        tier:catalog_tiers(name, base_price_cents)
+        tier:catalog_tiers(name, base_price_cents, description)
       `)
       .eq('token', token)
       .maybeSingle()

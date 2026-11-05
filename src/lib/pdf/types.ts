@@ -47,6 +47,7 @@ export interface PlatformLike {
 export interface TierLike {
   name: string
   base_price_cents: number | null
+  description?: string | null
 }
 
 export interface OptionLineForPdf {

@@ -674,19 +674,74 @@ export function QuoteEditor() {
   // Insert quote_options for every selected option and link the
   // picked finishes via quote_option_finishes. Shared between the
   // new-quote and the existing-quote resave paths.
-  async function writeOptionsAndFinishes(quoteId: string, tierIdNow: string) {
+  // Total = tier base + Σ (parts_sell + labour + materials). When a
+  // preserved snapshot exists for an option it's used verbatim; new
+  // options use the current catalog snapshot. Mirrors the write path
+  // so the stored price_cents and the written rows stay consistent.
+  function recomputeTotalFromPreserve(preserve: Map<string, PreservedSnap>, tierIdNow: string): number {
+    const tierBase = catalog?.tiers.find(t => t.id === tierIdNow)?.base_price_cents ?? 0
+    let sum = tierBase
+    for (const optionId of Object.values(selection).flat()) {
+      const qty = qtyFor(optionId)
+      const kept = preserve.get(optionId)
+      if (kept && kept.quantity === qty) {
+        sum += (kept.parts_sell_cents ?? 0)
+          + (kept.labour_cents ?? 0)
+          + (kept.materials_cents ?? 0)
+      } else {
+        const snap = snapshotFor(optionId, qty)
+        sum += (snap.parts_sell_cents ?? 0)
+          + (snap.labour_cents ?? 0)
+          + (snap.materials_cents ?? 0)
+      }
+    }
+    return sum
+  }
+
+  // `preserve`: option_id → { qty, snapshot cols }. When the editor
+  // state picks the same option at the same qty as the preserve entry,
+  // we write the preserved snapshot instead of recomputing from
+  // current catalog_options — so a sync drift between load and save
+  // can't silently reprice an unchanged line. Callers pass the
+  // existing quote_options for an in-place save, or an empty map for
+  // a brand-new quote where the snapshot has to come from the catalog.
+  interface PreservedSnap {
+    quantity: number
+    parts_sell_cents: number | null
+    landed_cost_cents: number | null
+    labour_cents: number | null
+    materials_cents: number | null
+    partner_cost_cents: number | null
+    price_cents_at_selection: number
+  }
+  async function writeOptionsAndFinishes(
+    quoteId: string, tierIdNow: string,
+    preserve: Map<string, PreservedSnap> = new Map(),
+  ) {
     const rows = Object.values(selection).flat().map(optionId => {
       const opt = catalog!.options.find(o => o.id === optionId)!
       const included = opt.included_in_tier_ids.includes(tierIdNow)
       const qty = qtyFor(optionId)
-      return {
+      const kept = preserve.get(optionId)
+      const base = {
         quote_id: quoteId,
         option_id: optionId,
         price_cents_at_selection: included ? 0 : opt.price_cents,
         quantity: qty,
         finish_note: finishNoteByOption[optionId]?.trim() || null,
-        ...snapshotFor(optionId, qty),
       }
+      if (kept && kept.quantity === qty) {
+        return {
+          ...base,
+          price_cents_at_selection: kept.price_cents_at_selection,
+          parts_sell_cents: kept.parts_sell_cents,
+          landed_cost_cents: kept.landed_cost_cents,
+          labour_cents: kept.labour_cents,
+          materials_cents: kept.materials_cents,
+          partner_cost_cents: kept.partner_cost_cents,
+        }
+      }
+      return { ...base, ...snapshotFor(optionId, qty) }
     })
     if (rows.length === 0) return
     const ins = await supabase.from('quote_options').insert(rows).select('id, option_id')
@@ -734,10 +789,25 @@ export function QuoteEditor() {
         // navigate to the new id. This replaces the manual
         // "Revise" step for the common case.
         if (existing.status === 'draft') {
+          // Load the current snapshot BEFORE we delete it so unchanged
+          // options keep their original parts_sell / labour /
+          // materials. Prevents an interim sync drift from silently
+          // repricing lines the user didn't touch.
+          const curRes = await supabase.from('quote_options')
+            .select('option_id, quantity, parts_sell_cents, landed_cost_cents, labour_cents, materials_cents, partner_cost_cents, price_cents_at_selection')
+            .eq('quote_id', existing.id)
+          if (curRes.error) throw curRes.error
+          const preserve = new Map<string, PreservedSnap>()
+          for (const r of (curRes.data ?? []) as unknown as Array<PreservedSnap & { option_id: string }>) {
+            preserve.set(r.option_id, r)
+          }
+          // Recompute price from the preserved-where-possible snapshot
+          // so the stored total matches what the lookbook will render.
+          const recomputedTotal = recomputeTotalFromPreserve(preserve, tierId)
           const { error: upErr } = await supabase
             .from('quotes')
             .update({
-              platform_id: platformId, tier_id: tierId, price_cents: total, notes,
+              platform_id: platformId, tier_id: tierId, price_cents: recomputedTotal, notes,
               labour_source: effectiveLabourSource,
               commission_cents: marginSummary?.commission ?? null,
               theme_words: themeWords.trim() || null,
@@ -748,7 +818,7 @@ export function QuoteEditor() {
             .eq('id', existing.id)
           if (upErr) throw upErr
           await supabase.from('quote_options').delete().eq('quote_id', existing.id)
-          await writeOptionsAndFinishes(existing.id, tierId)
+          await writeOptionsAndFinishes(existing.id, tierId, preserve)
           return existing.id
         }
         // Auto-version: sent / approved → new draft version.

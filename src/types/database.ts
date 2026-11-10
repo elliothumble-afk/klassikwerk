@@ -684,12 +684,13 @@ export type Database = {
           lead_id: string
           builder_id: string
           version: number
-          platform_id: string
+          platform_id: string | null
+          external_platform_name: string | null
           tier_id: string
           price_cents: number
           tax_cents: number
           total_cents: number
-          status: 'draft' | 'sent' | 'approved' | 'superseded'
+          status: 'draft' | 'sent' | 'approved' | 'superseded' | 'declined' | 'expired' | 'void'
           pdf_url: string | null
           sent_at: string | null
           approved_at: string | null
@@ -702,6 +703,11 @@ export type Database = {
           vehicle_year: number | null
           vehicle_photo_url: string | null
           commission_cents: number | null
+          source: 'native' | 'builder'
+          external_id: string | null
+          external_url: string | null
+          sales_rep_profile_id: string | null
+          commissions_booked_at: string | null
           created_at: string
           updated_at: string
         }
@@ -710,12 +716,13 @@ export type Database = {
           lead_id: string
           builder_id: string
           version: number
-          platform_id: string
+          platform_id?: string | null
+          external_platform_name?: string | null
           tier_id: string
           price_cents?: number
           tax_cents?: number
           total_cents?: number
-          status?: 'draft' | 'sent' | 'approved' | 'superseded'
+          status?: 'draft' | 'sent' | 'approved' | 'superseded' | 'declined' | 'expired' | 'void'
           pdf_url?: string | null
           sent_at?: string | null
           approved_at?: string | null
@@ -728,6 +735,11 @@ export type Database = {
           vehicle_year?: number | null
           vehicle_photo_url?: string | null
           commission_cents?: number | null
+          source?: 'native' | 'builder'
+          external_id?: string | null
+          external_url?: string | null
+          sales_rep_profile_id?: string | null
+          commissions_booked_at?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -735,12 +747,13 @@ export type Database = {
           lead_id?: string
           builder_id?: string
           version?: number
-          platform_id?: string
+          platform_id?: string | null
+          external_platform_name?: string | null
           tier_id?: string
           price_cents?: number
           tax_cents?: number
           total_cents?: number
-          status?: 'draft' | 'sent' | 'approved' | 'superseded'
+          status?: 'draft' | 'sent' | 'approved' | 'superseded' | 'declined' | 'expired' | 'void'
           pdf_url?: string | null
           sent_at?: string | null
           approved_at?: string | null
@@ -753,6 +766,11 @@ export type Database = {
           vehicle_year?: number | null
           vehicle_photo_url?: string | null
           commission_cents?: number | null
+          source?: 'native' | 'builder'
+          external_id?: string | null
+          external_url?: string | null
+          sales_rep_profile_id?: string | null
+          commissions_booked_at?: string | null
           updated_at?: string
         }
         Relationships: []
@@ -1192,6 +1210,7 @@ export type Database = {
           hero_image_url: string | null
           sort: number
           active: boolean
+          aliases: string[]
           created_at: string
           updated_at: string
         }
@@ -1205,6 +1224,7 @@ export type Database = {
           hero_image_url?: string | null
           sort?: number
           active?: boolean
+          aliases?: string[]
           created_at?: string
           updated_at?: string
         }
@@ -1217,6 +1237,7 @@ export type Database = {
           hero_image_url?: string | null
           sort?: number
           active?: boolean
+          aliases?: string[]
           updated_at?: string
         }
         Relationships: []

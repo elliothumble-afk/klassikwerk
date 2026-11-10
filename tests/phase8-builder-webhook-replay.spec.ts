@@ -297,6 +297,80 @@ test('Phase 8: Connect replay → grouped row, summary, /ops/me; paid→conflict
   expect(commAfter.data.status).toBe('paid')          // HH owns paid
   expect(commAfter.data.conflict).toBe(true)          // flagged for review
 
+  // ─── 10. Platform resolution — aliases + no fallback ─────────────
+  // Pick one of the builder's platforms, stamp a temp alias, and
+  // send a brand-new quote whose platform_name matches the alias
+  // (case-insensitively). Then send a quote with a nonsense name
+  // and assert it stores platform_id=null + the raw name so the UI
+  // can show it.
+  const platRes = await admin.from('catalog_platforms')
+    .select('id, name, aliases').eq('builder_id', builderId).limit(1).single()
+  if (platRes.error) throw platRes.error
+  const plat = platRes.data as { id: string; name: string; aliases: string[] }
+  const alias = `alias-${runId}-test`
+  const addAlias = await admin.from('catalog_platforms').update({
+    aliases: [...(plat.aliases ?? []), alias],
+  } as never).eq('id', plat.id)
+  if (addAlias.error) throw addAlias.error
+
+  try {
+    // 10a. Alias hit (mixed case) → platform_id resolves to plat.id.
+    const aliasQuoteExt = `conn-q-${runId}-alias`
+    const rAlias = await post(builderId, secret, {
+      event_id: `evt-${runId}-alias`,
+      event_type: 'quote.upserted',
+      payload: {
+        external_id: aliasQuoteExt,
+        // Same lead as step 1 → uniqueness on (lead_id, version)
+        // requires a fresh version number.
+        version: 10,
+        status: 'draft',
+        price_cents: 10_000_00,
+        total_cents: 10_000_00,
+        customer_email: customerEmail,
+        customer_name: customerName,
+        platform_name: alias.toUpperCase(),  // case-insensitive
+      },
+    })
+    expect(rAlias.status, `alias quote.upserted body: ${JSON.stringify(rAlias.body)}`).toBe(200)
+    const aliasQ = await admin.from('quotes')
+      .select('id, platform_id, external_platform_name')
+      .eq('builder_id', builderId).eq('external_id', aliasQuoteExt).single()
+    expect(aliasQ.data?.platform_id).toBe(plat.id)
+    expect(aliasQ.data?.external_platform_name).toBeNull()
+    // Clean up this scratch quote.
+    await admin.from('quotes').delete().eq('id', aliasQ.data!.id)
+
+    // 10b. Unknown platform_name → platform_id=null, raw name kept.
+    const unknownQuoteExt = `conn-q-${runId}-unk`
+    const rUnk = await post(builderId, secret, {
+      event_id: `evt-${runId}-unk`,
+      event_type: 'quote.upserted',
+      payload: {
+        external_id: unknownQuoteExt,
+        version: 11,
+        status: 'draft',
+        price_cents: 10_000_00,
+        total_cents: 10_000_00,
+        customer_email: customerEmail,
+        customer_name: customerName,
+        platform_name: `Unknown Vehicle ${runId}`,
+      },
+    })
+    expect(rUnk.status).toBe(200)
+    const unkQ = await admin.from('quotes')
+      .select('id, platform_id, external_platform_name')
+      .eq('builder_id', builderId).eq('external_id', unknownQuoteExt).single()
+    expect(unkQ.data?.platform_id).toBeNull()
+    expect(unkQ.data?.external_platform_name).toBe(`Unknown Vehicle ${runId}`)
+    await admin.from('quotes').delete().eq('id', unkQ.data!.id)
+  } finally {
+    // Always restore the builder's original aliases.
+    await admin.from('catalog_platforms').update({
+      aliases: plat.aliases ?? [],
+    } as never).eq('id', plat.id)
+  }
+
   // ─── 8b. Unknown event_type must be rejected 400, no side effects ──
   const rUnknown = await post(builderId, secret, {
     event_id: `evt-${runId}-bogus`,

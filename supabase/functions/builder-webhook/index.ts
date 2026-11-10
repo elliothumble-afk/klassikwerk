@@ -233,10 +233,11 @@ async function handleQuoteUpserted(admin: any, builderId: string, p: any) {
     p.customer_name ?? p.customer?.full_name ?? null)
   const leadId = await resolveLead(admin, builderId, customerId)
   const repId = await resolveRep(admin, p.rep_email ?? null)
-  const platformId = await resolvePlatform(admin, builderId, p.platform_name ?? null)
+  const incomingPlatformName = typeof p.platform_name === 'string' ? p.platform_name.trim() : null
+  const platformId = await resolvePlatform(admin, builderId, incomingPlatformName)
   const tierId = await resolveTier(admin, builderId)
   if (!leadId) throw new Error('quote.upserted could not resolve lead')
-  if (!platformId || !tierId) throw new Error('quote.upserted could not resolve platform/tier')
+  if (!tierId) throw new Error('quote.upserted could not resolve tier')
   // Prefer hh_quote_id when the webhook explicitly links to one.
   const hhLink = p.hh_quote_id ?? null
   const existing = await admin.from('quotes')
@@ -245,7 +246,11 @@ async function handleQuoteUpserted(admin: any, builderId: string, p: any) {
     source: 'builder',
     builder_id: builderId,
     lead_id: leadId,
+    // No fallback: platform_id stays null when the name doesn't map
+    // to catalog_platforms.name or an entry in .aliases. The raw
+    // name is stored on external_platform_name for the UI to render.
     platform_id: platformId,
+    external_platform_name: platformId ? null : (incomingPlatformName || null),
     tier_id: tierId,
     external_id: p.external_id,
     external_url: p.external_url ?? null,
@@ -261,22 +266,25 @@ async function handleQuoteUpserted(admin: any, builderId: string, p: any) {
   }
   if (hhLink) row.notes = `linked:${hhLink}`
   if (existing.data?.id) {
-    await admin.from('quotes').update(row).eq('id', existing.data.id)
+    const upd = await admin.from('quotes').update(row).eq('id', existing.data.id)
+    if (upd.error) throw new Error(`quote update failed: ${upd.error.message}`)
   } else {
-    await admin.from('quotes').insert(row)
+    const ins = await admin.from('quotes').insert(row)
+    if (ins.error) throw new Error(`quote insert failed: ${ins.error.message}`)
   }
 }
 
+// Match catalog_platforms.name case-insensitively, or any entry in
+// its `aliases` text[]. Returns null when nothing matches — the
+// caller stores the raw name on quotes.external_platform_name.
 async function resolvePlatform(admin: any, builderId: string, name: string | null): Promise<string | null> {
-  if (name) {
-    const r = await admin.from('catalog_platforms').select('id')
-      .eq('builder_id', builderId).ilike('name', name).limit(1).maybeSingle()
-    if (r.data?.id) return r.data.id
-  }
-  // Fallback: first active platform for the builder.
-  const r = await admin.from('catalog_platforms').select('id')
-    .eq('builder_id', builderId).eq('active', true).limit(1).single()
-  return r.data?.id ?? null
+  const n = (name ?? '').trim()
+  if (!n) return null
+  const r = await admin.rpc('resolve_platform_by_alias', {
+    p_builder_id: builderId, p_name: n,
+  })
+  if (r.error) throw r.error
+  return (r.data as string | null) ?? null
 }
 
 async function resolveTier(admin: any, builderId: string): Promise<string | null> {

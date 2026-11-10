@@ -191,7 +191,10 @@ export function QuoteEditor() {
 
   useEffect(() => {
     if (existing) {
-      setPlatformId(existing.platform_id)
+      // Native quotes always have a resolved platform; builder-source
+      // quotes (which may have platform_id=null) are routed to the
+      // read-only summary in QuoteRouter, never here.
+      setPlatformId(existing.platform_id ?? '')
       setTierId(existing.tier_id)
       setNotes(existing.notes ?? '')
       const sel: Selection = {}
@@ -209,7 +212,7 @@ export function QuoteEditor() {
           // current platform, drop it from state and surface a banner.
           const restricted = optionPlatformMap.get(qo.option_id)
           const universal = !restricted || restricted.size === 0
-          const linkedHere = restricted?.has(existing.platform_id) ?? false
+          const linkedHere = existing.platform_id ? (restricted?.has(existing.platform_id) ?? false) : false
           if (!universal && !linkedHere) {
             prunedNames.push(opt.name)
             continue
@@ -1059,6 +1062,9 @@ export function QuoteEditor() {
         .limit(1)
         .maybeSingle()
       const slotNumber = ((maxRes.data as { slot_number?: number } | null)?.slot_number ?? 0) + 1
+      // Native quote → platform_id is always set here. Non-null
+      // assert so the builds insert (requires NOT NULL) type-checks.
+      if (!existing.platform_id) throw new Error('native quote has no platform_id — refusing to create build')
       const buildIns = await supabase.from('builds').insert({
         builder_id: existing.builder_id,
         customer_id: (leadRes.data as { customer_id: string }).customer_id,

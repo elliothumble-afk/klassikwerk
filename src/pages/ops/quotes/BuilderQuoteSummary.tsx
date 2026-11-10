@@ -19,6 +19,7 @@ interface Quote {
   approved_at: string | null
   builder: { id: string; name: string }
   lead: { customer: { full_name: string | null; email: string | null } | null } | null
+  external_platform_name: string | null
   platform: { name: string; chassis: string; years: string } | null
 }
 
@@ -31,7 +32,7 @@ export function BuilderQuoteSummary() {
     queryFn: async () => {
       const { data, error } = await supabase.from('quotes').select(`
         id, version, price_cents, tax_cents, total_cents, status, source,
-        external_id, external_url, created_at, sent_at, approved_at,
+        external_id, external_url, external_platform_name, created_at, sent_at, approved_at,
         builder:builders(id, name),
         lead:leads(customer:customers(full_name, email)),
         platform:catalog_platforms(name, chassis, years)
@@ -94,7 +95,11 @@ export function BuilderQuoteSummary() {
             </div>
             <h1 className="text-2xl mt-1" style={{ fontFamily: 'var(--font-display)' }}>{customerName}</h1>
             <p className="text-sm text-[var(--color-muted)]">
-              {quote.platform?.name ?? '—'}{quote.platform?.years ? ` · ${quote.platform.years}` : ''}
+              {quote.platform?.name
+                ? <>{quote.platform.name}{quote.platform.years ? ` · ${quote.platform.years}` : ''}</>
+                : quote.external_platform_name
+                  ? <><span>{quote.external_platform_name}</span><span className="ml-1.5 text-[10px] uppercase tracking-wide px-1 rounded border border-[var(--color-border)]" title={`Sent by ${quote.builder.name} as "${quote.external_platform_name}" — no matching catalog platform`}>unmapped</span></>
+                  : '—'}
             </p>
           </div>
           <div className="text-right">

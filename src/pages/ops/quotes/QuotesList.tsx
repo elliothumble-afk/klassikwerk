@@ -16,7 +16,8 @@ interface Quote {
   source: 'native' | 'builder'
   created_at: string
   sent_at: string | null
-  platform_id: string
+  platform_id: string | null
+  external_platform_name: string | null
   lead: { id: string; customer_id: string | null; customer: { id: string; full_name: string | null; email: string | null } | null } | null
   platform: { name: string } | null
   quote_options: QoRow[]
@@ -48,7 +49,7 @@ export function QuotesList() {
       const { data, error } = await supabase
         .from('quotes')
         .select(`
-          id, lead_id, version, price_cents, status, source, created_at, sent_at, platform_id,
+          id, lead_id, version, price_cents, status, source, created_at, sent_at, platform_id, external_platform_name,
           lead:leads(id, customer_id, customer:customers(id, full_name, email)),
           platform:catalog_platforms(name),
           quote_options(option_id, catalog_options(name))
@@ -68,7 +69,11 @@ export function QuotesList() {
     const map = new Map<string, Quote[]>()
     for (const q of data) {
       const cid = q.lead?.customer_id ?? q.lead?.customer?.id ?? 'no-customer'
-      const key = `${cid}|${q.platform_id}`
+      // Group by platform_id when resolved; builder quotes with an
+      // unresolved platform group by their raw external name so two
+      // different Connect vehicles don't collapse into one row.
+      const pKey = q.platform_id ?? `ext:${(q.external_platform_name ?? '').toLowerCase().trim() || 'unknown'}`
+      const key = `${cid}|${pKey}`
       const arr = map.get(key) ?? []
       arr.push(q)
       map.set(key, arr)
@@ -132,7 +137,11 @@ export function QuotesList() {
                             </span>
                           )}
                         </td>
-                        <td className="px-5 py-3">{g.top.platform?.name ?? '—'}</td>
+                        <td className="px-5 py-3">
+                          {g.top.platform?.name ?? (g.top.external_platform_name
+                            ? <span title="Sent by builder — no matching catalog platform">{g.top.external_platform_name}<span className="ml-1 text-[var(--color-muted)] text-xs">(unmapped)</span></span>
+                            : '—')}
+                        </td>
                         <td className="px-5 py-3">
                           v{g.top.version}
                           {g.earlier.length > 0 && (

@@ -72,7 +72,10 @@ test('Phase 8: Connect replay → grouped row, summary, /ops/me; paid→conflict
   const setSecret = await admin.from('builders').update({ webhook_secret: secret }).eq('id', builderId)
   if (setSecret.error) throw setSecret.error
 
-  const repRes = await admin.from('profiles').select('id, user_id').eq('role', 'ops').not('user_id', 'is', null).limit(1).single()
+  // Accept an ops rep or an operator — matches resolveRep in the edge
+  // function. In single-operator projects there may be no ops rep yet.
+  const repRes = await admin.from('profiles').select('id, user_id')
+    .in('role', ['ops', 'operator']).not('user_id', 'is', null).limit(1).single()
   if (repRes.error) throw repRes.error
   const repProfileId = repRes.data.id as string
   const repUser = await admin.auth.admin.getUserById(repRes.data.user_id as string)

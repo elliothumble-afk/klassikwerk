@@ -72,11 +72,21 @@ Deno.serve(async (req) => {
       const b = bRes.data as { id: string; webhook_secret: string | null; backfill_url: string | null }
       if (!b.backfill_url) throw new Error('builder has no backfill_url')
       if (!b.webhook_secret) throw new Error('builder has no webhook_secret')
+      // Outbound backfill uses the same signature scheme as inbound:
+      // sha256(HMAC(webhook_secret, raw_request_body)). The body is a
+      // small JSON envelope so Connect can filter by `since` once the
+      // field is populated. Keeping it a POST + JSON body (not a GET)
+      // means the shared verifier covers both directions.
+      const outboundBody = JSON.stringify({ builder_id: b.id, since: null })
       const fetchRes = await fetch(b.backfill_url, {
+        method: 'POST',
         headers: {
           'Accept': 'application/json',
-          'X-Builder-Signature': `sha256=${await hmacSha256Hex(b.webhook_secret, b.id)}`,
+          'Content-Type': 'application/json',
+          'X-Builder-Id': b.id,
+          'X-Builder-Signature': `sha256=${await hmacSha256Hex(b.webhook_secret, outboundBody)}`,
         },
+        body: outboundBody,
       })
       if (!fetchRes.ok) throw new Error(`backfill fetch ${fetchRes.status}`)
       const data = await fetchRes.json() as { events: Envelope[] }
@@ -190,11 +200,13 @@ async function resolveLead(admin: any, builderId: string, customerId: string | n
 
 async function resolveRep(admin: any, email: string | null): Promise<string | null> {
   if (!email) return null
-  const r = await admin.from('profiles').select('id, user_id')
-    .not('user_id', 'is', null).eq('role', 'ops').limit(100)
+  // Accept any staff profile (ops rep or operator). In single-operator
+  // setups an operator doubles as the sales rep; in bigger teams ops
+  // reps exist alongside operators and both can appear on commissions.
+  const r = await admin.from('profiles').select('id, user_id, role')
+    .not('user_id', 'is', null).in('role', ['ops', 'operator']).limit(100)
   const rows = (r.data ?? []) as Array<{ id: string; user_id: string }>
   if (rows.length === 0) return null
-  // Pull emails for these user_ids from auth.users via admin.
   for (const row of rows) {
     const u = await admin.auth.admin.getUserById(row.user_id)
     if (u.data?.user?.email?.toLowerCase() === email.toLowerCase()) return row.id

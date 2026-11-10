@@ -598,9 +598,15 @@ shape as live deliveries. HH streams each through the same handlers;
 already-seen `event_id` values are skipped. The **Pull everything from
 Connect** button on the builder page invokes this.
 
-HH authenticates the outgoing request with
-`X-Builder-Signature: sha256=HMAC(webhook_secret, builder_id)` so the
-builder can verify the call came from HH.
+HH's outbound backfill call uses **the same signature scheme as
+inbound deliveries** so Connect only implements one verifier:
+
+- Method: `POST`
+- Headers: `X-Builder-Id`, `X-Builder-Signature: sha256=<hex>`,
+  `Content-Type: application/json`
+- Body: `{ "builder_id": "<uuid>", "since": null }` (reserved for a
+  future incremental cursor)
+- Signature: `HMAC_SHA256(raw_request_body, webhook_secret)`
 
 ### Open ends for the Connect side
 

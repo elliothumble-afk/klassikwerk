@@ -30,6 +30,7 @@ import { CommissionsAdmin } from '@/pages/ops/commissions/CommissionsAdmin'
 import { OpsMe } from '@/pages/ops/OpsMe'
 import { ZohoSettings } from '@/pages/ops/settings/ZohoSettings'
 import { OperatorSettings } from '@/pages/ops/settings/OperatorSettings'
+import { UsersAdmin } from '@/pages/ops/settings/UsersAdmin'
 import { OperatorLanding } from '@/pages/public/OperatorLanding'
 import { BuilderShell } from '@/pages/public/BuilderShell'
 import { BuilderHome } from '@/pages/public/BuilderHome'
@@ -126,6 +127,11 @@ export function App() {
                     path: 'settings/operator',
                     element: <RoleGuard role="operator" />,
                     children: [{ index: true, element: <OperatorSettings /> }],
+                  },
+                  {
+                    path: 'settings/users',
+                    element: <RoleGuard role="operator" />,
+                    children: [{ index: true, element: <UsersAdmin /> }],
                   },
                 ],
               },

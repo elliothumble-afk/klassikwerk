@@ -22,10 +22,18 @@ interface Row {
   conflict: boolean
   notes: string | null
   builder: { name: string } | null
-  rep: { full_name: string | null } | null
+  rep: { full_name: string | null; user_id: string | null } | null
+  rep_email?: string | null
 }
 
-interface RepOpt { id: string; full_name: string | null }
+// Reps are read from the staff_profiles view so we can fall back
+// to email when full_name is null. Inactive profiles are hidden.
+interface RepOpt { id: string; full_name: string | null; email: string | null; active: boolean }
+
+function repLabel(r: Pick<RepOpt, 'full_name' | 'email'> | undefined | null): string {
+  if (!r) return 'Unassigned'
+  return r.full_name?.trim() || r.email?.trim() || 'Unknown'
+}
 
 const STATUSES = ['pending', 'earned', 'paid', 'void'] as const
 const UNASSIGNED_VALUE = '__unassigned__'
@@ -52,7 +60,7 @@ export function CommissionsAdmin() {
         description, amount_cents, status, earned_at, paid_at,
         paid_reference, conflict, notes,
         builder:builders(name),
-        rep:profiles!commissions_profile_id_fkey(full_name)
+        rep:profiles!commissions_profile_id_fkey(full_name, user_id)
       `).order('earned_at', { ascending: false, nullsFirst: false })
       if (repFilter) q = q.eq('profile_id', repFilter)
       if (builderFilter) q = q.eq('builder_id', builderFilter)
@@ -73,29 +81,40 @@ export function CommissionsAdmin() {
     },
   })
 
-  // Reps = any staff profile (ops rep or operator). Matches the webhook
-  // resolver and lets operators carry commissions in single-staff setups.
+  // Reps = any active staff profile (ops rep or operator). Sourced
+  // from the staff_profiles view so we can fall back to email when
+  // full_name is null; the Users admin page keeps active in sync.
   const { data: reps } = useQuery<RepOpt[]>({
     queryKey: ['commissions-reps'],
     queryFn: async () => {
-      const { data } = await supabase.from('profiles')
-        .select('id, full_name').in('role', ['ops', 'operator']).order('full_name')
-      return (data ?? []) as RepOpt[]
+      const { data } = await supabase.from('staff_profiles')
+        .select('id, full_name, email, active')
+        .in('role', ['ops', 'operator'])
+        .eq('active', true)
+      const rows = (data ?? []) as RepOpt[]
+      rows.sort((a, b) => repLabel(a).localeCompare(repLabel(b)))
+      return rows
     },
   })
+  const repById = useMemo(() => {
+    const m = new Map<string, RepOpt>()
+    for (const r of reps ?? []) m.set(r.id, r)
+    return m
+  }, [reps])
 
   // Totals: Unpaid (= pending + earned) / Paid / Total per rep.
   const totals = useMemo(() => {
     const per = new Map<string, { name: string; unpaid: number; paid: number }>()
     for (const r of rows ?? []) {
       const key = r.profile_id ?? 'unassigned'
-      const b = per.get(key) ?? { name: r.rep?.full_name ?? 'Unassigned', unpaid: 0, paid: 0 }
+      const name = r.profile_id ? repLabel(repById.get(r.profile_id) ?? { full_name: r.rep?.full_name ?? null, email: null }) : 'Unassigned'
+      const b = per.get(key) ?? { name, unpaid: 0, paid: 0 }
       if (r.status === 'paid') b.paid += r.amount_cents
       else if (r.status === 'pending' || r.status === 'earned') b.unpaid += r.amount_cents
       per.set(key, b)
     }
     return [...per.values()].sort((a, b) => (b.unpaid + b.paid) - (a.unpaid + a.paid))
-  }, [rows])
+  }, [rows, repById])
 
   function appendNote(existing: string | null, line: string): string {
     const stamp = `[${new Date().toISOString().slice(0, 10)} by ${me?.full_name ?? 'ops'}]`
@@ -106,8 +125,8 @@ export function CommissionsAdmin() {
   // Reassign one row; logs the from/to in notes.
   const reassign = useMutation({
     mutationFn: async ({ row, next }: { row: Row; next: string | null }) => {
-      const fromName = row.rep?.full_name ?? 'Unassigned'
-      const toName   = next ? ((reps ?? []).find(r => r.id === next)?.full_name ?? 'rep') : 'Unassigned'
+      const fromName = row.profile_id ? repLabel(repById.get(row.profile_id) ?? { full_name: row.rep?.full_name ?? null, email: null }) : 'Unassigned'
+      const toName   = next ? repLabel(repById.get(next)) : 'Unassigned'
       const upd = await supabase.from('commissions')
         .update({
           profile_id: next,
@@ -128,10 +147,10 @@ export function CommissionsAdmin() {
   const bulkReassign = useMutation({
     mutationFn: async (next: string | null) => {
       if (selected.size === 0) throw new Error('No rows selected')
-      const toName = next ? ((reps ?? []).find(r => r.id === next)?.full_name ?? 'rep') : 'Unassigned'
+      const toName = next ? repLabel(repById.get(next)) : 'Unassigned'
       const targets = (rows ?? []).filter(r => selected.has(r.id))
       for (const row of targets) {
-        const fromName = row.rep?.full_name ?? 'Unassigned'
+        const fromName = row.profile_id ? repLabel(repById.get(row.profile_id) ?? { full_name: row.rep?.full_name ?? null, email: null }) : 'Unassigned'
         const upd = await supabase.from('commissions')
           .update({
             profile_id: next,
@@ -153,6 +172,9 @@ export function CommissionsAdmin() {
   const markPaid = useMutation({
     mutationFn: async () => {
       if (selected.size === 0) throw new Error('No rows selected')
+      // Void commissions are closed — Mark paid must not touch them.
+      // Checkbox is disabled for void, but belt-and-braces: filter
+      // again at the DB call in case the UI is ever bypassed.
       const nowDate = paidDate || new Date().toISOString().slice(0, 10)
       const upd = await supabase.from('commissions')
         .update({
@@ -161,6 +183,8 @@ export function CommissionsAdmin() {
           paid_reference: paidRef || null,
         } as never)
         .in('id', Array.from(selected))
+        .neq('status', 'void')
+        .neq('status', 'paid')
       if (upd.error) throw upd.error
     },
     onSuccess: () => {
@@ -207,7 +231,7 @@ export function CommissionsAdmin() {
         <div className="flex gap-3 flex-wrap mb-4 text-sm">
           <select value={repFilter} onChange={e => setRepFilter(e.target.value)} className="border border-[var(--color-border)] rounded px-2 py-1">
             <option value="">All reps</option>
-            {(reps ?? []).map(r => <option key={r.id} value={r.id}>{r.full_name ?? '—'}</option>)}
+            {(reps ?? []).map(r => <option key={r.id} value={r.id}>{repLabel(r)}</option>)}
           </select>
           <select value={builderFilter} onChange={e => setBuilderFilter(e.target.value)} className="border border-[var(--color-border)] rounded px-2 py-1">
             <option value="">All builders</option>
@@ -263,7 +287,7 @@ export function CommissionsAdmin() {
             <select value={bulkRep} onChange={e => setBulkRep(e.target.value)} className="border border-[var(--color-border)] rounded px-2 py-1 bg-white">
               <option value="">Pick a rep…</option>
               <option value={UNASSIGNED_VALUE}>Unassigned</option>
-              {(reps ?? []).map(r => <option key={r.id} value={r.id}>{r.full_name ?? '—'}</option>)}
+              {(reps ?? []).map(r => <option key={r.id} value={r.id}>{repLabel(r)}</option>)}
             </select>
             <button
               onClick={() => bulkReassign.mutate(bulkRep === UNASSIGNED_VALUE ? null : bulkRep)}
@@ -304,7 +328,11 @@ export function CommissionsAdmin() {
                 {(rows ?? []).map(r => (
                   <tr key={r.id} className={`border-b border-[var(--color-border)] last:border-0 ${r.conflict ? 'bg-[var(--color-danger)]/5' : ''}`}>
                     <td className="px-2 py-1.5">
-                      <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} disabled={r.status === 'paid'} />
+                      <input type="checkbox"
+                        checked={selected.has(r.id)}
+                        onChange={() => toggle(r.id)}
+                        disabled={r.status === 'paid' || r.status === 'void'}
+                        title={r.status === 'void' ? 'Void commissions cannot be paid' : undefined} />
                     </td>
                     <td className="px-3 py-1.5">
                       <select
@@ -314,7 +342,13 @@ export function CommissionsAdmin() {
                         className="border border-[var(--color-border)] rounded px-1 py-0.5 text-xs max-w-[180px]"
                       >
                         <option value={UNASSIGNED_VALUE}>Unassigned</option>
-                        {(reps ?? []).map(rep => <option key={rep.id} value={rep.id}>{rep.full_name ?? '—'}</option>)}
+                        {(reps ?? []).map(rep => <option key={rep.id} value={rep.id}>{repLabel(rep)}</option>)}
+                        {/* Show the current rep as a fallback option
+                            when they've been deactivated — otherwise
+                            the <select> would silently blank them. */}
+                        {r.profile_id && !repById.has(r.profile_id) && (
+                          <option value={r.profile_id}>{r.rep?.full_name ?? 'Deactivated rep'} (inactive)</option>
+                        )}
                       </select>
                     </td>
                     <td className="px-3 py-1.5">{r.builder?.name ?? '—'}</td>

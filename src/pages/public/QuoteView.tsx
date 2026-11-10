@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'react-router'
 import { invokeFn } from '@/lib/fnInvoke'
 import { Spinner } from '@/components/ui/Spinner'
+import { cleanName, formatYears } from '@/lib/catalogNames'
 
 interface QuoteData {
   quote: {
@@ -44,12 +45,18 @@ interface QuoteData {
     price_cents_at_selection: number
     quantity: number
     finish_note: string | null
+    // Snapshot cost-basis cents taken when the quote was saved. The
+    // sum of (parts_sell + labour + materials) across lines plus the
+    // tier base equals quote.price_cents by construction — so lines
+    // always add up even if the catalog drifts afterwards.
+    parts_sell_cents: number | null
+    labour_cents: number | null
+    materials_cents: number | null
     catalog_options: {
       name: string
       code: string | null
+      kit_sku: string | null
       sold_as_set: boolean
-      parts_sell_cents: number | null
-      install_price_cents: number | null
     } | null
     quote_option_finishes: {
       finish_set_id: string
@@ -57,6 +64,7 @@ interface QuoteData {
       catalog_finishes: { name: string } | null
     }[]
   }[]
+  builder_platform_names?: string[]
 }
 
 function money(cents: number | null | undefined, currency = 'usd'): string {
@@ -136,6 +144,7 @@ export function QuoteView() {
   const validityDays = terms?.quote_validity_days ?? 30
   const validUntil = new Date(new Date(quote.created_at).getTime() + validityDays * 86400_000)
     .toISOString().slice(0, 10)
+  const platformNames = data.builder_platform_names ?? []
 
   return (
     <main className="min-h-screen" style={{ backgroundColor: 'var(--color-background)', color: 'var(--color-foreground)' }}>
@@ -182,7 +191,8 @@ export function QuoteView() {
         <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-5 mb-6">
           <h3 className="text-sm font-medium mb-3">Vehicle</h3>
           <p className="text-sm">
-            {quote.platform?.name} · {quote.platform?.chassis} · {quote.platform?.years}
+            {quote.platform?.name}
+            {quote.platform?.years ? ` · ${formatYears(quote.platform.years)}` : ''}
           </p>
         </div>
 
@@ -205,12 +215,19 @@ export function QuoteView() {
               {quote_options.map(qo => {
                 const qty = qo.quantity ?? 1
                 const soldAsSet = qo.catalog_options?.sold_as_set ?? false
+                // Line price comes from the quote_options snapshot —
+                // never from live catalog columns. parts_sell + labour
+                // + materials sums to quote.price_cents - tier_base by
+                // construction. Fall back to price_cents_at_selection
+                // × effective qty for older rows that pre-date the
+                // phase-5 snapshot columns.
+                const parts = qo.parts_sell_cents
+                const labour = qo.labour_cents
+                const materials = qo.materials_cents
+                const hasSnapshot = parts != null || labour != null || materials != null
                 const effectiveQty = soldAsSet ? 1 : qty
-                const parts = qo.catalog_options?.parts_sell_cents
-                const install = qo.catalog_options?.install_price_cents
-                const costBased = parts != null && install != null
-                const extended = costBased
-                  ? parts * effectiveQty + install
+                const extended = hasSnapshot
+                  ? (parts ?? 0) + (labour ?? 0) + (materials ?? 0)
                   : qo.price_cents_at_selection * effectiveQty
                 const qtyLabel = soldAsSet
                   ? 'Set of 4'
@@ -225,12 +242,15 @@ export function QuoteView() {
                 const finishBits: string[] = [...finishNames]
                 if (qo.finish_note) finishBits.push(qo.finish_note)
                 const finishLabel = finishBits.length ? finishBits.join(', ') : null
+                const rawName = qo.catalog_options?.name ?? ''
+                const sku = qo.catalog_options?.kit_sku ?? qo.catalog_options?.code ?? null
+                const displayName = cleanName(rawName, sku, platformNames)
                 return (
                   <tr key={qo.option_id} className="border-b border-[var(--color-border)] last:border-0">
                     <td className="py-2 pr-3 text-[var(--color-muted)]">Option</td>
                     <td className="py-2 pr-3">
                       <div>
-                        {qo.catalog_options?.name}
+                        {displayName}
                         {finishLabel ? ` — ${finishLabel}` : ''}
                         {qo.catalog_options?.code ? ` · ${qo.catalog_options.code}` : ''}
                       </div>

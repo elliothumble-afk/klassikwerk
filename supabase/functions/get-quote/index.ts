@@ -36,12 +36,28 @@ Deno.serve(async (req) => {
     if (!qRes.data) throw new Error('Quote not found')
     const quote = qRes.data as any
 
-    const [brandRes, termsRes, qoRes] = await Promise.all([
+    // quote_options snapshot columns (parts_sell_cents / labour_cents /
+    // materials_cents / price_cents_at_selection) are what the quote
+    // was priced on at save time. The /q page renders FROM these, not
+    // from the live catalog columns — otherwise a mid-quote catalog
+    // sync drifts the line totals away from the subtotal.
+    const [brandRes, termsRes, qoRes, platsRes] = await Promise.all([
       admin.from('builder_brand').select('wordmark_text, logo_url, tagline, color_accent, color_bg, color_text, font_display, font_body').eq('builder_id', quote.builder.id).maybeSingle(),
       admin.from('builder_terms').select('*').eq('builder_id', quote.builder.id).maybeSingle(),
-      admin.from('quote_options').select('option_id, price_cents_at_selection, quantity, finish_note, catalog_options(name, code, group_id, sold_as_set, parts_sell_cents, install_price_cents), quote_option_finishes(finish_set_id, catalog_finish_sets(sort), catalog_finishes(name))').eq('quote_id', quote.id),
+      admin.from('quote_options').select(`
+        option_id, price_cents_at_selection, quantity, finish_note,
+        parts_sell_cents, labour_cents, materials_cents,
+        catalog_options(name, code, kit_sku, group_id, sold_as_set),
+        quote_option_finishes(finish_set_id, catalog_finish_sets(sort), catalog_finishes(name))
+      `).eq('quote_id', quote.id),
+      // Full platform-name list for the builder so the client can
+      // strip vehicle decorations from option names the same way the
+      // lookbook does (e.g. "Large Rear Roof Wing for Land Rover
+      // Defender (2020 Onwards)" → "Large Rear Roof Wing").
+      admin.from('catalog_platforms').select('name').eq('builder_id', quote.builder.id),
     ])
     if (qoRes.error) throw qoRes.error
+    if (platsRes.error) throw platsRes.error
 
     // Filter stored quote_options by platform restriction so a renamed
     // or re-platformed catalog doesn't leak irrelevant rows into /q.
@@ -80,11 +96,15 @@ Deno.serve(async (req) => {
       }
     } catch (_) { /* ignore */ }
 
+    const builderPlatformNames = ((platsRes.data ?? []) as Array<{ name: string }>)
+      .map(r => r.name).filter(Boolean)
+
     return new Response(JSON.stringify({
       quote,
       brand: brandRes.data,
       terms: termsRes.data,
       quote_options: visibleQuoteOptions,
+      builder_platform_names: builderPlatformNames,
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
   } catch (e) {
     return new Response(JSON.stringify({ error: (e as Error).message }), {

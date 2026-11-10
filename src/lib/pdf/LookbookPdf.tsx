@@ -2,6 +2,7 @@ import { Document, Image, Page, StyleSheet, Text, View } from '@react-pdf/render
 import type { LookbookPdfInput, LookbookOption, LookbookTyre } from './types'
 import { money } from './types'
 import { resolveFamily } from './fonts'
+import { cleanName as sharedCleanName, formatYears as sharedFormatYears } from '../catalogNames'
 
 // 16:9 landscape at 72dpi — matches the 960×540 of the reference PDF.
 const PAGE_W = 960
@@ -30,139 +31,12 @@ const INK = '#2A2E2A'
 // (YYYY+)" shape bounded by the string edge, case-insensitive on
 // the "for" / "Onwards" / "Present" keywords.
 
-// A years parenthetical: (2023 Onwards), (1991-2016), (2023–Present),
-// (2024 onwards). Match both case variants explicitly so the outer
-// regex doesn't need the /i flag — /i would widen [A-Z] to [A-Za-z]
-// and let the platform-name alternation eat lower-case words.
-const YEARS_PAREN = `\\(\\s*\\d{4}(?:\\s*[-–]\\s*\\d{4}|\\s*(?:[Oo]n\\s*[Ww]ards?|[Pp]resent))?\\s*\\)`
-// A platform-name token: 1-7 Capitalised words so "Land Rover Defender
-// 110 V8 Petrol" (6 words) survives the match before (years). Allows
-// hyphens, slashes, and digits mid-word.
-const PLATFORM_NAME = `(?:[A-Z][A-Za-z0-9/-]*(?:\\s+[A-Z0-9][A-Za-z0-9/-]*){0,6})`
-// "for" / "fits" — common Shopify suffix connectors. Match both cases
-// explicitly, no /i flag on the outer regex.
-const FOR_WORD = `(?:[Ff][Oo][Rr]|[Ff][Ii][Tt][Ss]?)`
-
-function stripVehicleDecorations(name: string, platformNames: string[] = []): string {
-  if (!name) return ''
-  let out = name.trim()
-  // 1. Leading "Platform (years) [-|–|:] " prefix.
-  const leading = new RegExp(`^\\s*${PLATFORM_NAME}\\s*${YEARS_PAREN}\\s*[-–—:]?\\s*`)
-  out = out.replace(leading, '')
-  // 2. Trailing " [for] Platform (years)" suffix. The "for" is
-  //    required when the suffix is preceded by non-platform words,
-  //    otherwise the greedy PLATFORM_NAME alternation would eat the
-  //    whole option label ("Large Rear Roof Wing for ..." → "Large").
-  //    Allow "for"-less when preceded by nothing (i.e. the whole
-  //    string is a trailing-only platform mention).
-  const trailingWithFor = new RegExp(`\\s+${FOR_WORD}\\s+${PLATFORM_NAME}\\s*${YEARS_PAREN}\\s*$`)
-  out = out.replace(trailingWithFor, '')
-  const trailingAlone = new RegExp(`^${PLATFORM_NAME}\\s*${YEARS_PAREN}\\s*$`)
-  out = out.replace(trailingAlone, '')
-  // 3. Leading platform NAME alone (no years paren). Only matches when
-  //    the leading tokens exactly spell one of the known catalog
-  //    platforms, so we never over-strip. Covers titles like "Land
-  //    Rover Defender 110 Designo Pattern Leather Interior" where the
-  //    year parenthetical is absent.
-  if (platformNames.length > 0) {
-    const names = [...platformNames].sort((a, b) => b.length - a.length)
-    for (const n of names) {
-      const pat = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-      const re = new RegExp(`^\\s*${pat}\\s+(?!$)`, 'i')
-      if (re.test(out)) {
-        out = out.replace(re, '')
-        break
-      }
-    }
-  }
-  // 4. Drop trailing "(n)" numeric disambiguators that Shopify sometimes
-  //    appends when a duplicate handle is minted. "Wheels (1)" → "Wheels".
-  out = out.replace(/\s*\(\d+\)\s*$/, '')
-  return out.trim()
-}
-
-// ─── All-caps → Title Case ───────────────────────────────────────
-// Shopify copy routinely ships option names in SHOUT-CAPS ("LAND
-// ROVER DEFENDER (1991-2016) FRONT BUMPER SUMP GUARD"). The lookbook
-// is a customer-facing document, so we re-case any run of ALL-CAPS
-// words to Title Case while preserving a short list of acronyms the
-// catalog actually uses in uppercase. Mixed-case names are left
-// alone — Shopify writers who typed "Side Vents and CTC badges"
-// knew what they were doing.
-const KEEP_AS_IS = new Set([
-  // Builder/brand acronyms + wheel/finish codes.
-  'AMG', 'CTC', 'RS', 'DC', 'LED', 'KO3', 'G22', 'G63', 'G350', 'G400', 'UK',
-  // Roman numerals used in trim designations (Series II, Mk III, …).
-  'II', 'III', 'IV',
-  // Tyre + engine tokens. V8/P525/P400/D300 already survive the single-
-  // letter+digits regex but we list them explicitly so intent is clear.
-  'LT', 'V8', 'P525', 'P400', 'D300',
-])
-// Articles / conjunctions / short prepositions that stay lowercase
-// mid-string in English title case.
-const MINOR_WORDS = new Set([
-  'a', 'an', 'and', 'as', 'at', 'but', 'by', 'for', 'in', 'of', 'on',
-  'or', 'the', 'to', 'with',
-])
-
-function titleCaseSubtoken(w: string): string {
-  if (!w) return w
-  if (KEEP_AS_IS.has(w)) return w
-  // "UK26" / "RS22" etc.: an all-caps prefix in KEEP_AS_IS followed by
-  // digits is a model code; preserve verbatim.
-  const prefixMatch = /^([A-Z]+)(\d+)$/.exec(w)
-  if (prefixMatch && KEEP_AS_IS.has(prefixMatch[1])) return w
-  // Convert if the whole subtoken is uppercase alphanumeric (letters +
-  // optional digits) AND has at least two letters.
-  if (/^[A-Z0-9]+$/.test(w) && (w.match(/[A-Z]/g)?.length ?? 0) >= 2) {
-    return w[0] + w.slice(1).toLowerCase()
-  }
-  return w
-}
-
-function titleCaseToken(token: string): string {
-  // Split on hyphens / slashes so sub-pieces are evaluated separately:
-  // "RS-FORGED" → "RS" (keep) + "FORGED" → "Forged".
-  return token.split(/([-/])/).map(part =>
-    /^[-/]$/.test(part) ? part : titleCaseSubtoken(part),
-  ).join('')
-}
-
-function titleCaseName(name: string): string {
-  if (!name) return ''
-  const parts = name.split(/(\s+)/)
-  // Index of the first / last non-whitespace token so we know which
-  // positions are allowed to stay as minor-word lowercase.
-  const wordIdx: number[] = []
-  parts.forEach((p, i) => { if (!/^\s+$/.test(p)) wordIdx.push(i) })
-  const firstWord = wordIdx[0] ?? -1
-  const lastWord = wordIdx[wordIdx.length - 1] ?? -1
-  return parts.map((p, i) => {
-    if (/^\s+$/.test(p)) return p
-    const tc = titleCaseToken(p)
-    // Only lowercase minor words in the middle, never at the ends.
-    const isEdge = i === firstWord || i === lastWord
-    if (!isEdge && MINOR_WORDS.has(tc.toLowerCase())) return tc.toLowerCase()
-    return tc
-  }).join('')
-}
-
-function stripTrailingSku(name: string, sku: string | null): string {
-  if (!name) return ''
-  let out = name.trim()
-  // Drop a trailing "(CODE)" that matches the row's kit_sku/code — case
-  // insensitive. If no sku is known, drop any trailing all-caps/digits
-  // parenthetical as a best-effort disambiguator strip.
-  if (sku) {
-    const pat = sku.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    out = out.replace(new RegExp(`\\s*\\(${pat}\\)\\s*$`, 'i'), '')
-  }
-  out = out.replace(/\s*\([A-Z0-9][A-Z0-9-]{3,}\)\s*$/, '')
-  return out.trim()
-}
-
+// Name-cleanup helpers moved to src/lib/catalogNames.ts so /q uses
+// the same label normalisation as this lookbook. Local wrapper keeps
+// the existing call-site signature (platformName second arg is
+// unused but preserved to minimise churn below).
 function cleanName(raw: string, _platformName: string, sku: string | null, platformNames: string[] = []): string {
-  return titleCaseName(stripTrailingSku(stripVehicleDecorations(raw, platformNames), sku))
+  return sharedCleanName(raw, sku, platformNames)
 }
 
 // Shopify descriptions often open with a title repeat ("Comfort Leather
@@ -202,10 +76,8 @@ function stripLeadingTitle(desc: string | null, cleanedName: string): string {
 }
 
 // Years come in as "2023–present" or "1991-2016". Normalise the dash
-// so At a Glance always reads with an en-dash.
-function formatYears(years: string): string {
-  return (years || '').replace(/-/g, '–').replace(/\s+/g, ' ').trim()
-}
+// so At a Glance always reads with an en-dash. Shared with /q.
+const formatYears = sharedFormatYears
 
 // Extract a size tag like "20-inch, forged" for a wheel option.
 // Shopify tags aren't persisted, so we fall back to parsing the name

@@ -50,7 +50,10 @@ async function fetchBuilderBundle(slug: string | null, hostname: string): Promis
 async function loadBrandAndTerms(builder: Builder): Promise<BuilderBundle> {
   const [brandRes, termsRes] = await Promise.all([
     supabase.from('builder_brand').select('*').eq('builder_id', builder.id).maybeSingle(),
-    supabase.from('builder_terms').select('*').eq('builder_id', builder.id).maybeSingle(),
+    // Public pages read builder_terms_public — a security_invoker
+    // view exposing only presentation fields. Cost basis (labour
+    // rates, FX, commissions, trade discount, etc.) stays operator-only.
+    supabase.from('builder_terms_public').select('*').eq('builder_id', builder.id).maybeSingle(),
   ])
   if (brandRes.error) throw brandRes.error
   if (termsRes.error) throw termsRes.error
@@ -63,7 +66,7 @@ async function loadBrandAndTerms(builder: Builder): Promise<BuilderBundle> {
 
 async function loadTerms(builderId: string): Promise<BuilderTerms> {
   const { data, error } = await supabase
-    .from('builder_terms')
+    .from('builder_terms_public')
     .select('*')
     .eq('builder_id', builderId)
     .maybeSingle()

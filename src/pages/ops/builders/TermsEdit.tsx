@@ -186,8 +186,6 @@ export function TermsEdit() {
           <Field label="Lead-time copy"><input value={draft.lead_time_copy ?? ''} onChange={e => up('lead_time_copy', e.target.value)} className={`${input} w-full`} /></Field>
         </div>
 
-        <WebhookPanel builderId={id!} />
-
         <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 mb-6">
           <h2 className="text-sm font-medium mb-3">Sales tax</h2>
           <p className="text-xs text-[var(--color-muted)] mb-3">
@@ -247,6 +245,15 @@ export function TermsEdit() {
           {save.isPending ? 'Saving…' : save.isSuccess ? 'Saved' : 'Save terms'}
         </button>
         </fieldset>
+
+        {/*
+          WebhookPanel lives OUTSIDE the terms fieldset so operator
+          admin controls stay enabled even when terms are sync-locked.
+          Inside, the browser's native <fieldset disabled> semantics
+          would cascade disabled=true to every button, which killed
+          Reveal / Rotate / Save backfill / Pull on Connect builders.
+        */}
+        <WebhookPanel builderId={id!} />
       </div>
     </div>
   )
@@ -323,34 +330,43 @@ function WebhookPanel({ builderId }: { builderId: string }) {
   const backfill = draftBackfill ?? data?.backfill_url ?? ''
 
   return (
-    <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 mb-6">
+    <div data-testid="webhook-panel" className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 mb-6">
       <h2 className="text-sm font-medium mb-3">Builder webhook (Connect)</h2>
       <p className="text-xs text-[var(--color-muted)] mb-3">
         Connect signs each delivery with HMAC-sha256 of the raw body using this secret. Rotate if it leaks.
       </p>
       <div className="flex items-center gap-2 mb-3">
-        <code className="text-xs bg-black/5 rounded px-2 py-1 flex-1 font-mono truncate">
+        <code data-testid="webhook-secret-display" className="text-xs bg-black/5 rounded px-2 py-1 flex-1 font-mono truncate">
           {secret ? (reveal ? secret : '••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••') : 'No secret yet — Rotate to generate one.'}
         </code>
         {secret && (
-          <button onClick={() => setReveal(r => !r)} className="text-xs border border-[var(--color-border)] rounded px-2 py-1">
+          <button data-testid="webhook-reveal" onClick={() => setReveal(r => !r)} className="text-xs border border-[var(--color-border)] rounded px-2 py-1">
             {reveal ? 'Hide' : 'Reveal'}
           </button>
         )}
-        <button onClick={() => rotate.mutate()} disabled={rotate.isPending}
+        <button
+          data-testid="webhook-rotate"
+          onClick={() => {
+            if (window.confirm(
+              'Rotate the webhook secret?\n\n' +
+              'Connect deliveries signed with the old secret will start failing 401 the moment you confirm. ' +
+              'You must paste the new value into Connect immediately.',
+            )) rotate.mutate()
+          }}
+          disabled={rotate.isPending}
           className="text-xs border border-[var(--color-border)] rounded px-2 py-1 disabled:opacity-50">
           {rotate.isPending ? 'Rotating…' : 'Rotate'}
         </button>
       </div>
       <div className="flex items-center gap-2">
-        <input value={backfill} onChange={e => setDraftBackfill(e.target.value)}
+        <input data-testid="webhook-backfill-url" value={backfill} onChange={e => setDraftBackfill(e.target.value)}
           placeholder="Backfill URL (Connect's endpoint returning { events: [...] })"
           className="flex-1 border border-[var(--color-border)] rounded px-2 py-1 text-sm" />
-        <button onClick={() => saveBackfill.mutate(backfill)} disabled={saveBackfill.isPending || draftBackfill === null}
+        <button data-testid="webhook-save-backfill" onClick={() => saveBackfill.mutate(backfill)} disabled={saveBackfill.isPending || draftBackfill === null}
           className="text-xs border border-[var(--color-border)] rounded px-2 py-1 disabled:opacity-50">
           Save
         </button>
-        <button onClick={() => pullAll.mutate()} disabled={pullAll.isPending || !secret || !data?.backfill_url}
+        <button data-testid="webhook-pull" onClick={() => pullAll.mutate()} disabled={pullAll.isPending || !secret || !data?.backfill_url}
           className="text-xs bg-[var(--color-accent)] text-white rounded px-2 py-1 disabled:opacity-50">
           {pullAll.isPending ? 'Pulling…' : 'Pull everything from Connect'}
         </button>

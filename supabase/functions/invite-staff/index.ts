@@ -4,6 +4,11 @@
 // invite email), then upserts the public.profiles row with the
 // chosen role and full_name. UI labels map to DB roles:
 //   admin → operator,  rep → ops.
+//
+// Pre-existing users: if the email already resolves to an auth user,
+// return 409 with `{ error: 'User already exists' }` and change
+// nothing. The admin UI should route an existing user through the
+// edit controls on the Users page instead.
 
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.50.3'
@@ -18,6 +23,27 @@ interface Body {
   role: 'admin' | 'rep'
 }
 
+function json(status: number, body: unknown) {
+  return new Response(JSON.stringify(body), {
+    status, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  })
+}
+
+// Scans auth.users via listUsers (paged) and returns the user with
+// the matching email, or null. Case-insensitive.
+async function findAuthUserByEmail(admin: any, email: string): Promise<{ id: string; email: string } | null> {
+  const target = email.toLowerCase()
+  const pageSize = 1000
+  for (let page = 1; page <= 20; page++) {
+    const r = await admin.auth.admin.listUsers({ page, perPage: pageSize })
+    if (r.error) throw r.error
+    const hit = r.data.users.find((u: any) => u.email?.toLowerCase() === target)
+    if (hit) return { id: hit.id, email: hit.email }
+    if (r.data.users.length < pageSize) break
+  }
+  return null
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders })
   if (req.method !== 'POST') return new Response('method not allowed', { status: 405 })
@@ -28,63 +54,61 @@ Deno.serve(async (req) => {
     // Caller must be an operator.
     const auth = req.headers.get('Authorization') ?? ''
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : ''
-    if (!token) return new Response(JSON.stringify({ error: 'no token' }),
-      { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+    if (!token) return json(401, { error: 'no token' })
     const userRes = await admin.auth.getUser(token)
-    if (userRes.error || !userRes.data.user) {
-      return new Response(JSON.stringify({ error: 'bad token' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
-    }
+    if (userRes.error || !userRes.data.user) return json(401, { error: 'bad token' })
     const callerId = userRes.data.user.id
     const callerProfile = await admin.from('profiles')
       .select('role').eq('user_id', callerId).maybeSingle()
     if (callerProfile.data?.role !== 'operator') {
-      return new Response(JSON.stringify({ error: 'operator role required' }),
-        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+      return json(403, { error: 'operator role required' })
     }
 
     const body = await req.json() as Body
     const { email, full_name, role } = body
     if (!email || !full_name || !role) {
-      return new Response(JSON.stringify({ error: 'email, full_name, role required' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+      return json(400, { error: 'email, full_name, role required' })
     }
     const dbRole = role === 'admin' ? 'operator' : 'ops'
 
+    // Pre-flight: existence check before we touch anything. We
+    // intentionally do NOT fall back to "update the existing profile"
+    // here — overwriting the operator's own name/role was the whole
+    // point of the bug we're fixing. If the email already has an auth
+    // user OR a profile linked to that auth user, 409.
+    const existingAuth = await findAuthUserByEmail(admin, email)
+    if (existingAuth) {
+      return json(409, { error: 'User already exists' })
+    }
+    // Belt-and-braces: a profile could in theory exist without an
+    // auth user (service-role inserts); treat the email-row collision
+    // the same way.
+    const existingProfile = await admin.from('staff_profiles')
+      .select('id').ilike('email', email).maybeSingle()
+    if (existingProfile.data?.id) {
+      return json(409, { error: 'User already exists' })
+    }
+
     // inviteUserByEmail creates the auth user and sends the Supabase
-    // invite email. Our handle_new_user trigger auto-inserts a
-    // profiles row with role='customer' — we overwrite it below.
+    // invite email. The handle_new_user trigger auto-inserts a
+    // profiles row with role='customer' — we specialise it below.
     const invite = await admin.auth.admin.inviteUserByEmail(email, {
       data: { full_name },
     })
-    if (invite.error) {
-      // User already exists → still OK to (re)invite via a magic link.
-      const msg = invite.error.message?.toLowerCase() ?? ''
-      if (!msg.includes('already') && !msg.includes('exists')) {
-        throw invite.error
-      }
-    }
-
-    // Resolve the auth user (whether just-created or pre-existing).
-    const list = await admin.auth.admin.listUsers()
-    if (list.error) throw list.error
-    const user = list.data.users.find(u => u.email?.toLowerCase() === email.toLowerCase())
-    if (!user) throw new Error('could not locate newly invited user')
+    if (invite.error) throw invite.error
+    const newId = invite.data.user?.id
+    if (!newId) throw new Error('invite did not return a user id')
 
     const upd = await admin.from('profiles').update({
       full_name,
       role: dbRole,
       active: true,
       updated_at: new Date().toISOString(),
-    } as never).eq('user_id', user.id)
+    } as never).eq('user_id', newId)
     if (upd.error) throw upd.error
 
-    return new Response(JSON.stringify({ ok: true, user_id: user.id }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    })
+    return json(200, { ok: true, user_id: newId })
   } catch (e) {
-    return new Response(JSON.stringify({ error: (e as Error).message }), {
-      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    })
+    return json(500, { error: (e as Error).message })
   }
 })

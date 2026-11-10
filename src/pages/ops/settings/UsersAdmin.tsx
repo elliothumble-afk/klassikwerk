@@ -63,6 +63,7 @@ export function UsersAdmin() {
         body: JSON.stringify({ email: inviteEmail.trim(), full_name: inviteName.trim(), role: inviteRole }),
       })
       const j = await r.json().catch(() => ({}))
+      if (r.status === 409) throw new Error(j?.error ?? 'User already exists')
       if (!r.ok) throw new Error(j?.error ?? `HTTP ${r.status}`)
     },
     onSuccess: () => {

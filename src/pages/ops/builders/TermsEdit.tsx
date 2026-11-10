@@ -186,6 +186,8 @@ export function TermsEdit() {
           <Field label="Lead-time copy"><input value={draft.lead_time_copy ?? ''} onChange={e => up('lead_time_copy', e.target.value)} className={`${input} w-full`} /></Field>
         </div>
 
+        <WebhookPanel builderId={id!} />
+
         <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 mb-6">
           <h2 className="text-sm font-medium mb-3">Sales tax</h2>
           <p className="text-xs text-[var(--color-muted)] mb-3">
@@ -255,6 +257,105 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <div>
       <label className="text-xs text-[var(--color-muted)] block mb-1">{label}</label>
       {children}
+    </div>
+  )
+}
+
+// ─── Webhook panel: secret + Rotate + Pull everything ────────────────
+function WebhookPanel({ builderId }: { builderId: string }) {
+  const qc = useQueryClient()
+  const { data } = useQuery({
+    queryKey: ['builder-webhook', builderId],
+    queryFn: async () => {
+      const { data } = await supabase.from('builders')
+        .select('webhook_secret, backfill_url').eq('id', builderId).single()
+      return data as { webhook_secret: string | null; backfill_url: string | null } | null
+    },
+  })
+  const [reveal, setReveal] = useState(false)
+  const [pullStatus, setPullStatus] = useState<string>('')
+  const [draftBackfill, setDraftBackfill] = useState<string | null>(null)
+
+  const rotate = useMutation({
+    mutationFn: async () => {
+      // 32 random bytes → hex. generated client-side; the server is
+      // allowed to overwrite via the regular update RLS policy for
+      // operator profiles.
+      const buf = crypto.getRandomValues(new Uint8Array(32))
+      const hex = Array.from(buf).map(b => b.toString(16).padStart(2, '0')).join('')
+      const { error } = await supabase.from('builders')
+        .update({ webhook_secret: hex }).eq('id', builderId)
+      if (error) throw error
+      setReveal(true)
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['builder-webhook', builderId] }),
+  })
+  const saveBackfill = useMutation({
+    mutationFn: async (url: string) => {
+      const { error } = await supabase.from('builders')
+        .update({ backfill_url: url || null }).eq('id', builderId)
+      if (error) throw error
+    },
+    onSuccess: () => { setDraftBackfill(null); qc.invalidateQueries({ queryKey: ['builder-webhook', builderId] }) },
+  })
+  const pullAll = useMutation({
+    mutationFn: async () => {
+      setPullStatus('Pulling…')
+      const session = (await supabase.auth.getSession()).data.session
+      const r = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/builder-webhook/backfill`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session?.access_token ?? ''}`,
+          'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+        },
+        body: JSON.stringify({ builder_id: builderId }),
+      })
+      const j = await r.json()
+      if (!r.ok) throw new Error(j?.error ?? `HTTP ${r.status}`)
+      return j as { processed: number; skipped: number }
+    },
+    onSuccess: (j) => setPullStatus(`Done — processed ${j.processed}, skipped ${j.skipped}`),
+    onError: (e: Error) => setPullStatus(`Failed: ${e.message}`),
+  })
+
+  const secret = data?.webhook_secret ?? null
+  const backfill = draftBackfill ?? data?.backfill_url ?? ''
+
+  return (
+    <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 mb-6">
+      <h2 className="text-sm font-medium mb-3">Builder webhook (Connect)</h2>
+      <p className="text-xs text-[var(--color-muted)] mb-3">
+        Connect signs each delivery with HMAC-sha256 of the raw body using this secret. Rotate if it leaks.
+      </p>
+      <div className="flex items-center gap-2 mb-3">
+        <code className="text-xs bg-black/5 rounded px-2 py-1 flex-1 font-mono truncate">
+          {secret ? (reveal ? secret : '••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••') : 'No secret yet — Rotate to generate one.'}
+        </code>
+        {secret && (
+          <button onClick={() => setReveal(r => !r)} className="text-xs border border-[var(--color-border)] rounded px-2 py-1">
+            {reveal ? 'Hide' : 'Reveal'}
+          </button>
+        )}
+        <button onClick={() => rotate.mutate()} disabled={rotate.isPending}
+          className="text-xs border border-[var(--color-border)] rounded px-2 py-1 disabled:opacity-50">
+          {rotate.isPending ? 'Rotating…' : 'Rotate'}
+        </button>
+      </div>
+      <div className="flex items-center gap-2">
+        <input value={backfill} onChange={e => setDraftBackfill(e.target.value)}
+          placeholder="Backfill URL (Connect's endpoint returning { events: [...] })"
+          className="flex-1 border border-[var(--color-border)] rounded px-2 py-1 text-sm" />
+        <button onClick={() => saveBackfill.mutate(backfill)} disabled={saveBackfill.isPending || draftBackfill === null}
+          className="text-xs border border-[var(--color-border)] rounded px-2 py-1 disabled:opacity-50">
+          Save
+        </button>
+        <button onClick={() => pullAll.mutate()} disabled={pullAll.isPending || !secret || !data?.backfill_url}
+          className="text-xs bg-[var(--color-accent)] text-white rounded px-2 py-1 disabled:opacity-50">
+          {pullAll.isPending ? 'Pulling…' : 'Pull everything from Connect'}
+        </button>
+      </div>
+      {pullStatus && <p className="text-xs text-[var(--color-muted)] mt-2">{pullStatus}</p>}
     </div>
   )
 }

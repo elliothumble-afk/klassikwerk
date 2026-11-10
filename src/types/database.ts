@@ -108,6 +108,8 @@ export type Database = {
           last_synced_at: string | null
           last_sync_status: 'success' | 'error' | null
           last_sync_error: string | null
+          webhook_secret: string | null
+          backfill_url: string | null
           created_at: string
           updated_at: string
         }
@@ -128,6 +130,8 @@ export type Database = {
           last_synced_at?: string | null
           last_sync_status?: 'success' | 'error' | null
           last_sync_error?: string | null
+          webhook_secret?: string | null
+          backfill_url?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -147,6 +151,8 @@ export type Database = {
           last_synced_at?: string | null
           last_sync_status?: 'success' | 'error' | null
           last_sync_error?: string | null
+          webhook_secret?: string | null
+          backfill_url?: string | null
           updated_at?: string
         }
         Relationships: []

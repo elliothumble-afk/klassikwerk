@@ -474,6 +474,144 @@ three runs show up on Costing with an expandable change list, and
 if `HH_INBOX_EMAIL` + `RESEND_API_KEY` are set the summary is also
 emailed to HH.
 
+## Builder webhook (Connect → HH)
+
+External builders (ECD Connect first) push lifecycle events for quotes
+they own into HH via the `builder-webhook` edge function. HH processes
+them idempotently, renders a read-only summary under `/ops/quotes/:id`,
+and books the sales rep's commission.
+
+### Endpoint
+
+`POST https://<project>.supabase.co/functions/v1/builder-webhook`
+
+The URL + the shared `webhook_secret` live on the builder page → Builder
+webhook panel. **Rotate** generates a fresh 32-byte hex secret; it is
+shown once when rotated.
+
+### Signature
+
+Each delivery includes `X-Builder-Signature: sha256=<hex>` where the
+HMAC is `HMAC_SHA256(raw_body, webhook_secret)`. The function compares
+signatures constant-time; invalid signatures return 401. Deliveries also
+need `X-Builder-Id: <uuid>` identifying the builder row.
+
+### Event envelope
+
+```json
+{
+  "event_id": "evt_01HQZ…",        // unique per event on the builder's side
+  "event_type": "quote.upserted",  // see table
+  "payload": { … }                 // shape depends on event_type
+}
+```
+
+Idempotency is on `(builder_id, event_id)`. Replays — same envelope,
+same `event_id` — return `{ok:true, result:"duplicate"}` and are a
+no-op. Each envelope is stored in `builder_webhook_events`, then the
+handler runs; errors are stamped into that row for audit.
+
+### Event types and payloads
+
+Every payload below is a field of the envelope's `payload` object.
+
+**`quote.upserted`** — upsert a quote row with `source='builder'`
+
+| field              | type   | notes                                                                            |
+|--------------------|--------|----------------------------------------------------------------------------------|
+| `external_id`      | string | **required.** Stable id in the builder's system; pair with `builder_id` for upsert. |
+| `external_url`     | string | Deep link back to the quote in the builder's app. Rendered as "Open in Connect". |
+| `version`          | number | Version counter in the source system. Defaults to 1.                             |
+| `status`           | string | One of `draft`, `sent`, `approved`, `superseded`, `declined`, `expired`, `void`.  |
+| `price_cents`      | number | Pre-tax total.                                                                   |
+| `tax_cents`        | number | Tax component.                                                                   |
+| `total_cents`      | number | Incl. tax. Falls back to `price_cents + tax_cents` if omitted.                   |
+| `pdf_url`          | string | Optional. Direct link to the builder's PDF.                                      |
+| `sent_at`          | ISO    | Optional.                                                                        |
+| `approved_at`      | ISO    | Optional.                                                                        |
+| `customer_email`   | string | OR `customer.email`. Resolves/creates `customers.email`.                         |
+| `customer_name`    | string | OR `customer.full_name`.                                                         |
+| `rep_email`        | string | Resolves a HH ops rep via `profiles` (role='ops') ↔ `auth.users.email`.          |
+| `platform_name`    | string | Matched case-insensitive against the builder's `catalog_platforms.name`; falls back to the first active platform. |
+| `hh_quote_id`      | uuid   | Optional explicit link to a native HH quote — stored in `quotes.notes`.          |
+
+A matching `leads` row is created automatically if none exists
+(`source='builder'`, `stage='quoted'`), grouped by `(builder_id, customer_id)`.
+
+**`contract.upserted`** — upsert a contract
+
+| field                        | type    | notes                                                  |
+|------------------------------|---------|--------------------------------------------------------|
+| `external_id`                | string  | **required.** `(builder_id, external_id)` is unique.   |
+| `linked_quote_external_id`   | string  | Matches a quote's `external_id` — populates `contracts.quote_id`. |
+| `status`                     | string  | Free-form; defaults to `generated`.                    |
+| `signed_at`                  | ISO     | Optional.                                              |
+| `document_url`               | string  | Link to the signed PDF.                                |
+| `payment_schedule`           | array   | Opaque payment schedule from the builder.              |
+
+**`payment.received`** — append a payment row
+
+| field                  | type   | notes                                                     |
+|------------------------|--------|-----------------------------------------------------------|
+| `quote_external_id`    | string | **required.** Resolves to `quotes.id`.                    |
+| `external_id`          | string | Optional. When present, used for per-quote idempotency.   |
+| `amount_cents`         | number | Required.                                                 |
+| `received_at`          | ISO    | Defaults to `now()`.                                      |
+| `stage`                | string | e.g. `reservation`, `milestone`, `final`.                 |
+| `reference`            | string | Stripe charge id or wire reference.                       |
+
+**`commission.upserted`** — upsert the rep's commission
+
+| field                | type   | notes                                                        |
+|----------------------|--------|--------------------------------------------------------------|
+| `external_id`        | string | **required.** `(builder_id, external_id)` is unique.         |
+| `quote_external_id`  | string | Links to the builder-quote.                                  |
+| `rep_email`          | string | Resolves to a HH ops rep.                                    |
+| `status`             | string | `pending`, `earned`, `paid`, `void`. Defaults to `pending`.  |
+| `amount_cents`       | number | Required.                                                    |
+| `earned_at`          | ISO    | Optional.                                                    |
+| `description`        | string | Free-form.                                                   |
+
+**Paid is HH-owned.** If HH has already marked a commission `paid` and
+Connect sends a non-paid status, HH keeps `paid` and sets
+`commissions.conflict=true` so the admin can review. The commissions
+admin page (`/ops/commissions`) highlights conflict rows.
+
+**`build.milestone`** — append a milestone
+
+| field                | type   | notes                                                     |
+|----------------------|--------|-----------------------------------------------------------|
+| `quote_external_id`  | string | **required.** Resolves to `quotes.id`.                    |
+| `name`               | string | **required.**                                             |
+| `reached_at`         | ISO    | Defaults to `now()`.                                      |
+| `external_id`        | string | Optional. When present, used for per-quote idempotency.   |
+
+Unknown `event_type` values are rejected 400.
+
+### Backfill
+
+For bootstrapping and reconciliation, `POST /builder-webhook/backfill`
+with `{builder_id}` causes HH to call the builder's `backfill_url`
+(configured on the builder page) with a signed GET. The builder MUST
+return `{events: [<envelope>, <envelope>, …]}` — the same envelope
+shape as live deliveries. HH streams each through the same handlers;
+already-seen `event_id` values are skipped. The **Pull everything from
+Connect** button on the builder page invokes this.
+
+HH authenticates the outgoing request with
+`X-Builder-Signature: sha256=HMAC(webhook_secret, builder_id)` so the
+builder can verify the call came from HH.
+
+### Open ends for the Connect side
+
+- Payload field naming — `rep_email` vs nested `rep.email`: HH accepts
+  only `rep_email`. If Connect prefers nested, add it on Connect's end
+  or we extend the schema together.
+- `event_id` collision guard — HH enforces per-builder uniqueness; two
+  builders may share an id.
+- Webhook retries — Connect SHOULD retry on non-2xx. HH returns 200 on
+  duplicate, 4xx on bad signature/shape, 5xx on transient errors.
+
 ## Stack
 
 - **Frontend**: Vite · React 19 · TypeScript · Tailwind v4 · react-router v7

@@ -80,8 +80,10 @@ export function OpsDashboard() {
       const approvedRows = (approvedThisMonthRes.data as unknown as QRow[]) ?? []
 
       let totalGross = 0
+      // Totals now come from the commissions ledger (Phase 8). The
+      // per-quote commission_cents snapshot is still used for the
+      // gross margin maths because that's rep-earnings-net-of-everything.
       let totalCommission = 0
-      const perRep = new Map<string | null, { commission: number; quotes: number }>()
       for (const q of approvedRows) {
         const sale = q.price_cents ?? 0
         const landed    = q.quote_options.reduce((a, r) => a + (r.landed_cost_cents    ?? 0), 0)
@@ -90,22 +92,18 @@ export function OpsDashboard() {
         const commission = q.commission_cents ?? 0
         const gross = sale - landed - partner - materials - commission
         totalGross += gross
-        totalCommission += commission
-        // Pick the rep: most recent 'sent' with a by_profile_id, else 'created'.
-        const events = q.quote_events.slice().sort((a, b) =>
-          b.created_at.localeCompare(a.created_at))
-        const rep = events.find(e => e.kind === 'sent' && e.by_profile_id)?.by_profile_id
-          ?? events.find(e => e.kind === 'created' && e.by_profile_id)?.by_profile_id
-          ?? null
-        const bucket = perRep.get(rep) ?? { commission: 0, quotes: 0 }
-        bucket.commission += commission
-        bucket.quotes += 1
-        perRep.set(rep, bucket)
       }
 
-      // Resolve rep profile_ids to display names.
-      const repIds = Array.from(perRep.keys()).filter((v): v is string => !!v)
-      let nameById = new Map<string, string>()
+      // Rep-per-builder commission totals now come straight from the
+      // ledger view so the number matches /ops/commissions.
+      const totalsRes = await supabase.from('rep_commission_totals')
+        .select('profile_id, forecast_cents, paid_cents')
+        .eq('builder_id', selected!.id)
+      if (totalsRes.error) throw totalsRes.error
+      type RT = { profile_id: string | null; forecast_cents: number; paid_cents: number }
+      const totals = (totalsRes.data ?? []) as RT[]
+      const repIds = totals.map(t => t.profile_id).filter((v): v is string => !!v)
+      const nameById = new Map<string, string>()
       if (repIds.length > 0) {
         const profRes = await supabase.from('profiles')
           .select('id, full_name').in('id', repIds)
@@ -114,14 +112,16 @@ export function OpsDashboard() {
           nameById.set(p.id, p.full_name ?? '—')
         }
       }
-      const commissionRows = Array.from(perRep.entries())
-        .map(([id, b]) => ({
-          repId: id,
-          repName: id ? (nameById.get(id) ?? '—') : 'Unassigned',
-          commission: b.commission,
-          quotes: b.quotes,
+      const commissionRows = totals
+        .map(t => ({
+          repId: t.profile_id,
+          repName: t.profile_id ? (nameById.get(t.profile_id) ?? '—') : 'Unassigned',
+          commission: Number(t.forecast_cents) + Number(t.paid_cents),
+          quotes: 0,
         }))
+        .filter(r => r.commission !== 0)
         .sort((a, b) => b.commission - a.commission)
+      totalCommission = commissionRows.reduce((s, r) => s + r.commission, 0)
 
       return {
         stageCounts,

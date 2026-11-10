@@ -25,6 +25,9 @@ import { LeadsBoard } from '@/pages/ops/leads/LeadsBoard'
 import { LeadDetail } from '@/pages/ops/leads/LeadDetail'
 import { QuotesList } from '@/pages/ops/quotes/QuotesList'
 import { QuoteEditor } from '@/pages/ops/quotes/QuoteEditor'
+import { QuoteRouter } from '@/pages/ops/quotes/QuoteRouter'
+import { CommissionsAdmin } from '@/pages/ops/commissions/CommissionsAdmin'
+import { OpsMe } from '@/pages/ops/OpsMe'
 import { ZohoSettings } from '@/pages/ops/settings/ZohoSettings'
 import { OperatorSettings } from '@/pages/ops/settings/OperatorSettings'
 import { OperatorLanding } from '@/pages/public/OperatorLanding'
@@ -97,7 +100,9 @@ export function App() {
                   { path: 'leads/:id', element: <LeadDetail /> },
                   { path: 'quotes', element: <QuotesList /> },
                   { path: 'quotes/new', element: <QuoteEditor /> },
-                  { path: 'quotes/:id', element: <QuoteEditor /> },
+                  { path: 'quotes/:id', element: <QuoteRouter /> },
+                  { path: 'commissions', element: <CommissionsAdmin /> },
+                  { path: 'me', element: <OpsMe /> },
                   { path: 'builds', element: <BuildsList /> },
                   { path: 'builds/:id', element: <BuildDetail /> },
                   {

@@ -69,7 +69,9 @@ test('Phase 8: Connect replay → grouped row, summary, /ops/me; paid→conflict
   if (builderRes.error) throw builderRes.error
   const builderId = builderRes.data.id as string
   const secret = crypto.randomBytes(32).toString('hex')
-  const setSecret = await admin.from('builders').update({ webhook_secret: secret }).eq('id', builderId)
+  // webhook_secret lives on builder_secrets (operator-only RLS).
+  const setSecret = await admin.from('builder_secrets')
+    .upsert({ builder_id: builderId, webhook_secret: secret }, { onConflict: 'builder_id' })
   if (setSecret.error) throw setSecret.error
 
   // Accept an ops rep or an operator — matches resolveRep in the edge

@@ -102,14 +102,10 @@ export type Database = {
           stripe_account_id: string | null
           zoho_product_id: string | null
           catalog_source: 'manual' | 'connect' | 'shopify'
-          catalog_source_url: string | null
-          catalog_source_token: string | null
           lead_intake_url: string | null
           last_synced_at: string | null
           last_sync_status: 'success' | 'error' | null
           last_sync_error: string | null
-          webhook_secret: string | null
-          backfill_url: string | null
           created_at: string
           updated_at: string
         }
@@ -124,14 +120,10 @@ export type Database = {
           stripe_account_id?: string | null
           zoho_product_id?: string | null
           catalog_source?: 'manual' | 'connect' | 'shopify'
-          catalog_source_url?: string | null
-          catalog_source_token?: string | null
           lead_intake_url?: string | null
           last_synced_at?: string | null
           last_sync_status?: 'success' | 'error' | null
           last_sync_error?: string | null
-          webhook_secret?: string | null
-          backfill_url?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -145,13 +137,38 @@ export type Database = {
           stripe_account_id?: string | null
           zoho_product_id?: string | null
           catalog_source?: 'manual' | 'connect' | 'shopify'
-          catalog_source_url?: string | null
-          catalog_source_token?: string | null
           lead_intake_url?: string | null
           last_synced_at?: string | null
           last_sync_status?: 'success' | 'error' | null
           last_sync_error?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      builder_secrets: {
+        Row: {
+          builder_id: string
+          webhook_secret: string | null
+          catalog_source_token: string | null
+          catalog_source_url: string | null
+          backfill_url: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          builder_id: string
           webhook_secret?: string | null
+          catalog_source_token?: string | null
+          catalog_source_url?: string | null
+          backfill_url?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          builder_id?: string
+          webhook_secret?: string | null
+          catalog_source_token?: string | null
+          catalog_source_url?: string | null
           backfill_url?: string | null
           updated_at?: string
         }

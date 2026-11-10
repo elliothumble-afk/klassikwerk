@@ -204,14 +204,25 @@ export function BuilderWizard() {
           active: false,
           sort: 100,
           catalog_source: 'connect',
-          catalog_source_url: state.catalog_source_url || null,
-          catalog_source_token: state.catalog_source_token || null,
           lead_intake_url: state.lead_intake_url || null,
         })
         .select('*')
         .single()
       if (builderIns.error) throw builderIns.error
       const builder = builderIns.data as Builder
+
+      // Secrets + sync URL live on builder_secrets (operator-only RLS)
+      // to keep them out of reach of the public-read builders table.
+      if (state.catalog_source_url || state.catalog_source_token) {
+        const secretIns = await supabase
+          .from('builder_secrets')
+          .insert({
+            builder_id: builder.id,
+            catalog_source_url: state.catalog_source_url || null,
+            catalog_source_token: state.catalog_source_token || null,
+          })
+        if (secretIns.error) throw secretIns.error
+      }
 
       // Trigger first sync. If it fails we still created the builder,
       // so the operator can retry from the builder page.

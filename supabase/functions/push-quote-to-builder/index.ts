@@ -26,13 +26,20 @@ Deno.serve(async (req) => {
       .select(`
         id, version, price_cents, pdf_url, notes, token, status,
         lead:leads(id, zoho_lead_id, customer:customers(full_name, email, zoho_contact_id)),
-        builder:builders(id, slug, lead_intake_url, catalog_source_token)
+        builder:builders(id, slug, lead_intake_url)
       `)
       .eq('id', quote_id)
       .single()
     if (qRes.error) throw qRes.error
     const quote = qRes.data as any
     const builder = quote.builder
+    // catalog_source_token lives on the operator-only builder_secrets
+    // table now; load it with the service-role client.
+    if (builder?.id) {
+      const sRes = await admin.from('builder_secrets')
+        .select('catalog_source_token').eq('builder_id', builder.id).maybeSingle()
+      builder.catalog_source_token = (sRes.data as any)?.catalog_source_token ?? null
+    }
     if (!builder?.lead_intake_url) {
       await admin.from('builder_push_log').insert({
         builder_id: builder?.id ?? null,

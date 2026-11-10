@@ -70,11 +70,20 @@ Deno.serve(async (req) => {
     try {
       const { builder_id } = await req.json()
       if (!builder_id) throw new Error('builder_id is required')
-      const bRes = await admin.from('builders')
-        .select('id, webhook_secret, backfill_url')
-        .eq('id', builder_id).single()
-      if (bRes.error) throw bRes.error
-      const b = bRes.data as { id: string; webhook_secret: string | null; backfill_url: string | null }
+      // Secrets + backfill_url live on builder_secrets (operator-only
+      // RLS). Service role bypasses, so one join via builder_secrets
+      // is enough. We still confirm the builders row exists so an
+      // unknown id doesn't look like a missing-secret error.
+      const bCheck = await admin.from('builders').select('id').eq('id', builder_id).single()
+      if (bCheck.error) throw bCheck.error
+      const sRes = await admin.from('builder_secrets')
+        .select('webhook_secret, backfill_url')
+        .eq('builder_id', builder_id).maybeSingle()
+      const b = {
+        id: builder_id as string,
+        webhook_secret: (sRes.data as { webhook_secret?: string | null } | null)?.webhook_secret ?? null,
+        backfill_url:   (sRes.data as { backfill_url?: string | null }   | null)?.backfill_url   ?? null,
+      }
       if (!b.backfill_url) throw new Error('builder has no backfill_url')
       if (!b.webhook_secret) throw new Error('builder has no webhook_secret')
       // Outbound backfill uses the same signature scheme as inbound:
@@ -121,11 +130,14 @@ Deno.serve(async (req) => {
       return new Response('missing signature headers', { status: 401 })
     }
     const body = await req.text()
-    const bRes = await admin.from('builders').select('id, webhook_secret').eq('id', builderId).single()
-    if (bRes.error || !(bRes.data as { webhook_secret?: string | null }).webhook_secret) {
+    // Inbound signature verification. webhook_secret is on
+    // builder_secrets (operator-only RLS). Service role bypasses.
+    const sRes = await admin.from('builder_secrets')
+      .select('webhook_secret').eq('builder_id', builderId).maybeSingle()
+    const secret = (sRes.data as { webhook_secret?: string | null } | null)?.webhook_secret ?? null
+    if (!secret) {
       return new Response('unknown builder', { status: 401 })
     }
-    const secret = (bRes.data as { webhook_secret: string }).webhook_secret
     const expected = await hmacSha256Hex(secret, body)
     const provided = sigHeader.slice('sha256='.length)
     if (!timingSafeEqual(expected, provided)) {

@@ -30,6 +30,19 @@ export function SyncPanel({ builder }: Props) {
     refetchInterval: 5000,
   })
 
+  // catalog_source_url lives on builder_secrets (operator-only) since
+  // it was lifted off the public-read builders table. We only need to
+  // know whether it's set, to enable the Sync button and show the URL.
+  const { data: secrets } = useQuery({
+    queryKey: ['builder-secrets-sync', builder.id],
+    enabled: builder.catalog_source === 'connect',
+    queryFn: async () => {
+      const { data } = await supabase.from('builder_secrets')
+        .select('catalog_source_url').eq('builder_id', builder.id).maybeSingle()
+      return (data as { catalog_source_url: string | null } | null) ?? null
+    },
+  })
+
   const syncNow = useMutation({
     mutationFn: async () => {
       await invokeFn('sync-builder-catalog', { builder_id: builder.id })
@@ -82,7 +95,7 @@ export function SyncPanel({ builder }: Props) {
           <p className="text-xs text-[var(--color-muted)]">
             This builder's catalog, brand, terms and contract come from
             {' '}
-            <code className="text-[var(--color-foreground)]">{builder.catalog_source_url ?? 'the configured feed URL'}</code>.
+            <code className="text-[var(--color-foreground)]">{secrets?.catalog_source_url ?? 'the configured feed URL'}</code>.
             Last synced {lastSynced}.
           </p>
           {isError && builder.last_sync_error && (
@@ -105,7 +118,7 @@ export function SyncPanel({ builder }: Props) {
           </button>
           <button
             onClick={() => { setStatus(null); setErr(null); syncNow.mutate() }}
-            disabled={pending || !builder.catalog_source_url}
+            disabled={pending || !secrets?.catalog_source_url}
             className="h-9 px-3 rounded-[var(--radius-sm)] bg-[var(--color-accent)] text-white text-sm inline-flex items-center gap-1.5 hover:opacity-90 disabled:opacity-50"
           >
             {syncNow.isPending ? <Spinner size={13} /> : <RefreshCw size={13} />}

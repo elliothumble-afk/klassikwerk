@@ -175,6 +175,15 @@ Deno.serve(async (req) => {
       throw new Error(`Builder ${builder.slug} is ${builder.catalog_source}, not a synced source.`)
     }
 
+    // catalog_source_url + catalog_source_token moved to the
+    // operator-only builder_secrets table. Attach them to the
+    // builder object so downstream code can read them unchanged.
+    const secretsRes = await admin.from('builder_secrets')
+      .select('catalog_source_url, catalog_source_token')
+      .eq('builder_id', builderId).maybeSingle()
+    builder.catalog_source_url   = (secretsRes.data as any)?.catalog_source_url   ?? null
+    builder.catalog_source_token = (secretsRes.data as any)?.catalog_source_token ?? null
+
     // Open a sync_runs row in `running` state so the UI shows live state.
     const runIns = await admin.from('sync_runs').insert({
       builder_id: builderId,

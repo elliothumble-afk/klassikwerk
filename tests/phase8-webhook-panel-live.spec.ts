@@ -76,11 +76,19 @@ test('WebhookPanel buttons work when builder_terms.synced=true', async ({ page }
     name: `Test Webhook ${runId}`,
     active: true,
     catalog_source: 'connect',
-    webhook_secret: seededSecret,
-    backfill_url: null,
   } as never).select('id').single()
   if (b.error) throw b.error
   const builderId = (b.data as { id: string }).id
+
+  // Secrets + service URLs live on the operator-only builder_secrets
+  // table now. Seed webhook_secret only — leave backfill_url null so
+  // the Pull-becomes-enabled assertion exercises the real transition.
+  const secretsIns = await admin.from('builder_secrets').insert({
+    builder_id: builderId,
+    webhook_secret: seededSecret,
+    backfill_url: null,
+  } as never)
+  if (secretsIns.error) throw secretsIns.error
 
   // Minimal terms row with synced=true to re-create the fieldset-disabled condition.
   const terms = await admin.from('builder_terms').insert({
@@ -143,8 +151,8 @@ test('WebhookPanel buttons work when builder_terms.synced=true', async ({ page }
     // Poll the DB until the save lands (onSuccess resets draftBackfill
     // to null, so we can't rely on a button-state transition).
     await expect.poll(async () => {
-      const after = await admin.from('builders').select('backfill_url')
-        .eq('id', builderId).single()
+      const after = await admin.from('builder_secrets').select('backfill_url')
+        .eq('builder_id', builderId).maybeSingle()
       return after.data?.backfill_url
     }, { timeout: 10_000 }).toBe(newUrl)
 
@@ -156,6 +164,7 @@ test('WebhookPanel buttons work when builder_terms.synced=true', async ({ page }
     await expect(page.getByTestId('webhook-pull')).toBeEnabled({ timeout: 15_000 })
   } finally {
     // ─── Cleanup ────────────────────────────────────────────────────
+    await admin.from('builder_secrets').delete().eq('builder_id', builderId)
     await admin.from('builder_terms').delete().eq('builder_id', builderId)
     await admin.from('builders').delete().eq('id', builderId)
     await admin.auth.admin.deleteUser(opUserId)

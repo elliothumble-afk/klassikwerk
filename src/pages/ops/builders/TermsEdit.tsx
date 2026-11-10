@@ -269,13 +269,15 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 // ─── Webhook panel: secret + Rotate + Pull everything ────────────────
+// Secrets + service URLs live on builder_secrets (operator-only RLS).
+// Previously they sat on builders, which is public-read.
 function WebhookPanel({ builderId }: { builderId: string }) {
   const qc = useQueryClient()
   const { data } = useQuery({
     queryKey: ['builder-webhook', builderId],
     queryFn: async () => {
-      const { data } = await supabase.from('builders')
-        .select('webhook_secret, backfill_url').eq('id', builderId).single()
+      const { data } = await supabase.from('builder_secrets')
+        .select('webhook_secret, backfill_url').eq('builder_id', builderId).maybeSingle()
       return data as { webhook_secret: string | null; backfill_url: string | null } | null
     },
   })
@@ -285,13 +287,12 @@ function WebhookPanel({ builderId }: { builderId: string }) {
 
   const rotate = useMutation({
     mutationFn: async () => {
-      // 32 random bytes → hex. generated client-side; the server is
-      // allowed to overwrite via the regular update RLS policy for
-      // operator profiles.
+      // 32 random bytes → hex. Upsert into builder_secrets (operator
+      // RLS gates the write; service role still bypasses).
       const buf = crypto.getRandomValues(new Uint8Array(32))
       const hex = Array.from(buf).map(b => b.toString(16).padStart(2, '0')).join('')
-      const { error } = await supabase.from('builders')
-        .update({ webhook_secret: hex }).eq('id', builderId)
+      const { error } = await supabase.from('builder_secrets')
+        .upsert({ builder_id: builderId, webhook_secret: hex }, { onConflict: 'builder_id' })
       if (error) throw error
       setReveal(true)
     },
@@ -299,8 +300,8 @@ function WebhookPanel({ builderId }: { builderId: string }) {
   })
   const saveBackfill = useMutation({
     mutationFn: async (url: string) => {
-      const { error } = await supabase.from('builders')
-        .update({ backfill_url: url || null }).eq('id', builderId)
+      const { error } = await supabase.from('builder_secrets')
+        .upsert({ builder_id: builderId, backfill_url: url || null }, { onConflict: 'builder_id' })
       if (error) throw error
     },
     onSuccess: () => { setDraftBackfill(null); qc.invalidateQueries({ queryKey: ['builder-webhook', builderId] }) },

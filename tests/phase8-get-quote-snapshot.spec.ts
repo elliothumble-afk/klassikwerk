@@ -13,6 +13,7 @@ import { createClient } from '@supabase/supabase-js'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { lineCents } from '../src/lib/quoteLineMath'
 
 const SUPABASE_URL = 'https://vvuccbskbswtfvxplxxm.supabase.co'
 
@@ -122,7 +123,14 @@ test('/q line sum == quote subtotal even when live catalog has drifted', async (
       if (ins.error) throw ins.error
     }
 
-    // ─── Baseline: /q lines sum to subtotal exactly ────────────────
+    // ─── Baseline: /q lines pass through the shared lineCents(), sum
+    //     to subtotal, and each line matches what the lookbook would
+    //     render given the same (qo, opt) inputs ─────────────────────
+    interface QoLine {
+      option_id: string; price_cents_at_selection: number; quantity: number
+      parts_sell_cents: number | null; labour_cents: number | null; materials_cents: number | null
+      catalog_options: { sold_as_set: boolean; parts_sell_cents?: number | null } | null
+    }
     const first = await fetch(`${SUPABASE_URL}/functions/v1/get-quote`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', apikey: anonKey, Authorization: `Bearer ${anonKey}` },
@@ -130,12 +138,29 @@ test('/q line sum == quote subtotal even when live catalog has drifted', async (
     })
     expect(first.status).toBe(200)
     const d1 = await first.json()
-    const sumRecorded = (d1.quote_options as Array<Record<string, number>>).reduce(
-      (a, o) => a + (o.parts_sell_cents ?? 0) + (o.labour_cents ?? 0) + (o.materials_cents ?? 0), 0,
-    )
+    const lines1 = d1.quote_options as QoLine[]
+    const perLine1 = lines1.map(o => ({
+      option_id: o.option_id,
+      cents: lineCents(o, { sold_as_set: o.catalog_options?.sold_as_set ?? false }),
+    }))
+    const sumRecorded = perLine1.reduce((a, l) => a + l.cents, 0)
     const quotePrice = d1.quote.price_cents as number
-    console.log('[baseline]', 'sum', sumRecorded, 'tier', tierBase, 'quote.price_cents', quotePrice)
+    console.log('[baseline] lines:', perLine1, 'tier:', tierBase, 'price_cents:', quotePrice)
     expect(sumRecorded + tierBase).toBe(quotePrice)
+    // Each line also equals the lookbook's formula fed the same qo
+    // + the ops-side catalog_options.parts_sell_cents fallback. The
+    // lookbook build uses catalog_options.parts_sell_cents when the
+    // snapshot is null; we assert both paths agree for rows that
+    // have the snapshot (which is all of our seeded rows).
+    for (let i = 0; i < lines1.length; i++) {
+      const o = lines1[i]
+      const sas = o.catalog_options?.sold_as_set ?? false
+      const withCat = lineCents(o, { sold_as_set: sas, parts_sell_cents: null })
+      const seededPartsLabMat = snap.find(s => s.option_id === o.option_id)!
+      const expected = seededPartsLabMat.parts + seededPartsLabMat.labour + seededPartsLabMat.materials
+      expect(perLine1[i].cents, `line[${i}] /q arithmetic`).toBe(expected)
+      expect(withCat, `line[${i}] lookbook arithmetic with same qo`).toBe(expected)
+    }
 
     // get-quote must not leak the LIVE catalog parts/install columns.
     // Keeping them off the wire is what prevents the line-drift bug
@@ -163,7 +188,8 @@ test('/q line sum == quote subtotal even when live catalog has drifted', async (
       if (upd.error) throw upd.error
     }
 
-    // ─── After drift: /q lines still match subtotal ─────────────────
+    // ─── After drift: /q lines still match subtotal AND the per-line
+    //     result of the shared lineCents() is unchanged ─────────────
     const second = await fetch(`${SUPABASE_URL}/functions/v1/get-quote`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', apikey: anonKey, Authorization: `Bearer ${anonKey}` },
@@ -171,12 +197,20 @@ test('/q line sum == quote subtotal even when live catalog has drifted', async (
     })
     expect(second.status).toBe(200)
     const d2 = await second.json()
-    const sumAfter = (d2.quote_options as Array<Record<string, number>>).reduce(
-      (a, o) => a + (o.parts_sell_cents ?? 0) + (o.labour_cents ?? 0) + (o.materials_cents ?? 0), 0,
-    )
-    console.log('[after drift]', 'sum', sumAfter, 'tier', tierBase, 'quote.price_cents', d2.quote.price_cents, 'drift bumped parts by 23%')
+    const lines2 = d2.quote_options as QoLine[]
+    const perLine2 = lines2.map(o => ({
+      option_id: o.option_id,
+      cents: lineCents(o, { sold_as_set: o.catalog_options?.sold_as_set ?? false }),
+    }))
+    const sumAfter = perLine2.reduce((a, l) => a + l.cents, 0)
+    console.log('[after drift] lines:', perLine2, 'tier:', tierBase, 'price_cents:', d2.quote.price_cents, 'catalog bumped +23%/+50%')
     expect(sumAfter).toBe(sumRecorded)
     expect(sumAfter + tierBase).toBe(d2.quote.price_cents)
+    // Per-line parity: each drifted line cents matches baseline exactly.
+    for (let i = 0; i < perLine1.length; i++) {
+      expect(perLine2[i].option_id).toBe(perLine1[i].option_id)
+      expect(perLine2[i].cents, `line[${i}] drifted cents`).toBe(perLine1[i].cents)
+    }
 
     // Individual line snapshot must equal what we seeded, regardless
     // of the drift. Catches the specific "Wide Track shows $27,091"

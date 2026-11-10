@@ -1,6 +1,7 @@
 import type { DocumentProps } from '@react-pdf/renderer'
 import type { ReactElement } from 'react'
 import { supabase } from '@/lib/supabase'
+import { lineCents } from '@/lib/quoteLineMath'
 import type {
   BuilderLike, BrandLike, TermsLike, OperatorContact,
   PlatformLike, TierLike, OptionLineForPdf,
@@ -670,13 +671,12 @@ export async function renderLookbookPdfToStorage(quoteId: string): Promise<strin
   const built = await Promise.all(optRows.map(async (o) => {
     const qo = qoByOption.get(o.id)!
     const qty = qo.quantity ?? 1
-    // Line price reads straight off the quote_options snapshot:
-    //   parts_sell_cents is already × qty (set at save time)
-    //   labour_cents + materials_cents form the install portion.
+    // One shared formula — see src/lib/quoteLineMath.ts — so the
+    // Lookbook Investment table, this renderer and the public /q
+    // page never diverge on per-line cents.
+    const linePrice = lineCents(qo, o)
     const partsSell = qo.parts_sell_cents
       ?? (o.parts_sell_cents ?? qo.price_cents_at_selection) * (o.sold_as_set ? 1 : qty)
-    const installPart = (qo.labour_cents ?? 0) + (qo.materials_cents ?? 0)
-    const linePrice = partsSell + installPart
 
     const finishes = (qo.quote_option_finishes ?? [])
       .slice()

@@ -3,6 +3,7 @@ import { useParams } from 'react-router'
 import { invokeFn } from '@/lib/fnInvoke'
 import { Spinner } from '@/components/ui/Spinner'
 import { cleanName, formatYears } from '@/lib/catalogNames'
+import { lineCents } from '@/lib/quoteLineMath'
 
 interface QuoteData {
   quote: {
@@ -215,20 +216,12 @@ export function QuoteView() {
               {quote_options.map(qo => {
                 const qty = qo.quantity ?? 1
                 const soldAsSet = qo.catalog_options?.sold_as_set ?? false
-                // Line price comes from the quote_options snapshot —
-                // never from live catalog columns. parts_sell + labour
-                // + materials sums to quote.price_cents - tier_base by
-                // construction. Fall back to price_cents_at_selection
-                // × effective qty for older rows that pre-date the
-                // phase-5 snapshot columns.
-                const parts = qo.parts_sell_cents
-                const labour = qo.labour_cents
-                const materials = qo.materials_cents
-                const hasSnapshot = parts != null || labour != null || materials != null
-                const effectiveQty = soldAsSet ? 1 : qty
-                const extended = hasSnapshot
-                  ? (parts ?? 0) + (labour ?? 0) + (materials ?? 0)
-                  : qo.price_cents_at_selection * effectiveQty
+                // Line math shared with Lookbook Investment + ops
+                // PDF via src/lib/quoteLineMath.ts. /q callers don't
+                // see catalog_options.parts_sell_cents (RLS), so the
+                // fallback is parts_sell_cents / price_cents_at_selection
+                // from the snapshot itself.
+                const extended = lineCents(qo, { sold_as_set: soldAsSet })
                 const qtyLabel = soldAsSet
                   ? 'Set of 4'
                   : qty === 5 ? 'Set of 5 incl. spare'

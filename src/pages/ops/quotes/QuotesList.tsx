@@ -12,7 +12,8 @@ interface Quote {
   lead_id: string
   version: number
   price_cents: number
-  status: 'draft' | 'sent' | 'approved' | 'superseded'
+  status: 'draft' | 'sent' | 'approved' | 'superseded' | 'declined' | 'expired' | 'void'
+  source: 'native' | 'builder'
   created_at: string
   sent_at: string | null
   platform_id: string
@@ -47,7 +48,7 @@ export function QuotesList() {
       const { data, error } = await supabase
         .from('quotes')
         .select(`
-          id, lead_id, version, price_cents, status, created_at, sent_at, platform_id,
+          id, lead_id, version, price_cents, status, source, created_at, sent_at, platform_id,
           lead:leads(id, customer_id, customer:customers(id, full_name, email)),
           platform:catalog_platforms(name),
           quote_options(option_id, catalog_options(name))
@@ -125,6 +126,11 @@ export function QuotesList() {
                           <Link to={`/ops/quotes/${g.top.id}`} className="text-[var(--color-accent)] hover:underline">
                             {customerName}
                           </Link>
+                          {g.top.source === 'builder' && (
+                            <span className="ml-2 inline-block px-1.5 py-0.5 text-[10px] uppercase tracking-wide rounded bg-[var(--color-accent)]/10 text-[var(--color-accent)]">
+                              builder
+                            </span>
+                          )}
                         </td>
                         <td className="px-5 py-3">{g.top.platform?.name ?? '—'}</td>
                         <td className="px-5 py-3">

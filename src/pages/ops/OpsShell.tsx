@@ -62,11 +62,14 @@ function OpsShellInner() {
           <NavItem to="/ops/quotes" icon={<Receipt size={15} />}>Quotes</NavItem>
           <NavItem to="/ops/builds" icon={<Wrench size={15} />}>Builds</NavItem>
           <NavItem to="/ops/catalog" icon={<LayoutGrid size={15} />}>Catalog</NavItem>
+          <NavItem to="/ops/commissions" icon={<Receipt size={15} />}>Commissions</NavItem>
+          <NavItem to="/ops/me" icon={<Users size={15} />}>My commissions</NavItem>
           {isOperator && (
             <>
               <div className="mt-4 mb-1 px-3 text-[10px] uppercase tracking-wide text-[var(--color-muted)]">Operator</div>
               <NavItem to="/ops/builders" icon={<Building2 size={15} />}>Builders</NavItem>
               <NavItem to="/ops/settings/operator" icon={<Building2 size={15} />}>Operator</NavItem>
+              <NavItem to="/ops/settings/users" icon={<Users size={15} />}>Users</NavItem>
               <NavItem to="/ops/settings/zoho" icon={<LinkIcon size={15} />}>Zoho sync</NavItem>
             </>
           )}

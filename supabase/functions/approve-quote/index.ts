@@ -36,6 +36,10 @@ Deno.serve(async (req) => {
     await admin.from('quotes').update({ status: 'approved', approved_at: now }).eq('id', quote.id)
     await admin.from('quote_events').insert({ quote_id: quote.id, kind: 'approved', note: 'Approved via /q token link' })
     await admin.from('leads').update({ stage: 'quoted' }).eq('id', quote.lead_id)
+    // Phase 8: write native commission rows from the quote snapshot
+    // so the dashboard / ops/me ledger reflects the approval. The
+    // RPC is idempotent via quotes.commissions_booked_at.
+    try { await admin.rpc('book_native_commission', { p_quote_id: quote.id }) } catch (_) { /* ignore */ }
 
     // Fire-and-forget Zoho push
     try {

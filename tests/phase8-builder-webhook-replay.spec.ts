@@ -90,6 +90,26 @@ test('Phase 8: Connect replay → grouped row, summary, /ops/me; paid→conflict
   const contractExternalId = `conn-c-${runId}`
   const commissionExternalId = `conn-cm-${runId}`
 
+  // Wrap the whole flow in try/finally so a mid-test expect() miss
+  // still cleans up events + rows + the stamped webhook_secret.
+  let cleanedUp = false
+  const doCleanup = async () => {
+    if (cleanedUp) return
+    cleanedUp = true
+    await admin.from('builder_webhook_events').delete().eq('builder_id', builderId).like('event_id', `evt-${runId}-%`)
+    await admin.from('commissions').delete().eq('builder_id', builderId).like('external_id', `${commissionExternalId}%`)
+    await admin.from('contracts').delete().eq('builder_id', builderId).eq('external_id', contractExternalId)
+    const q = await admin.from('quotes').select('id').eq('builder_id', builderId).eq('external_id', quoteExternalId).maybeSingle()
+    if (q.data?.id) {
+      await admin.from('quote_milestones').delete().eq('quote_id', q.data.id)
+      await admin.from('quote_payments').delete().eq('quote_id', q.data.id)
+      await admin.from('quotes').delete().eq('id', q.data.id)
+    }
+    await admin.from('customers').delete().eq('email', customerEmail)
+  }
+
+  try {
+
   // ─── Clean prior test state ──────────────────────────────────────
   await admin.from('commissions').delete().eq('builder_id', builderId).eq('external_id', commissionExternalId)
   await admin.from('contracts').delete().eq('builder_id', builderId).eq('external_id', contractExternalId)
@@ -277,12 +297,19 @@ test('Phase 8: Connect replay → grouped row, summary, /ops/me; paid→conflict
   expect(commAfter.data.status).toBe('paid')          // HH owns paid
   expect(commAfter.data.conflict).toBe(true)          // flagged for review
 
+  // ─── 8b. Unknown event_type must be rejected 400, no side effects ──
+  const rUnknown = await post(builderId, secret, {
+    event_id: `evt-${runId}-bogus`,
+    event_type: 'quote.yeeted',
+    payload: {},
+  })
+  expect(rUnknown.status).toBe(400)
+  const stamped = await admin.from('builder_webhook_events').select('id')
+    .eq('builder_id', builderId).eq('event_id', `evt-${runId}-bogus`).maybeSingle()
+  expect(stamped.data).toBeNull()
+
   // ─── 9. Clean up — leave DB as we found it on repeat runs ────────
-  await admin.from('commissions').delete().eq('id', comm1.data.id)
-  await admin.from('contracts').delete().eq('id', contract.data.id)
-  await admin.from('quote_payments').delete().eq('quote_id', quote.data.id)
-  await admin.from('quote_milestones').delete().eq('quote_id', quote.data.id)
-  await admin.from('builder_webhook_events').delete().eq('builder_id', builderId).like('event_id', `evt-${runId}-%`)
-  await admin.from('quotes').delete().eq('id', quote.data.id)
-  await admin.from('customers').delete().eq('id', customer.data.id)
+  } finally {
+    await doCleanup()
+  }
 })

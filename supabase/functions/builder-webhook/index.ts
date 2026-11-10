@@ -53,6 +53,11 @@ function timingSafeEqual(a: string, b: string): boolean {
 type EventType = 'quote.upserted' | 'contract.upserted' | 'payment.received'
   | 'commission.upserted' | 'build.milestone'
 
+const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set<EventType>([
+  'quote.upserted', 'contract.upserted', 'payment.received',
+  'commission.upserted', 'build.milestone',
+])
+
 interface Envelope { event_id: string; event_type: EventType; payload: any }
 
 Deno.serve(async (req) => {
@@ -128,7 +133,14 @@ Deno.serve(async (req) => {
     }
     const env = JSON.parse(body) as Envelope
     if (!env.event_id || !env.event_type) {
-      return new Response('event_id and event_type are required', { status: 400 })
+      return new Response(JSON.stringify({ error: 'event_id and event_type are required' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+    }
+    // Reject unknown event types up front per the contract — 400, no
+    // DB side effects, Connect SHOULD NOT retry.
+    if (!KNOWN_EVENT_TYPES.has(env.event_type)) {
+      return new Response(JSON.stringify({ error: `unknown event_type: ${env.event_type}` }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
     }
     const result = await processEvent(admin, builderId, env)
     return new Response(JSON.stringify({ ok: true, result }), {

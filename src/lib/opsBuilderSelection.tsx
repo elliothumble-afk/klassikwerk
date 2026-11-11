@@ -4,7 +4,14 @@ import { supabase } from '@/lib/supabase'
 import type { Builder } from '@/types/database'
 
 interface OpsBuilderSelectionValue {
+  /** Active builders only — the surface the Workspace dropdown uses. */
   builders: Builder[]
+  /** Full list including inactive — the Operator → Builders admin view
+   *  reads this so admins can still reach an inactive row. */
+  allBuilders: Builder[]
+  /** Currently-pinned builder. Null when the user is on My homepage
+   *  OR when the persisted pin resolved to an inactive row (in which
+   *  case the sidebar falls back to My homepage). */
   selected: Builder | null
   loading: boolean
   /** Pass a builder id to pin the sidebar to a builder, or null to
@@ -15,6 +22,7 @@ interface OpsBuilderSelectionValue {
 
 const OpsBuilderSelectionContext = createContext<OpsBuilderSelectionValue>({
   builders: [],
+  allBuilders: [],
   selected: null,
   loading: true,
   setSelectedId: () => {},
@@ -41,17 +49,31 @@ export function OpsBuilderSelectionProvider({ children }: { children: ReactNode 
     staleTime: 30_000,
   })
 
-  const list = builders ?? []
-  const selected = selectedId ? (list.find(b => b.id === selectedId) ?? null) : null
+  // The dropdown only shows active builders — inactive ones are
+  // reachable from Operator → Builders. The full list (incl. inactive)
+  // is kept as `allBuilders` on the context for places that need it
+  // (BuildersList, deep-link resolution on /ops/builders/:id/*).
+  const allBuilders = builders ?? []
+  const list = allBuilders.filter(b => b.active)
+  const selected = selectedId ? (allBuilders.find(b => b.id === selectedId) ?? null) : null
+  // A selection that resolves to an inactive builder is treated as
+  // "no selection" for sidebar purposes — the dropdown falls back to
+  // My homepage. Active builders in `list` keep the selection as-is.
+  const activeSelected = selected && selected.active ? selected : null
 
   // Clear storage if the pinned id no longer resolves to a real builder
-  // (e.g. the row got deactivated or deleted between sessions).
+  // OR resolves to an inactive one. Rule: Workspace dropdown reflects
+  // only active rows, so persisting an inactive selection would just
+  // leave the dropdown stuck on My homepage without visual feedback.
   useEffect(() => {
-    if (selectedId && list.length > 0 && !list.find(b => b.id === selectedId)) {
-      setSelectedIdState(null)
-      if (typeof window !== 'undefined') window.localStorage.removeItem(STORAGE_KEY)
+    if (selectedId && allBuilders.length > 0) {
+      const match = allBuilders.find(b => b.id === selectedId)
+      if (!match || !match.active) {
+        setSelectedIdState(null)
+        if (typeof window !== 'undefined') window.localStorage.removeItem(STORAGE_KEY)
+      }
     }
-  }, [selectedId, list])
+  }, [selectedId, allBuilders])
 
   function setSelectedId(id: string | null) {
     setSelectedIdState(id)
@@ -61,8 +83,8 @@ export function OpsBuilderSelectionProvider({ children }: { children: ReactNode 
   }
 
   const value = useMemo(
-    () => ({ builders: list, selected, loading: isLoading, setSelectedId }),
-    [list, selected, isLoading]
+    () => ({ builders: list, allBuilders, selected: activeSelected, loading: isLoading, setSelectedId }),
+    [list, allBuilders, activeSelected, isLoading]
   )
 
   return <OpsBuilderSelectionContext.Provider value={value}>{children}</OpsBuilderSelectionContext.Provider>

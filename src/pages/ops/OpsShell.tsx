@@ -46,7 +46,7 @@ function OpsShellInner() {
   const navigate = useNavigate()
   const location = useLocation()
   const qc = useQueryClient()
-  const { builders, selected, setSelectedId, loading } = useOpsBuilderSelection()
+  const { builders, allBuilders, selected, setSelectedId, loading } = useOpsBuilderSelection()
 
   // URL is the source of truth for scope. Keep the dropdown in sync.
   // Builder-id routes pin the dropdown to that builder; cross-builder
@@ -59,7 +59,13 @@ function OpsShellInner() {
     if (scope.kind === 'cross' && selected) {
       setSelectedId(null)
     } else if (scope.kind === 'builder' && selected?.id !== scope.id) {
-      setSelectedId(scope.id)
+      // Only pin the Workspace dropdown to an ACTIVE builder.
+      // Admins can still deep-link to an inactive builder's brand/
+      // terms/contract pages (reached via Operator → Builders) —
+      // the content renders, but the sidebar stays on My homepage
+      // because the dropdown deliberately hides inactive rows.
+      const b = allBuilders.find(x => x.id === scope.id)
+      if (b?.active) setSelectedId(scope.id)
     } else if (scope.kind === 'scoped' && !selected && !loading) {
       // Builder-scoped URL with no selection — bounce to My homepage.
       navigate('/ops', { replace: true })
@@ -67,7 +73,7 @@ function OpsShellInner() {
     // Intentionally omit setSelectedId/navigate from deps; they're
     // stable callback identities from React Router / providers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.pathname, selected?.id, loading])
+  }, [location.pathname, selected?.id, loading, allBuilders.length])
 
   async function handleSignOut() {
     await supabase.auth.signOut()
@@ -118,9 +124,12 @@ function OpsShellInner() {
             className="w-full h-8 px-2 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-background)] text-sm focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)]"
           >
             <option value={HOME_VALUE}>My homepage</option>
+            {/* Active builders only. Inactive rows live at
+                Operator → Builders and never appear in the
+                Workspace surface. */}
             {builders.map(b => (
               <option key={b.id} value={b.id}>
-                {b.name}{b.active ? '' : ' (inactive)'}
+                {b.name}
               </option>
             ))}
           </select>

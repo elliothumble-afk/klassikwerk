@@ -321,9 +321,22 @@ function WebhookPanel({ builderId }: { builderId: string }) {
       })
       const j = await r.json()
       if (!r.ok) throw new Error(j?.error ?? `HTTP ${r.status}`)
-      return j as { processed: number; skipped: number }
+      return j as {
+        processed: number; skipped: number; failed?: number
+        failures?: Array<{ event_id: string; event_type: string; error: string }>
+      }
     },
-    onSuccess: (j) => setPullStatus(`Done — processed ${j.processed}, skipped ${j.skipped}`),
+    onSuccess: (j) => {
+      const failed = j.failed ?? 0
+      let msg = `Done — processed ${j.processed}, skipped ${j.skipped}`
+      if (failed > 0) {
+        msg += `, failed ${failed}`
+        const detail = (j.failures ?? []).slice(0, 3)
+          .map(f => `${f.event_id}: ${f.error}`).join(' • ')
+        if (detail) msg += ` (${detail}${(j.failures?.length ?? 0) > 3 ? '…' : ''})`
+      }
+      setPullStatus(msg)
+    },
     onError: (e: Error) => setPullStatus(`Failed: ${e.message}`),
   })
 

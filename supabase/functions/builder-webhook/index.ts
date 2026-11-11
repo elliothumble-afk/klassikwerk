@@ -104,13 +104,27 @@ Deno.serve(async (req) => {
       })
       if (!fetchRes.ok) throw new Error(`backfill fetch ${fetchRes.status}`)
       const data = await fetchRes.json() as { events: Envelope[] }
-      let processed = 0, skipped = 0
+      let processed = 0, skipped = 0, failed = 0
+      const failures: Array<{ event_id: string; event_type: string; error: string }> = []
+      // Tolerant backfill: one failing event must not stop the rest.
+      // processEvent already stamps the error onto the stored
+      // builder_webhook_events row; we also return a summary so the
+      // UI can show counts without digging into the table.
       for (const env of data.events ?? []) {
-        const r = await processEvent(admin, b.id, env)
-        if (r === 'processed') processed += 1
-        else if (r === 'duplicate') skipped += 1
+        try {
+          const r = await processEvent(admin, b.id, env)
+          if (r === 'processed') processed += 1
+          else if (r === 'duplicate') skipped += 1
+        } catch (e) {
+          failed += 1
+          failures.push({
+            event_id: env?.event_id ?? '(missing)',
+            event_type: env?.event_type ?? '(missing)',
+            error: (e as Error).message,
+          })
+        }
       }
-      return new Response(JSON.stringify({ ok: true, processed, skipped }), {
+      return new Response(JSON.stringify({ ok: true, processed, skipped, failed, failures }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
     } catch (e) {
@@ -250,10 +264,18 @@ async function handleQuoteUpserted(admin: any, builderId: string, p: any) {
   const tierId = await resolveTier(admin, builderId)
   if (!leadId) throw new Error('quote.upserted could not resolve lead')
   if (!tierId) throw new Error('quote.upserted could not resolve tier')
-  // Prefer hh_quote_id when the webhook explicitly links to one.
+  // Identity for source=builder quotes is (builder_id, external_id).
+  // The Connect-side `version` is per-Connect-lead and is nearly
+  // always 1 when the Connect quote has no parent lead — so two
+  // Connect quotes for the same customer both arrive as v1 and used
+  // to collide on quotes_lead_id_version_key. Fix: keep Connect's
+  // version in builder_version for display + grouping, and mint our
+  // own HH-side version as `max(version where lead_id=…) + 1`.
   const hhLink = p.hh_quote_id ?? null
+  const builderVersion = p.version ?? 1
   const existing = await admin.from('quotes')
-    .select('id').eq('builder_id', builderId).eq('external_id', p.external_id).maybeSingle()
+    .select('id, version').eq('builder_id', builderId).eq('external_id', p.external_id).maybeSingle()
+
   const row: Record<string, unknown> = {
     source: 'builder',
     builder_id: builderId,
@@ -266,7 +288,7 @@ async function handleQuoteUpserted(admin: any, builderId: string, p: any) {
     tier_id: tierId,
     external_id: p.external_id,
     external_url: p.external_url ?? null,
-    version: p.version ?? 1,
+    builder_version: builderVersion,
     status: p.status ?? 'draft',
     price_cents: Number(p.price_cents ?? 0),
     tax_cents: Number(p.tax_cents ?? 0),
@@ -277,13 +299,34 @@ async function handleQuoteUpserted(admin: any, builderId: string, p: any) {
     sales_rep_profile_id: repId,
   }
   if (hhLink) row.notes = `linked:${hhLink}`
+
   if (existing.data?.id) {
+    // Keep HH's own version on update — we only ever mint it on insert.
     const upd = await admin.from('quotes').update(row).eq('id', existing.data.id)
     if (upd.error) throw new Error(`quote update failed: ${upd.error.message}`)
   } else {
-    const ins = await admin.from('quotes').insert(row)
-    if (ins.error) throw new Error(`quote insert failed: ${ins.error.message}`)
+    // Mint next HH version for this lead. Race window is small
+    // because the webhook processes events one at a time per Deno
+    // isolate, and the (lead_id, version) UNIQUE will catch a
+    // genuine conflict — in which case we retry once with +1.
+    const nextVersion = await nextHhVersion(admin, leadId)
+    row.version = nextVersion
+    const first = await admin.from('quotes').insert(row)
+    if (first.error && first.error.code === '23505') {
+      row.version = await nextHhVersion(admin, leadId)
+      const retry = await admin.from('quotes').insert(row)
+      if (retry.error) throw new Error(`quote insert failed (after retry): ${retry.error.message}`)
+    } else if (first.error) {
+      throw new Error(`quote insert failed: ${first.error.message}`)
+    }
   }
+}
+
+async function nextHhVersion(admin: any, leadId: string): Promise<number> {
+  const r = await admin.from('quotes').select('version')
+    .eq('lead_id', leadId).order('version', { ascending: false }).limit(1).maybeSingle()
+  const current = (r.data as { version?: number } | null)?.version ?? 0
+  return current + 1
 }
 
 // Match catalog_platforms.name case-insensitively, or any entry in

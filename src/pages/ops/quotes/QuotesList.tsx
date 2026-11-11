@@ -18,6 +18,7 @@ interface Quote {
   sent_at: string | null
   platform_id: string | null
   external_platform_name: string | null
+  external_id: string | null
   lead: { id: string; customer_id: string | null; customer: { id: string; full_name: string | null; email: string | null } | null } | null
   platform: { name: string } | null
   quote_options: QoRow[]
@@ -49,7 +50,7 @@ export function QuotesList() {
       const { data, error } = await supabase
         .from('quotes')
         .select(`
-          id, lead_id, version, price_cents, status, source, created_at, sent_at, platform_id, external_platform_name,
+          id, lead_id, version, price_cents, status, source, created_at, sent_at, platform_id, external_platform_name, external_id,
           lead:leads(id, customer_id, customer:customers(id, full_name, email)),
           platform:catalog_platforms(name),
           quote_options(option_id, catalog_options(name))
@@ -61,19 +62,25 @@ export function QuotesList() {
     },
   })
 
-  // Group by (customer_id, platform_id). Top-level = newest non-
-  // superseded version; a group whose newest version is superseded
-  // (shouldn't happen in practice) is hidden.
+  // Grouping rules:
+  //  • Native quotes: group by (customer_id, platform_id) so a
+  //    customer's revisions on one vehicle collapse into one row.
+  //  • Builder quotes: each Connect quote is its own row. Connect's
+  //    external_id (e.g. QV2-2026-0078-C) is the identity of the
+  //    conversation; two Connect quotes for the same customer on the
+  //    same platform are legitimately distinct deals.
   const groups: Group[] = useMemo(() => {
     if (!data) return []
     const map = new Map<string, Quote[]>()
     for (const q of data) {
       const cid = q.lead?.customer_id ?? q.lead?.customer?.id ?? 'no-customer'
-      // Group by platform_id when resolved; builder quotes with an
-      // unresolved platform group by their raw external name so two
-      // different Connect vehicles don't collapse into one row.
-      const pKey = q.platform_id ?? `ext:${(q.external_platform_name ?? '').toLowerCase().trim() || 'unknown'}`
-      const key = `${cid}|${pKey}`
+      let key: string
+      if (q.source === 'builder') {
+        key = `b|${q.external_id ?? q.id}`
+      } else {
+        const pKey = q.platform_id ?? `ext:${(q.external_platform_name ?? '').toLowerCase().trim() || 'unknown'}`
+        key = `${cid}|${pKey}`
+      }
       const arr = map.get(key) ?? []
       arr.push(q)
       map.set(key, arr)
@@ -134,6 +141,11 @@ export function QuotesList() {
                           {g.top.source === 'builder' && (
                             <span className="ml-2 inline-block px-1.5 py-0.5 text-[10px] uppercase tracking-wide rounded bg-[var(--color-accent)]/10 text-[var(--color-accent)]">
                               builder
+                            </span>
+                          )}
+                          {g.top.source === 'builder' && g.top.external_id && (
+                            <span className="ml-2 text-xs font-mono text-[var(--color-muted)]" title="Connect reference">
+                              {g.top.external_id}
                             </span>
                           )}
                         </td>

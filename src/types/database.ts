@@ -723,6 +723,7 @@ export type Database = {
           source: 'native' | 'builder'
           external_id: string | null
           external_url: string | null
+          builder_version: number | null
           sales_rep_profile_id: string | null
           commissions_booked_at: string | null
           created_at: string

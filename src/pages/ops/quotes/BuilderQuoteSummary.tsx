@@ -14,6 +14,7 @@ interface Quote {
   source: string
   external_id: string | null
   external_url: string | null
+  builder_version: number | null
   created_at: string
   sent_at: string | null
   approved_at: string | null
@@ -32,7 +33,7 @@ export function BuilderQuoteSummary() {
     queryFn: async () => {
       const { data, error } = await supabase.from('quotes').select(`
         id, version, price_cents, tax_cents, total_cents, status, source,
-        external_id, external_url, external_platform_name, created_at, sent_at, approved_at,
+        external_id, external_url, external_platform_name, builder_version, created_at, sent_at, approved_at,
         builder:builders(id, name),
         lead:leads(customer:customers(full_name, email)),
         platform:catalog_platforms(name, chassis, years)
@@ -86,11 +87,19 @@ export function BuilderQuoteSummary() {
         <Link to="/ops/quotes" className="text-xs text-[var(--color-muted)] hover:underline">← Quotes</Link>
         <div className="flex items-start justify-between mt-2 mb-6">
           <div>
-            <div className="text-xs uppercase tracking-wide text-[var(--color-muted)] flex items-center gap-2">
+            <div className="text-xs uppercase tracking-wide text-[var(--color-muted)] flex items-center gap-2 flex-wrap">
               <span className="inline-block px-1.5 py-0.5 text-[10px] rounded bg-[var(--color-accent)]/10 text-[var(--color-accent)]">
                 {quote.builder.name}
               </span>
               <span>Quote v{quote.version}</span>
+              {quote.external_id && (
+                <span className="font-mono text-[11px] normal-case text-[var(--color-muted)]" title="Connect reference">
+                  {quote.external_id}
+                  {quote.builder_version != null && quote.builder_version !== quote.version
+                    ? ` · v${quote.builder_version} in Connect`
+                    : ''}
+                </span>
+              )}
               <span className="uppercase">{quote.status}</span>
             </div>
             <h1 className="text-2xl mt-1" style={{ fontFamily: 'var(--font-display)' }}>{customerName}</h1>

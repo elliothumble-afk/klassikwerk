@@ -3,6 +3,10 @@ import { useParams, Link } from 'react-router'
 import { ExternalLink } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { Spinner } from '@/components/ui/Spinner'
+import {
+  commissionForQuote, formatCommission, commissionBadgeBg,
+  type CommissionStatus,
+} from '@/lib/commissionDisplay'
 
 interface Quote {
   id: string
@@ -11,13 +15,14 @@ interface Quote {
   tax_cents: number
   total_cents: number
   status: string
-  source: string
+  source: 'native' | 'builder'
   external_id: string | null
   external_url: string | null
   builder_version: number | null
   created_at: string
   sent_at: string | null
   approved_at: string | null
+  commission_cents: number | null
   builder: { id: string; name: string }
   lead: { customer: { full_name: string | null; email: string | null } | null } | null
   external_platform_name: string | null
@@ -33,7 +38,7 @@ export function BuilderQuoteSummary() {
     queryFn: async () => {
       const { data, error } = await supabase.from('quotes').select(`
         id, version, price_cents, tax_cents, total_cents, status, source,
-        external_id, external_url, external_platform_name, builder_version, created_at, sent_at, approved_at,
+        external_id, external_url, external_platform_name, builder_version, created_at, sent_at, approved_at, commission_cents,
         builder:builders(id, name),
         lead:leads(customer:customers(full_name, email)),
         platform:catalog_platforms(name, chassis, years)
@@ -65,6 +70,16 @@ export function BuilderQuoteSummary() {
     },
   })
 
+  const { data: commissions } = useQuery({
+    queryKey: ['builder-commissions', id],
+    enabled: Boolean(quote?.id),
+    queryFn: async () => {
+      const { data } = await supabase.from('commissions')
+        .select('quote_id, amount_cents, status').eq('quote_id', quote!.id)
+      return (data ?? []) as Array<{ quote_id: string | null; amount_cents: number; status: CommissionStatus }>
+    },
+  })
+
   const { data: milestones } = useQuery({
     queryKey: ['builder-milestones', id],
     enabled: Boolean(quote?.id),
@@ -80,6 +95,7 @@ export function BuilderQuoteSummary() {
 
   const customerName = quote.lead?.customer?.full_name ?? quote.lead?.customer?.email ?? '—'
   const totalPaid = (payments ?? []).reduce((s, p) => s + p.amount_cents, 0)
+  const commission = commissionForQuote(quote, commissions)
 
   return (
     <div className="p-8">
@@ -120,9 +136,24 @@ export function BuilderQuoteSummary() {
                 Incl. ${((quote.tax_cents) / 100).toLocaleString()} sales tax
               </div>
             )}
+            {commission && (
+              <div
+                data-testid="hh-commission-summary"
+                className="mt-2 text-xs text-[var(--color-muted)] inline-flex items-center gap-1.5"
+              >
+                HH commission {formatCommission(commission)}
+                <span
+                  className="inline-block px-1.5 py-0.5 text-[10px] uppercase tracking-wide rounded"
+                  style={{ backgroundColor: commissionBadgeBg(commission.status) }}
+                  title={commission.booked ? 'Commission booked' : 'Computed from HH terms — booked on approval'}
+                >
+                  {commission.status}
+                </span>
+              </div>
+            )}
             {quote.external_url && (
               <a href={quote.external_url} target="_blank" rel="noreferrer"
-                 className="mt-2 inline-flex items-center gap-1 text-xs text-[var(--color-accent)] hover:underline">
+                 className="mt-2 inline-flex items-center gap-1 text-xs text-[var(--color-accent)] hover:underline block">
                 Open in {quote.builder.name} <ExternalLink size={11} />
               </a>
             )}

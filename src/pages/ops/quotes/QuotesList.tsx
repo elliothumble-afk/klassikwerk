@@ -6,6 +6,10 @@ import { supabase } from '@/lib/supabase'
 import { useOpsBuilderSelection } from '@/lib/opsBuilderSelection'
 import { Spinner } from '@/components/ui/Spinner'
 import { EmptyState } from '@/components/ui/EmptyState'
+import {
+  commissionForQuote, formatCommission, commissionBadgeBg,
+  type CommissionStatus,
+} from '@/lib/commissionDisplay'
 
 interface Quote {
   id: string
@@ -19,10 +23,17 @@ interface Quote {
   platform_id: string | null
   external_platform_name: string | null
   external_id: string | null
+  commission_cents: number | null
   lead: { id: string; customer_id: string | null; customer: { id: string; full_name: string | null; email: string | null } | null } | null
   platform: { name: string } | null
   builder: { name: string } | null
   quote_options: QoRow[]
+}
+
+interface CommissionRow {
+  quote_id: string | null
+  amount_cents: number
+  status: CommissionStatus
 }
 
 // quote_options rows the diff cares about — option id + name for
@@ -56,7 +67,7 @@ export function QuotesList() {
       const { data, error } = await supabase
         .from('quotes')
         .select(`
-          id, lead_id, version, price_cents, status, source, created_at, sent_at, platform_id, external_platform_name, external_id,
+          id, lead_id, version, price_cents, status, source, created_at, sent_at, platform_id, external_platform_name, external_id, commission_cents,
           lead:leads(id, customer_id, customer:customers(id, full_name, email)),
           platform:catalog_platforms(name),
           builder:builders(name),
@@ -66,6 +77,19 @@ export function QuotesList() {
         .order('created_at', { ascending: false })
       if (error) throw error
       return (data ?? []) as unknown as Quote[]
+    },
+  })
+
+  const quoteIds = useMemo(() => (data ?? []).map(q => q.id), [data])
+  const { data: commissions } = useQuery({
+    queryKey: ['quotes-commissions', selected?.id, quoteIds.length],
+    enabled: Boolean(selected?.id) && quoteIds.length > 0,
+    queryFn: async () => {
+      const { data, error } = await supabase.from('commissions')
+        .select('quote_id, amount_cents, status')
+        .in('quote_id', quoteIds)
+      if (error) throw error
+      return (data ?? []) as CommissionRow[]
     },
   })
 
@@ -148,6 +172,7 @@ export function QuotesList() {
                   <th className="text-left px-5 py-3 text-xs font-medium text-[var(--color-muted)]">Version</th>
                   <th className="text-left px-5 py-3 text-xs font-medium text-[var(--color-muted)]">Status</th>
                   <th className="text-right px-5 py-3 text-xs font-medium text-[var(--color-muted)]">Total</th>
+                  <th className="text-right px-5 py-3 text-xs font-medium text-[var(--color-muted)]" data-testid="col-hh-commission">HH commission</th>
                 </tr>
               </thead>
               <tbody>
@@ -155,6 +180,7 @@ export function QuotesList() {
                   const isOpen = expanded.has(g.key)
                   const customerName = g.top.lead?.customer?.full_name ?? g.top.lead?.customer?.email ?? '—'
                   const isBuilder = g.top.source === 'builder'
+                  const commTop = commissionForQuote(g.top, commissions)
                   return (
                     <>
                       <tr key={g.key} className="border-b border-[var(--color-border)] last:border-0 hover:bg-[var(--color-surface-raised)]">
@@ -205,6 +231,9 @@ export function QuotesList() {
                         </td>
                         <td className="px-5 py-3"><StatusBadge status={g.top.status} /></td>
                         <td className="px-5 py-3 text-right">${(g.top.price_cents / 100).toLocaleString()}</td>
+                        <td className="px-5 py-3 text-right" data-testid="cell-hh-commission">
+                          <CommissionCell comm={commTop} />
+                        </td>
                       </tr>
                       {isOpen && g.all.map((q, i) => (
                         i === 0 ? null : (
@@ -223,6 +252,9 @@ export function QuotesList() {
                               ${(q.price_cents / 100).toLocaleString()}
                               <div className="text-[10px]">{new Date(q.created_at).toLocaleDateString()}</div>
                             </td>
+                            <td className="px-5 py-2 text-right text-xs">
+                              <CommissionCell comm={commissionForQuote(q, commissions)} small />
+                            </td>
                           </tr>
                         )
                       ))}
@@ -231,7 +263,7 @@ export function QuotesList() {
                 })}
                 {closedGroups.length > 0 && (
                   <tr>
-                    <td colSpan={5} className="px-5 py-3 border-t border-[var(--color-border)]">
+                    <td colSpan={6} className="px-5 py-3 border-t border-[var(--color-border)]">
                       <button
                         onClick={() => setShowClosed(s => !s)}
                         className="text-xs text-[var(--color-muted)] hover:text-[var(--color-ink)] inline-flex items-center gap-1"
@@ -252,6 +284,23 @@ export function QuotesList() {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+function CommissionCell({ comm, small }: { comm: ReturnType<typeof commissionForQuote>; small?: boolean }) {
+  if (!comm) return <span className="text-[var(--color-muted)]">—</span>
+  const sizeCls = small ? 'text-xs' : ''
+  return (
+    <div className={`inline-flex items-center gap-1.5 justify-end ${sizeCls}`}>
+      <span>{formatCommission(comm)}</span>
+      <span
+        className="inline-block px-1.5 py-0.5 text-[10px] uppercase tracking-wide rounded"
+        style={{ backgroundColor: commissionBadgeBg(comm.status) }}
+        title={comm.booked ? 'Commission booked' : 'Computed from HH terms — booked on approval'}
+      >
+        {comm.status}
+      </span>
     </div>
   )
 }

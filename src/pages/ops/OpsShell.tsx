@@ -152,8 +152,20 @@ function OpsShellInner() {
                 </>
               )}
             </>
+          ) : selected.managed_externally ? (
+            // ─── Externally-managed builder (e.g. ECD) ─────────────────
+            // Lifecycle lives in Connect. HH shows the pipeline + the
+            // settings needed for mapping. No catalog tiers/options,
+            // no builds, no costing, no contract, no terms pricing,
+            // no quote editor, no PDF generation.
+            <>
+              <NavItem to="/ops/dashboard" icon={<LayoutGrid size={15} />}>Dashboard</NavItem>
+              <NavItem to="/ops/leads" icon={<Users size={15} />}>Leads</NavItem>
+              <NavItem to="/ops/quotes" icon={<Receipt size={15} />}>Quotes</NavItem>
+              <NavItem to={`/ops/builders/${selected.id}/settings`} icon={<FileText size={15} />}>Settings</NavItem>
+            </>
           ) : (
-            // ─── Builder-scoped menu — no cross-builder links ─────────
+            // ─── Builder-scoped menu (fully-managed in HH) ────────────
             // Switching workspace is the only exit. "Home" intentionally
             // removed; use the dropdown to return to My homepage.
             <>

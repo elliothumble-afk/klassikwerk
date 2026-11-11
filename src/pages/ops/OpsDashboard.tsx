@@ -151,6 +151,15 @@ export function OpsDashboard() {
       <div className="max-w-6xl mx-auto">
         <h1 className="text-2xl mb-6" style={{ fontFamily: 'var(--font-display)' }}>Dashboard</h1>
 
+        {/*
+          Externally-managed builders (ECD) run pricing in Connect, so
+          HH's gross-margin + commission-per-rep calcs don't apply —
+          those depend on quote_options snapshots that only native
+          quotes carry. Hide the HH-side money cards; the stage counts
+          + Builds-in-progress + Quotes-awaiting-reply tiles below
+          still render using mirrored Connect data.
+        */}
+        {!selected.managed_externally && (
         <section className="mb-10 grid gap-4 sm:grid-cols-2">
           <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-5 py-4">
             <div className="text-xs uppercase tracking-wide text-[var(--color-muted)]">
@@ -190,6 +199,7 @@ export function OpsDashboard() {
             </div>
           </div>
         </section>
+        )}
 
         <section className="mb-10">
           <h2 className="text-sm font-medium text-[var(--color-muted)] mb-3">Leads by stage</h2>

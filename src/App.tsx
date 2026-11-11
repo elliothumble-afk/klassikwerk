@@ -13,6 +13,8 @@ import { PortalShell } from '@/pages/portal/PortalShell'
 import { OpsShell } from '@/pages/ops/OpsShell'
 import { OpsDashboard } from '@/pages/ops/OpsDashboard'
 import { OpsHome } from '@/pages/ops/OpsHome'
+import { ManagedBuilderSettings } from '@/pages/ops/builders/ManagedBuilderSettings'
+import { ExternallyManagedGuard } from '@/pages/ops/builders/ExternallyManagedGuard'
 import { CatalogPage } from '@/pages/ops/catalog/CatalogPage'
 import { BuildersList } from '@/pages/ops/builders/BuildersList'
 import { BuilderWizard } from '@/pages/ops/builders/BuilderWizard'
@@ -98,16 +100,20 @@ export function App() {
                 children: [
                   { index: true, element: <OpsHome /> },
                   { path: 'dashboard', element: <OpsDashboard /> },
-                  { path: 'catalog', element: <CatalogPage /> },
+                  // Routes below are builder-only — the ExternallyManagedGuard
+                  // sends externally-managed workspaces (ECD) back to
+                  // /ops/dashboard so the Connect pipeline is the only
+                  // builder-scoped surface they see.
+                  { path: 'catalog', element: <ExternallyManagedGuard><CatalogPage /></ExternallyManagedGuard> },
                   { path: 'leads', element: <LeadsBoard /> },
                   { path: 'leads/:id', element: <LeadDetail /> },
                   { path: 'quotes', element: <QuotesList /> },
-                  { path: 'quotes/new', element: <QuoteEditor /> },
+                  { path: 'quotes/new', element: <ExternallyManagedGuard><QuoteEditor /></ExternallyManagedGuard> },
                   { path: 'quotes/:id', element: <QuoteRouter /> },
                   { path: 'commissions', element: <CommissionsAdmin /> },
                   { path: 'me', element: <OpsMe /> },
-                  { path: 'builds', element: <BuildsList /> },
-                  { path: 'builds/:id', element: <BuildDetail /> },
+                  { path: 'builds', element: <ExternallyManagedGuard><BuildsList /></ExternallyManagedGuard> },
+                  { path: 'builds/:id', element: <ExternallyManagedGuard><BuildDetail /></ExternallyManagedGuard> },
                   {
                     path: 'builders',
                     element: <RoleGuard role="operator" />,
@@ -116,10 +122,15 @@ export function App() {
                       { path: 'new', element: <BuilderWizard /> },
                     ],
                   },
+                  // Per-builder pages. Brand is shared; the rest are
+                  // HH-managed only. Externally-managed builders use
+                  // the unified Settings page which composes Brand +
+                  // webhook + scheduled jobs + platform aliases.
                   { path: 'builders/:id/brand', element: <BrandEdit /> },
-                  { path: 'builders/:id/terms', element: <TermsEdit /> },
-                  { path: 'builders/:id/costing', element: <CostingEdit /> },
-                  { path: 'builders/:id/contract', element: <ContractEdit /> },
+                  { path: 'builders/:id/settings', element: <ManagedBuilderSettings /> },
+                  { path: 'builders/:id/terms', element: <ExternallyManagedGuard><TermsEdit /></ExternallyManagedGuard> },
+                  { path: 'builders/:id/costing', element: <ExternallyManagedGuard><CostingEdit /></ExternallyManagedGuard> },
+                  { path: 'builders/:id/contract', element: <ExternallyManagedGuard><ContractEdit /></ExternallyManagedGuard> },
                   {
                     path: 'settings/zoho',
                     element: <RoleGuard role="operator" />,

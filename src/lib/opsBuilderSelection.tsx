@@ -7,7 +7,10 @@ interface OpsBuilderSelectionValue {
   builders: Builder[]
   selected: Builder | null
   loading: boolean
-  setSelectedId: (id: string) => void
+  /** Pass a builder id to pin the sidebar to a builder, or null to
+   *  clear the selection and return to the cross-builder (My homepage)
+   *  view. */
+  setSelectedId: (id: string | null) => void
 }
 
 const OpsBuilderSelectionContext = createContext<OpsBuilderSelectionValue>({
@@ -20,9 +23,13 @@ const OpsBuilderSelectionContext = createContext<OpsBuilderSelectionValue>({
 const STORAGE_KEY = 'ops.selectedBuilderId'
 
 export function OpsBuilderSelectionProvider({ children }: { children: ReactNode }) {
-  const [selectedId, setSelectedIdState] = useState<string | null>(() =>
-    typeof window === 'undefined' ? null : window.localStorage.getItem(STORAGE_KEY)
-  )
+  // Default-null on load. The sidebar selector is the only way to
+  // enter a builder's context; new logins always start on My homepage
+  // per the Phase 9 §1 nav rules.
+  const [selectedId, setSelectedIdState] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null
+    return window.localStorage.getItem(STORAGE_KEY) || null
+  })
 
   const { data: builders, isLoading } = useQuery({
     queryKey: ['ops', 'builders', 'all'],
@@ -35,17 +42,22 @@ export function OpsBuilderSelectionProvider({ children }: { children: ReactNode 
   })
 
   const list = builders ?? []
-  const selected = list.find(b => b.id === selectedId) ?? list[0] ?? null
+  const selected = selectedId ? (list.find(b => b.id === selectedId) ?? null) : null
 
+  // Clear storage if the pinned id no longer resolves to a real builder
+  // (e.g. the row got deactivated or deleted between sessions).
   useEffect(() => {
-    if (selected && selected.id !== selectedId) {
-      setSelectedIdState(selected.id)
+    if (selectedId && list.length > 0 && !list.find(b => b.id === selectedId)) {
+      setSelectedIdState(null)
+      if (typeof window !== 'undefined') window.localStorage.removeItem(STORAGE_KEY)
     }
-  }, [selected, selectedId])
+  }, [selectedId, list])
 
-  function setSelectedId(id: string) {
+  function setSelectedId(id: string | null) {
     setSelectedIdState(id)
-    if (typeof window !== 'undefined') window.localStorage.setItem(STORAGE_KEY, id)
+    if (typeof window === 'undefined') return
+    if (id) window.localStorage.setItem(STORAGE_KEY, id)
+    else window.localStorage.removeItem(STORAGE_KEY)
   }
 
   const value = useMemo(

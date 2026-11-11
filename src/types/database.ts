@@ -22,6 +22,8 @@ export type Database = {
           full_name: string | null
           phone: string | null
           title: string | null
+          active: boolean
+          home_prefs: Json
           created_at: string
           updated_at: string
         }
@@ -32,6 +34,8 @@ export type Database = {
           full_name?: string | null
           phone?: string | null
           title?: string | null
+          active?: boolean
+          home_prefs?: Json
           created_at?: string
           updated_at?: string
         }
@@ -41,6 +45,8 @@ export type Database = {
           full_name?: string | null
           phone?: string | null
           title?: string | null
+          active?: boolean
+          home_prefs?: Json
           updated_at?: string
         }
         Relationships: []

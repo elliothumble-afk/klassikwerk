@@ -8,13 +8,23 @@
 //   • My commissions   — unpaid + paid YTD; link to /ops/me.
 //   • Recent activity  — last 20 events across builders.
 
-import { useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMemo, useState } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router'
+import { Settings } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
 import { useOpsBuilderSelection } from '@/lib/opsBuilderSelection'
 import { Spinner } from '@/components/ui/Spinner'
+
+type HomeSection = 'my_work' | 'pipeline' | 'commissions' | 'activity'
+const SECTION_LABELS: Record<HomeSection, string> = {
+  my_work: 'My work',
+  pipeline: 'Pipeline',
+  commissions: 'Commissions',
+  activity: 'Recent activity',
+}
+const ALL_SECTIONS: HomeSection[] = ['my_work', 'pipeline', 'commissions', 'activity']
 
 function money(cents: number): string {
   return `$${(cents / 100).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
@@ -39,9 +49,35 @@ interface Builder { id: string; name: string; slug: string; active: boolean }
 
 export function OpsHome() {
   const { profile } = useAuth()
+  const qc = useQueryClient()
   const isAdmin = profile?.role === 'operator'
   const profileId = profile?.id ?? null
   const { setSelectedId } = useOpsBuilderSelection()
+  const [customising, setCustomising] = useState(false)
+
+  // Per-user section visibility: profiles.home_prefs. Missing keys
+  // default to shown.
+  const { data: prefs } = useQuery({
+    queryKey: ['home-prefs', profileId],
+    enabled: Boolean(profileId),
+    queryFn: async () => {
+      const { data } = await supabase.from('profiles').select('home_prefs').eq('id', profileId!).single()
+      return (data?.home_prefs ?? {}) as Partial<Record<HomeSection, boolean>>
+    },
+  })
+  const visible = (s: HomeSection) => prefs?.[s] !== false
+  const savePrefs = useMutation({
+    mutationFn: async (next: Partial<Record<HomeSection, boolean>>) => {
+      const { error } = await supabase.from('profiles').update({ home_prefs: next }).eq('id', profileId!)
+      if (error) throw error
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['home-prefs', profileId] }),
+  })
+  const toggle = (s: HomeSection) => {
+    const next = { ...(prefs ?? {}) }
+    next[s] = visible(s) ? false : true
+    savePrefs.mutate(next)
+  }
 
   // Jump into a builder's context when the user follows an in-row link.
   // Writing selected id before the navigation triggers useOpsBuilderSelection
@@ -241,13 +277,43 @@ export function OpsHome() {
   return (
     <div className="p-8">
       <div className="max-w-6xl mx-auto">
-        <h1 className="text-2xl mb-1" style={{ fontFamily: 'var(--font-display)' }}>Home</h1>
-        <p className="text-sm text-[var(--color-muted)] mb-6">
-          {isAdmin ? 'Team view' : `Signed in as ${profile?.full_name ?? '—'}`}
-        </p>
+        <div className="flex items-start justify-between mb-6">
+          <div>
+            <h1 className="text-2xl mb-1" style={{ fontFamily: 'var(--font-display)' }}>Home</h1>
+            <p className="text-sm text-[var(--color-muted)]">
+              {isAdmin ? 'Team view' : `Signed in as ${profile?.full_name ?? '—'}`}
+            </p>
+          </div>
+          <button
+            onClick={() => setCustomising(v => !v)}
+            className="h-8 px-3 rounded-[var(--radius-sm)] border border-[var(--color-border)] text-xs inline-flex items-center gap-1.5 hover:bg-[var(--color-surface-raised)]"
+          >
+            <Settings size={13} /> Customise
+          </button>
+        </div>
+        {customising && (
+          <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-4 mb-5 text-sm">
+            <div className="text-xs text-[var(--color-muted)] mb-2">Show on your Home:</div>
+            <div className="flex flex-wrap gap-3">
+              {ALL_SECTIONS.map(s => (
+                <label key={s} className="inline-flex items-center gap-1.5">
+                  <input
+                    type="checkbox"
+                    checked={visible(s)}
+                    onChange={() => toggle(s)}
+                    disabled={savePrefs.isPending}
+                  />
+                  {SECTION_LABELS[s]}
+                </label>
+              ))}
+              {savePrefs.isPending && <Spinner size={12} />}
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
           {/* ─── My work ────────────────────────────────────────────────── */}
+          {visible('my_work') && (
           <section className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-5 lg:col-span-2">
             <h2 className="text-sm font-medium mb-3">My work</h2>
             {loadingMine ? <Spinner size={16} /> : (
@@ -296,8 +362,10 @@ export function OpsHome() {
               </div>
             )}
           </section>
+          )}
 
           {/* ─── My commissions ─────────────────────────────────────────── */}
+          {visible('commissions') && (
           <section className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
             <div className="flex items-start justify-between">
               <h2 className="text-sm font-medium">{isAdmin ? 'Team commissions' : 'My commissions'}</h2>
@@ -309,9 +377,11 @@ export function OpsHome() {
               <Stat label="Paid YTD" value={comm?.paidYtd ?? 0} />
             </div>
           </section>
+          )}
         </div>
 
         {/* ─── Pipeline this month ───────────────────────────────────── */}
+        {visible('pipeline') && (
         <section className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-5 mt-5">
           <h2 className="text-sm font-medium mb-3">
             Pipeline — {new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' })}
@@ -350,8 +420,10 @@ export function OpsHome() {
             </table>
           )}
         </section>
+        )}
 
         {/* ─── Recent activity ───────────────────────────────────────── */}
+        {visible('activity') && (
         <section className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-5 mt-5">
           <h2 className="text-sm font-medium mb-3">Recent activity</h2>
           {!activity ? <Spinner size={16} /> : activity.length === 0 ? (
@@ -379,6 +451,7 @@ export function OpsHome() {
             </ul>
           )}
         </section>
+        )}
       </div>
     </div>
   )

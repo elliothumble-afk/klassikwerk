@@ -1065,9 +1065,28 @@ export function QuoteEditor() {
       // Native quote → platform_id is always set here. Non-null
       // assert so the builds insert (requires NOT NULL) type-checks.
       if (!existing.platform_id) throw new Error('native quote has no platform_id — refusing to create build')
+      // Pre-check: only one open build per (customer_id, platform_id).
+      // The DB trigger enforces this too, but surfacing it client-side
+      // gives a friendlier error with the existing build's slot number.
+      const customerId = (leadRes.data as { customer_id: string }).customer_id
+      const openRes = await supabase.from('builds')
+        .select('id, slot_year, slot_number, price_cents, stage')
+        .eq('customer_id', customerId)
+        .eq('platform_id', existing.platform_id)
+        .neq('stage', 'closed')
+        .limit(1)
+        .maybeSingle()
+      const open = openRes.data as { id: string; slot_year: number; slot_number: number; price_cents: number; stage: string } | null
+      if (open) {
+        throw new Error(
+          `An open build already exists for this customer + platform ` +
+          `(slot ${open.slot_year}/${open.slot_number}, $${(open.price_cents / 100).toLocaleString()}, stage ${open.stage}). ` +
+          `Close it before starting another.`
+        )
+      }
       const buildIns = await supabase.from('builds').insert({
         builder_id: existing.builder_id,
-        customer_id: (leadRes.data as { customer_id: string }).customer_id,
+        customer_id: customerId,
         platform_id: existing.platform_id,
         tier_id: existing.tier_id,
         stage: 'contract',

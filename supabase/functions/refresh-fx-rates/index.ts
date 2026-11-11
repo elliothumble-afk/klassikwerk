@@ -13,7 +13,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
 
   const url = Deno.env.get('SUPABASE_URL')!
-  const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+  const key = (Deno.env.get('HH_SERVICE_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'))!
   const admin = createClient(url, key)
 
   try {

@@ -5,6 +5,9 @@ import { Download, Check } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
 import { Spinner } from '@/components/ui/Spinner'
+import {
+  composeBuilderCommissionDescription, commissionSourceLabel,
+} from '@/lib/commissionDisplay'
 
 interface Row {
   id: string
@@ -24,6 +27,32 @@ interface Row {
   builder: { name: string } | null
   rep: { full_name: string | null; user_id: string | null } | null
   rep_email?: string | null
+  // Joined from the linked quote so builder-source rows can show a
+  // composed description ("<customer> — <platform> · <ref> — $<total>")
+  // even when Connect didn't include one on the commission payload.
+  quote: {
+    external_id: string | null
+    price_cents: number
+    total_cents: number | null
+    external_platform_name: string | null
+    platform: { name: string } | null
+    lead: { customer: { full_name: string | null } | null } | null
+  } | null
+}
+
+function describeRow(r: Row): string {
+  if (r.description && r.description.trim()) return r.description
+  if (r.source === 'builder' && r.quote) {
+    const composed = composeBuilderCommissionDescription({
+      customer_name: r.quote.lead?.customer?.full_name ?? null,
+      platform_name: r.quote.platform?.name ?? r.quote.external_platform_name ?? null,
+      external_id: r.quote.external_id,
+      total_cents: r.quote.total_cents,
+      price_cents: r.quote.price_cents,
+    })
+    if (composed) return composed
+  }
+  return '—'
 }
 
 // Reps are read from the staff_profiles view so we can fall back
@@ -60,7 +89,10 @@ export function CommissionsAdmin() {
         description, amount_cents, status, earned_at, paid_at,
         paid_reference, conflict, notes,
         builder:builders(name),
-        rep:profiles!commissions_profile_id_fkey(full_name, user_id)
+        rep:profiles!commissions_profile_id_fkey(full_name, user_id),
+        quote:quotes!commissions_quote_id_fkey(external_id, price_cents, total_cents, external_platform_name,
+          platform:catalog_platforms(name),
+          lead:leads(customer:customers(full_name)))
       `).order('earned_at', { ascending: false, nullsFirst: false })
       if (repFilter) q = q.eq('profile_id', repFilter)
       if (builderFilter) q = q.eq('builder_id', builderFilter)
@@ -202,8 +234,8 @@ export function CommissionsAdmin() {
     for (const r of rows ?? []) {
       const cells = [
         r.id, r.builder?.name ?? '', r.rep?.full_name ?? '',
-        r.source, r.status, String(r.amount_cents),
-        JSON.stringify(r.description ?? ''), r.earned_at ?? '',
+        commissionSourceLabel(r.source), r.status, String(r.amount_cents),
+        JSON.stringify(describeRow(r)), r.earned_at ?? '',
         r.paid_at ?? '', r.paid_reference ?? '', r.external_id ?? '',
         String(r.conflict),
       ]
@@ -353,10 +385,10 @@ export function CommissionsAdmin() {
                     </td>
                     <td className="px-3 py-1.5">{r.builder?.name ?? '—'}</td>
                     <td className="px-3 py-1.5">
-                      {r.quote_id ? <Link to={`/ops/quotes/${r.quote_id}`} className="text-[var(--color-accent)] hover:underline">{r.description ?? '—'}</Link> : (r.description ?? '—')}
+                      {r.quote_id ? <Link to={`/ops/quotes/${r.quote_id}`} className="text-[var(--color-accent)] hover:underline">{describeRow(r)}</Link> : describeRow(r)}
                       {r.conflict && <span className="ml-2 text-xs text-[var(--color-danger)]">(conflict)</span>}
                     </td>
-                    <td className="px-3 py-1.5 text-xs uppercase tracking-wide text-[var(--color-muted)]">{r.source}</td>
+                    <td className="px-3 py-1.5 text-xs uppercase tracking-wide text-[var(--color-muted)]">{commissionSourceLabel(r.source)}</td>
                     <td className="px-3 py-1.5 text-xs uppercase tracking-wide">{r.status}</td>
                     <td className="px-3 py-1.5 text-right">${(r.amount_cents / 100).toLocaleString()}</td>
                     <td className="px-3 py-1.5 text-xs text-[var(--color-muted)]">{r.earned_at ? new Date(r.earned_at).toLocaleDateString() : '—'}</td>

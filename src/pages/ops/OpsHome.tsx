@@ -353,50 +353,23 @@ export function OpsHome() {
           <section className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-5 lg:col-span-2">
             <h2 className="text-sm font-medium mb-3">My work</h2>
             {loadingMine ? <Spinner size={16} /> : (
-              <div className="space-y-5">
-                <Sublist
-                  title="Leads waiting for a quote"
-                  empty="No leads waiting."
-                  items={(myWork?.leads ?? []).map(l => ({
-                    key: l.id,
-                    name: l.customer?.full_name ?? l.customer?.email ?? '—',
-                    meta: l.stage,
-                    builder: builderById.get(l.builder_id)?.name ?? null,
-                    to: `/ops/leads/${l.id}`,
-                    onClick: openInBuilder(l.builder_id),
-                  }))}
+              <div className="space-y-6">
+                <LeadsTable
+                  leads={myWork?.leads ?? []}
+                  builderById={builderById}
+                  openInBuilder={openInBuilder}
                 />
-                <Sublist
-                  title="Quotes sent, awaiting reply"
-                  empty="All sent quotes answered."
-                  footer={awaitingCommissionTotal > 0 ? `Commission total ${money(awaitingCommissionTotal)}` : null}
-                  items={(myWork?.quotes ?? []).map(q => {
-                    const days = daysSince(q.sent_at)
-                    const title = q.lead?.customer?.full_name ?? q.lead?.customer?.email ?? '—'
-                    const ref = q.source === 'builder' && q.external_id ? q.external_id : `v${q.version}`
-                    const c = commissionForQuote(q, awaitingCommissions)
-                    const commissionMeta = c ? ` · comm ${money(c.amountCents)}` : ''
-                    return {
-                      key: q.id,
-                      name: `${title} · ${ref}`,
-                      meta: (days != null ? `${days}d since sent · ${money(q.price_cents)}` : money(q.price_cents)) + commissionMeta,
-                      builder: builderById.get(q.builder_id)?.name ?? null,
-                      to: `/ops/quotes/${q.id}`,
-                      onClick: openInBuilder(q.builder_id),
-                    }
-                  })}
+                <QuotesTable
+                  quotes={myWork?.quotes ?? []}
+                  commissions={awaitingCommissions}
+                  commissionTotal={awaitingCommissionTotal}
+                  builderById={builderById}
+                  openInBuilder={openInBuilder}
                 />
-                <Sublist
-                  title="Builds in progress"
-                  empty="No active builds."
-                  items={(myWork?.builds ?? []).map(b => ({
-                    key: b.id,
-                    name: b.customer?.full_name ?? '—',
-                    meta: `${b.stage} · ${money(b.price_cents)}`,
-                    builder: builderById.get(b.builder_id)?.name ?? null,
-                    to: `/ops/builds/${b.id}`,
-                    onClick: openInBuilder(b.builder_id),
-                  }))}
+                <BuildsTable
+                  builds={myWork?.builds ?? []}
+                  builderById={builderById}
+                  openInBuilder={openInBuilder}
                 />
               </div>
             )}
@@ -498,42 +471,177 @@ export function OpsHome() {
   )
 }
 
-function Sublist({ title, empty, items, footer }: {
+// ─── My work tables ─────────────────────────────────────────────────
+// Each section is a proper table with its own column schema. Money is
+// right-aligned; commission total sits in a dedicated footer row.
+// Uses the same visual language as Pipeline below.
+
+function MyWorkSection({ title, empty, hasRows, children, 'data-testid': dataTestId }: {
   title: string
   empty: string
-  items: Array<{ key: string; name: string; meta: string; builder: string | null; to: string; onClick?: () => void }>
-  footer?: string | null
+  hasRows: boolean
+  children: React.ReactNode
+  'data-testid'?: string
 }) {
   return (
-    <div>
+    <div data-testid={dataTestId}>
       <div className="text-xs uppercase tracking-wide text-[var(--color-muted)] mb-2">{title}</div>
-      {items.length === 0 ? (
+      {!hasRows ? (
         <p className="text-sm text-[var(--color-muted)]">{empty}</p>
       ) : (
-        <>
-          <ul className="divide-y divide-[var(--color-border)]">
-            {items.map(it => (
-              <li key={it.key} className="py-1.5 flex items-center justify-between gap-3 text-sm">
-                <Link to={it.to} onClick={it.onClick} className="text-[var(--color-accent)] hover:underline truncate">
-                  {it.name}
-                </Link>
-                <div className="text-xs text-[var(--color-muted)] shrink-0">
-                  {it.builder ? `${it.builder} · ` : ''}{it.meta}
-                </div>
-              </li>
-            ))}
-          </ul>
-          {footer && (
-            <div
-              data-testid="sublist-footer"
-              className="text-right text-xs text-[var(--color-muted)] mt-2 pt-2 border-t border-[var(--color-border)]"
-            >
-              {footer}
-            </div>
-          )}
-        </>
+        <table className="w-full text-sm">{children}</table>
       )}
     </div>
+  )
+}
+
+function Th({ children, align = 'left' }: { children: React.ReactNode; align?: 'left' | 'right' }) {
+  return (
+    <th className={`text-${align} py-2 text-xs font-medium text-[var(--color-muted)] whitespace-nowrap`}>
+      {children}
+    </th>
+  )
+}
+
+function LeadsTable({ leads, builderById, openInBuilder }: {
+  leads: Array<{ id: string; builder_id: string; stage: string; updated_at: string; customer: { full_name: string | null; email: string | null } | null }>
+  builderById: Map<string, Builder>
+  openInBuilder: (id: string) => () => void
+}) {
+  return (
+    <MyWorkSection
+      title="Leads waiting for a quote"
+      empty="No leads waiting."
+      hasRows={leads.length > 0}
+      data-testid="my-work-leads"
+    >
+      <thead>
+        <tr className="border-b border-[var(--color-border)]">
+          <Th>Customer</Th>
+          <Th>Builder</Th>
+          <Th>Stage</Th>
+        </tr>
+      </thead>
+      <tbody>
+        {leads.map(l => (
+          <tr key={l.id} className="border-b border-[var(--color-border)] last:border-0">
+            <td className="py-1.5">
+              <Link to={`/ops/leads/${l.id}`} onClick={openInBuilder(l.builder_id)}
+                    className="text-[var(--color-accent)] hover:underline">
+                {l.customer?.full_name ?? l.customer?.email ?? '—'}
+              </Link>
+            </td>
+            <td className="py-1.5 text-[var(--color-muted)]">{builderById.get(l.builder_id)?.name ?? '—'}</td>
+            <td className="py-1.5 text-xs uppercase tracking-wide text-[var(--color-muted)]">{l.stage}</td>
+          </tr>
+        ))}
+      </tbody>
+    </MyWorkSection>
+  )
+}
+
+function QuotesTable({ quotes, commissions, commissionTotal, builderById, openInBuilder }: {
+  quotes: Array<{ id: string; builder_id: string; version: number; price_cents: number; commission_cents: number | null; sent_at: string | null; status: string; external_id: string | null; source: 'native' | 'builder'; lead: { customer: { full_name: string | null; email: string | null } | null } | null }>
+  commissions: Array<{ quote_id: string | null; amount_cents: number; status: CommissionStatus }> | undefined
+  commissionTotal: number
+  builderById: Map<string, Builder>
+  openInBuilder: (id: string) => () => void
+}) {
+  return (
+    <MyWorkSection
+      title="Quotes sent, awaiting reply"
+      empty="All sent quotes answered."
+      hasRows={quotes.length > 0}
+      data-testid="my-work-quotes"
+    >
+      <thead>
+        <tr className="border-b border-[var(--color-border)]">
+          <Th>Customer</Th>
+          <Th>Ref</Th>
+          <Th>Builder</Th>
+          <Th>Status / age</Th>
+          <Th align="right">Quote total</Th>
+          <Th align="right">HH commission</Th>
+        </tr>
+      </thead>
+      <tbody>
+        {quotes.map(q => {
+          const days = daysSince(q.sent_at)
+          const title = q.lead?.customer?.full_name ?? q.lead?.customer?.email ?? '—'
+          const ref = q.source === 'builder' && q.external_id ? q.external_id : `v${q.version}`
+          const c = commissionForQuote(q, commissions)
+          return (
+            <tr key={q.id} className="border-b border-[var(--color-border)] last:border-0">
+              <td className="py-1.5">
+                <Link to={`/ops/quotes/${q.id}`} onClick={openInBuilder(q.builder_id)}
+                      className="text-[var(--color-accent)] hover:underline">
+                  {title}
+                </Link>
+              </td>
+              <td className="py-1.5 font-mono text-xs text-[var(--color-muted)]">{ref}</td>
+              <td className="py-1.5 text-[var(--color-muted)]">{builderById.get(q.builder_id)?.name ?? '—'}</td>
+              <td className="py-1.5 text-xs text-[var(--color-muted)]">
+                <span className="uppercase tracking-wide">{q.status}</span>
+                {days != null && <span> · {days}d</span>}
+              </td>
+              <td className="py-1.5 text-right tabular-nums">{money(q.price_cents)}</td>
+              <td className="py-1.5 text-right tabular-nums">
+                {c ? money(c.amountCents) : <span className="text-[var(--color-muted)]">—</span>}
+              </td>
+            </tr>
+          )
+        })}
+      </tbody>
+      {commissionTotal > 0 && (
+        <tfoot>
+          <tr className="border-t border-[var(--color-border)]" data-testid="quotes-commission-total">
+            <td colSpan={5} className="py-1.5 text-right text-xs uppercase tracking-wide text-[var(--color-muted)]">
+              HH commission total
+            </td>
+            <td className="py-1.5 text-right tabular-nums font-medium">{money(commissionTotal)}</td>
+          </tr>
+        </tfoot>
+      )}
+    </MyWorkSection>
+  )
+}
+
+function BuildsTable({ builds, builderById, openInBuilder }: {
+  builds: Array<{ id: string; builder_id: string; stage: string; price_cents: number; customer: { full_name: string | null } | null }>
+  builderById: Map<string, Builder>
+  openInBuilder: (id: string) => () => void
+}) {
+  return (
+    <MyWorkSection
+      title="Builds in progress"
+      empty="No active builds."
+      hasRows={builds.length > 0}
+      data-testid="my-work-builds"
+    >
+      <thead>
+        <tr className="border-b border-[var(--color-border)]">
+          <Th>Customer</Th>
+          <Th>Builder</Th>
+          <Th>Stage</Th>
+          <Th align="right">Total</Th>
+        </tr>
+      </thead>
+      <tbody>
+        {builds.map(b => (
+          <tr key={b.id} className="border-b border-[var(--color-border)] last:border-0">
+            <td className="py-1.5">
+              <Link to={`/ops/builds/${b.id}`} onClick={openInBuilder(b.builder_id)}
+                    className="text-[var(--color-accent)] hover:underline">
+                {b.customer?.full_name ?? '—'}
+              </Link>
+            </td>
+            <td className="py-1.5 text-[var(--color-muted)]">{builderById.get(b.builder_id)?.name ?? '—'}</td>
+            <td className="py-1.5 text-xs uppercase tracking-wide text-[var(--color-muted)]">{b.stage}</td>
+            <td className="py-1.5 text-right tabular-nums">{money(b.price_cents)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </MyWorkSection>
   )
 }
 

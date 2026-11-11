@@ -79,3 +79,43 @@ export function commissionBadgeBg(status: CommissionStatus): string {
     case 'void':    return '#E8D7D7'
   }
 }
+
+// Builder-sourced commission rows don't carry a Connect-written
+// description, so compose one at read time from the linked quote:
+//   "<customer> — <platform> · <Connect ref> — $<quote total>"
+// Native commissions have their own stored description (set by
+// book_native_commission); callers should prefer the stored value
+// over this.
+export interface CommissionDescriptionInput {
+  customer_name?: string | null
+  platform_name?: string | null
+  external_id?: string | null
+  total_cents?: number | null
+  price_cents?: number | null
+}
+export function composeBuilderCommissionDescription(q: CommissionDescriptionInput | null | undefined): string | null {
+  if (!q) return null
+  const customer = q.customer_name?.trim() || null
+  const platform = q.platform_name?.trim() || null
+  const ref = q.external_id?.trim() || null
+  const totalCents = q.total_cents ?? q.price_cents ?? null
+  const money = totalCents != null ? `$${(totalCents / 100).toLocaleString('en-US', { maximumFractionDigits: 0 })}` : null
+  // Omit missing segments so a half-synced row still renders something
+  // readable. We still require at least one non-null segment.
+  const leftParts: string[] = []
+  if (customer) leftParts.push(customer)
+  const rightSegments: string[] = []
+  if (platform && ref) rightSegments.push(`${platform} · ${ref}`)
+  else if (platform)   rightSegments.push(platform)
+  else if (ref)        rightSegments.push(ref)
+  const middle = rightSegments.join('')
+  const body = [leftParts.join(' '), middle].filter(Boolean).join(' — ')
+  const out = money ? (body ? `${body} — ${money}` : money) : body
+  return out || null
+}
+
+// Human label for a commission row's origin. Builder-source rows are
+// Connect today; native rows are HH-authored.
+export function commissionSourceLabel(source: 'native' | 'builder'): string {
+  return source === 'builder' ? 'Connect' : 'Native'
+}

@@ -4,6 +4,9 @@ import { Link } from 'react-router'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
 import { Spinner } from '@/components/ui/Spinner'
+import {
+  composeBuilderCommissionDescription, commissionSourceLabel,
+} from '@/lib/commissionDisplay'
 
 interface Row {
   id: string
@@ -16,7 +19,30 @@ interface Row {
   paid_reference: string | null
   quote_id: string | null
   builder: { name: string } | null
-  quote: { id: string; lead: { customer: { full_name: string | null } | null } | null } | null
+  quote: {
+    id: string
+    external_id: string | null
+    price_cents: number
+    total_cents: number | null
+    external_platform_name: string | null
+    platform: { name: string } | null
+    lead: { customer: { full_name: string | null } | null } | null
+  } | null
+}
+
+function describeRow(r: Row): string {
+  if (r.description && r.description.trim()) return r.description
+  if (r.source === 'builder' && r.quote) {
+    const composed = composeBuilderCommissionDescription({
+      customer_name: r.quote.lead?.customer?.full_name ?? null,
+      platform_name: r.quote.platform?.name ?? r.quote.external_platform_name ?? null,
+      external_id: r.quote.external_id,
+      total_cents: r.quote.total_cents,
+      price_cents: r.quote.price_cents,
+    })
+    if (composed) return composed
+  }
+  return '—'
 }
 
 export function OpsMe() {
@@ -32,7 +58,9 @@ export function OpsMe() {
           id, status, source, description, amount_cents, earned_at, paid_at,
           paid_reference, quote_id,
           builder:builders(name),
-          quote:quotes!commissions_quote_id_fkey(id, lead:leads(customer:customers(full_name)))
+          quote:quotes!commissions_quote_id_fkey(id, external_id, price_cents, total_cents, external_platform_name,
+            platform:catalog_platforms(name),
+            lead:leads(customer:customers(full_name)))
         `)
         .eq('profile_id', profileId!)
         .order('earned_at', { ascending: false, nullsFirst: false })
@@ -91,12 +119,12 @@ export function OpsMe() {
                   <tr key={r.id} className="border-b border-[var(--color-border)] last:border-0">
                     <td className="px-3 py-1.5">
                       {r.quote_id
-                        ? <Link to={`/ops/quotes/${r.quote_id}`} className="text-[var(--color-accent)] hover:underline">{r.description ?? '—'}</Link>
-                        : (r.description ?? '—')}
+                        ? <Link to={`/ops/quotes/${r.quote_id}`} className="text-[var(--color-accent)] hover:underline">{describeRow(r)}</Link>
+                        : describeRow(r)}
                     </td>
                     <td className="px-3 py-1.5 text-xs text-[var(--color-muted)]">{r.quote?.lead?.customer?.full_name ?? '—'}</td>
                     <td className="px-3 py-1.5 text-xs text-[var(--color-muted)]">{r.builder?.name ?? '—'}</td>
-                    <td className="px-3 py-1.5 text-xs uppercase tracking-wide text-[var(--color-muted)]">{r.source}</td>
+                    <td className="px-3 py-1.5 text-xs uppercase tracking-wide text-[var(--color-muted)]">{commissionSourceLabel(r.source)}</td>
                     <td className="px-3 py-1.5 text-xs uppercase tracking-wide">{r.status}</td>
                     <td className="px-3 py-1.5 text-right">${(r.amount_cents / 100).toLocaleString()}</td>
                     <td className="px-3 py-1.5 text-xs text-[var(--color-muted)]">{r.earned_at ? new Date(r.earned_at).toLocaleDateString() : '—'}</td>

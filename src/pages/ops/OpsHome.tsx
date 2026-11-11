@@ -16,6 +16,10 @@ import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
 import { useOpsBuilderSelection } from '@/lib/opsBuilderSelection'
 import { Spinner } from '@/components/ui/Spinner'
+import {
+  commissionForQuote, sumCommissions,
+  type CommissionStatus,
+} from '@/lib/commissionDisplay'
 
 type HomeSection = 'my_work' | 'pipeline' | 'commissions' | 'activity'
 const SECTION_LABELS: Record<HomeSection, string> = {
@@ -115,7 +119,7 @@ export function OpsHome() {
         .limit(8)
       if (!isAdmin && profileId) leadsQ.or(`owner_profile_id.eq.${profileId},owner_profile_id.is.null`)
       const quotesQ = supabase.from('quotes')
-        .select('id, builder_id, version, price_cents, sent_at, status, external_id, source, lead:leads(customer:customers(full_name, email))')
+        .select('id, builder_id, version, price_cents, commission_cents, sent_at, status, external_id, source, lead:leads(customer:customers(full_name, email))')
         .eq('status', 'sent')
         .order('sent_at', { ascending: false, nullsFirst: false })
         .limit(8)
@@ -128,11 +132,28 @@ export function OpsHome() {
       const [l, q, b] = await Promise.all([leadsQ, quotesQ, buildsQ])
       return {
         leads: (l.data ?? []) as unknown as Array<{ id: string; builder_id: string; stage: string; updated_at: string; customer: { full_name: string | null; email: string | null } | null }>,
-        quotes: (q.data ?? []) as unknown as Array<{ id: string; builder_id: string; version: number; price_cents: number; sent_at: string | null; status: string; external_id: string | null; source: string; lead: { customer: { full_name: string | null; email: string | null } | null } | null }>,
+        quotes: (q.data ?? []) as unknown as Array<{ id: string; builder_id: string; version: number; price_cents: number; commission_cents: number | null; sent_at: string | null; status: string; external_id: string | null; source: 'native' | 'builder'; lead: { customer: { full_name: string | null; email: string | null } | null } | null }>,
         builds: (b.data ?? []) as unknown as Array<{ id: string; builder_id: string; stage: string; price_cents: number; customer: { full_name: string | null } | null }>,
       }
     },
   })
+
+  // Commissions for the "awaiting reply" quotes — non-void rows win,
+  // native quotes fall back to quote.commission_cents snapshot.
+  const awaitingQuoteIds = useMemo(() => (myWork?.quotes ?? []).map(q => q.id), [myWork?.quotes])
+  const { data: awaitingCommissions } = useQuery({
+    queryKey: ['home-awaiting-comm', awaitingQuoteIds.join(',')],
+    enabled: awaitingQuoteIds.length > 0,
+    queryFn: async () => {
+      const { data } = await supabase.from('commissions')
+        .select('quote_id, amount_cents, status').in('quote_id', awaitingQuoteIds)
+      return (data ?? []) as Array<{ quote_id: string | null; amount_cents: number; status: CommissionStatus }>
+    },
+  })
+  const awaitingCommissionTotal = useMemo(
+    () => sumCommissions(myWork?.quotes ?? [], awaitingCommissions),
+    [myWork?.quotes, awaitingCommissions],
+  )
 
   // ─── Pipeline this month ───────────────────────────────────────────
   // One row per active builder: quotes sent / approved / approved-$,
@@ -143,9 +164,11 @@ export function OpsHome() {
     enabled: Boolean(builders?.length),
     queryFn: async () => {
       const month = monthStartIso()
-      // Quotes sent + approved this month per builder.
+      // Quotes sent + approved this month per builder. We need `id` +
+      // `source` + `commission_cents` so we can resolve the per-quote
+      // commission against the commissions table below.
       const quotesRes = await supabase.from('quotes')
-        .select('builder_id, status, price_cents, total_cents, sent_at, approved_at')
+        .select('id, builder_id, source, status, price_cents, total_cents, commission_cents, sent_at, approved_at')
         .or(`sent_at.gte.${month},approved_at.gte.${month}`)
       // Contracts signed this month.
       const contractsRes = await supabase.from('contracts')
@@ -153,16 +176,29 @@ export function OpsHome() {
       // Payments received this month.
       const paymentsRes = await supabase.from('quote_payments')
         .select('amount_cents, received_at, quote:quotes(builder_id)').gte('received_at', month)
-      type Row = { builder_id: string; name: string; sent: number; approved: number; approvedValue: number; signed: number; payments: number }
+      // Commissions tied to any in-month quote. We re-use commission
+      // display rules: non-void row wins per quote; native quotes with
+      // no row fall back to quote.commission_cents.
+      type PipelineQuote = { id: string; builder_id: string; source: 'native' | 'builder'; status: string; price_cents: number; total_cents: number | null; commission_cents: number | null; sent_at: string | null; approved_at: string | null }
+      const pipelineQuotes = (quotesRes.data ?? []) as unknown as PipelineQuote[]
+      const inMonthQuoteIds = pipelineQuotes.map(q => q.id)
+      const commRes = inMonthQuoteIds.length > 0
+        ? await supabase.from('commissions')
+            .select('quote_id, amount_cents, status').in('quote_id', inMonthQuoteIds)
+        : { data: [] }
+      const commRows = (commRes.data ?? []) as Array<{ quote_id: string | null; amount_cents: number; status: CommissionStatus }>
+      type Row = { builder_id: string; name: string; sent: number; approved: number; approvedValue: number; signed: number; payments: number; commission: number }
       const by = new Map<string, Row>()
-      for (const b of builders ?? []) by.set(b.id, { builder_id: b.id, name: b.name, sent: 0, approved: 0, approvedValue: 0, signed: 0, payments: 0 })
-      for (const q of (quotesRes.data ?? []) as unknown as Array<{ builder_id: string; status: string; price_cents: number; total_cents: number | null; sent_at: string | null; approved_at: string | null }>) {
+      for (const b of builders ?? []) by.set(b.id, { builder_id: b.id, name: b.name, sent: 0, approved: 0, approvedValue: 0, signed: 0, payments: 0, commission: 0 })
+      for (const q of pipelineQuotes) {
         const r = by.get(q.builder_id); if (!r) continue
         if (q.sent_at && q.sent_at >= month) r.sent += 1
         if (q.approved_at && q.approved_at >= month) {
           r.approved += 1
           r.approvedValue += q.total_cents ?? q.price_cents
         }
+        const c = commissionForQuote(q, commRows)
+        if (c) r.commission += c.amountCents
       }
       for (const c of (contractsRes.data ?? []) as unknown as Array<{ builder_id: string }>) {
         const r = by.get(c.builder_id); if (r) r.signed += 1
@@ -333,14 +369,17 @@ export function OpsHome() {
                 <Sublist
                   title="Quotes sent, awaiting reply"
                   empty="All sent quotes answered."
+                  footer={awaitingCommissionTotal > 0 ? `Commission total ${money(awaitingCommissionTotal)}` : null}
                   items={(myWork?.quotes ?? []).map(q => {
                     const days = daysSince(q.sent_at)
                     const title = q.lead?.customer?.full_name ?? q.lead?.customer?.email ?? '—'
                     const ref = q.source === 'builder' && q.external_id ? q.external_id : `v${q.version}`
+                    const c = commissionForQuote(q, awaitingCommissions)
+                    const commissionMeta = c ? ` · comm ${money(c.amountCents)}` : ''
                     return {
                       key: q.id,
                       name: `${title} · ${ref}`,
-                      meta: days != null ? `${days}d since sent · ${money(q.price_cents)}` : money(q.price_cents),
+                      meta: (days != null ? `${days}d since sent · ${money(q.price_cents)}` : money(q.price_cents)) + commissionMeta,
                       builder: builderById.get(q.builder_id)?.name ?? null,
                       to: `/ops/quotes/${q.id}`,
                       onClick: openInBuilder(q.builder_id),
@@ -396,6 +435,7 @@ export function OpsHome() {
                   <th className="text-right py-2">Approved $</th>
                   <th className="text-right py-2">Signed</th>
                   <th className="text-right py-2">Payments $</th>
+                  <th className="text-right py-2" data-testid="col-commission">Commission $</th>
                 </tr>
               </thead>
               <tbody>
@@ -411,10 +451,11 @@ export function OpsHome() {
                     <td className="py-1.5 text-right">{money(r.approvedValue)}</td>
                     <td className="py-1.5 text-right">{r.signed}</td>
                     <td className="py-1.5 text-right">{money(r.payments)}</td>
+                    <td className="py-1.5 text-right" data-testid="cell-commission">{money(r.commission)}</td>
                   </tr>
                 ))}
                 {pipeline.length === 0 && (
-                  <tr><td colSpan={6} className="py-4 text-center text-sm text-[var(--color-muted)]">No active builders.</td></tr>
+                  <tr><td colSpan={7} className="py-4 text-center text-sm text-[var(--color-muted)]">No active builders.</td></tr>
                 )}
               </tbody>
             </table>
@@ -457,10 +498,11 @@ export function OpsHome() {
   )
 }
 
-function Sublist({ title, empty, items }: {
+function Sublist({ title, empty, items, footer }: {
   title: string
   empty: string
   items: Array<{ key: string; name: string; meta: string; builder: string | null; to: string; onClick?: () => void }>
+  footer?: string | null
 }) {
   return (
     <div>
@@ -468,18 +510,28 @@ function Sublist({ title, empty, items }: {
       {items.length === 0 ? (
         <p className="text-sm text-[var(--color-muted)]">{empty}</p>
       ) : (
-        <ul className="divide-y divide-[var(--color-border)]">
-          {items.map(it => (
-            <li key={it.key} className="py-1.5 flex items-center justify-between gap-3 text-sm">
-              <Link to={it.to} onClick={it.onClick} className="text-[var(--color-accent)] hover:underline truncate">
-                {it.name}
-              </Link>
-              <div className="text-xs text-[var(--color-muted)] shrink-0">
-                {it.builder ? `${it.builder} · ` : ''}{it.meta}
-              </div>
-            </li>
-          ))}
-        </ul>
+        <>
+          <ul className="divide-y divide-[var(--color-border)]">
+            {items.map(it => (
+              <li key={it.key} className="py-1.5 flex items-center justify-between gap-3 text-sm">
+                <Link to={it.to} onClick={it.onClick} className="text-[var(--color-accent)] hover:underline truncate">
+                  {it.name}
+                </Link>
+                <div className="text-xs text-[var(--color-muted)] shrink-0">
+                  {it.builder ? `${it.builder} · ` : ''}{it.meta}
+                </div>
+              </li>
+            ))}
+          </ul>
+          {footer && (
+            <div
+              data-testid="sublist-footer"
+              className="text-right text-xs text-[var(--color-muted)] mt-2 pt-2 border-t border-[var(--color-border)]"
+            >
+              {footer}
+            </div>
+          )}
+        </>
       )}
     </div>
   )

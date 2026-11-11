@@ -385,13 +385,16 @@ async function handleContractUpserted(admin: any, builderId: string, p: any) {
 
 async function handlePaymentReceived(admin: any, builderId: string, p: any) {
   if (!p.quote_external_id) throw new Error('payment.received missing quote_external_id')
+  // external_id (Connect's milestone id) is the idempotency key. Connect
+  // retries reuse the same event_id at the envelope level, but at the
+  // record level we also need per-payment identity so a re-sent event
+  // never appends a duplicate row.
+  if (!p.external_id) throw new Error('payment.received missing external_id')
   const q = await admin.from('quotes').select('id')
     .eq('builder_id', builderId).eq('external_id', p.quote_external_id).maybeSingle()
   if (!q.data?.id) throw new Error('payment.received quote not found')
-  // Idempotent via (quote_id, external_id) when provided.
-  const existing = p.external_id
-    ? await admin.from('quote_payments').select('id').eq('quote_id', q.data.id).eq('external_id', p.external_id).maybeSingle()
-    : { data: null }
+  const existing = await admin.from('quote_payments').select('id')
+    .eq('quote_id', q.data.id).eq('external_id', p.external_id).maybeSingle()
   if (existing.data?.id) return
   await admin.from('quote_payments').insert({
     quote_id: q.data.id,
@@ -399,7 +402,7 @@ async function handlePaymentReceived(admin: any, builderId: string, p: any) {
     received_at: p.received_at ?? new Date().toISOString(),
     stage: p.stage ?? null,
     reference: p.reference ?? null,
-    external_id: p.external_id ?? null,
+    external_id: p.external_id,
   })
 }
 
@@ -445,17 +448,19 @@ async function handleCommissionUpserted(admin: any, builderId: string, p: any) {
 async function handleBuildMilestone(admin: any, builderId: string, p: any) {
   if (!p.quote_external_id) throw new Error('build.milestone missing quote_external_id')
   if (!p.name) throw new Error('build.milestone missing name')
+  // external_id (Connect's stage id) is the idempotency key. Same
+  // reasoning as payment.received.
+  if (!p.external_id) throw new Error('build.milestone missing external_id')
   const q = await admin.from('quotes').select('id')
     .eq('builder_id', builderId).eq('external_id', p.quote_external_id).maybeSingle()
   if (!q.data?.id) throw new Error('build.milestone quote not found')
-  const existing = p.external_id
-    ? await admin.from('quote_milestones').select('id').eq('quote_id', q.data.id).eq('external_id', p.external_id).maybeSingle()
-    : { data: null }
+  const existing = await admin.from('quote_milestones').select('id')
+    .eq('quote_id', q.data.id).eq('external_id', p.external_id).maybeSingle()
   if (existing.data?.id) return
   await admin.from('quote_milestones').insert({
     quote_id: q.data.id,
     name: p.name,
     reached_at: p.reached_at ?? new Date().toISOString(),
-    external_id: p.external_id ?? null,
+    external_id: p.external_id,
   })
 }

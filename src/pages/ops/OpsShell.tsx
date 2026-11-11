@@ -33,6 +33,22 @@ function classifyPath(pathname: string): Scope {
   return { kind: 'cross' }
 }
 
+// Extract (entity, id) from a scoped detail route so we can look the
+// record up and pin its owning builder. Only the three real detail
+// routes are supported — list pages (/ops/quotes, /ops/leads,
+// /ops/builds) have no record to resolve and still fall through to the
+// bounce path.
+const SCOPED_DETAIL_TABLE: Record<string, 'quotes' | 'leads' | 'builds'> = {
+  quotes: 'quotes',
+  leads:  'leads',
+  builds: 'builds',
+}
+function parseScopedDetail(pathname: string): { table: 'quotes' | 'leads' | 'builds'; id: string } | null {
+  const m = pathname.match(/^\/ops\/(quotes|leads|builds)\/([0-9a-f-]{36})(?:\/|$)/i)
+  if (!m) return null
+  return { table: SCOPED_DETAIL_TABLE[m[1].toLowerCase()], id: m[2] }
+}
+
 export function OpsShell() {
   return (
     <OpsBuilderSelectionProvider>
@@ -67,8 +83,37 @@ function OpsShellInner() {
       const b = allBuilders.find(x => x.id === scope.id)
       if (b?.active) setSelectedId(scope.id)
     } else if (scope.kind === 'scoped' && !selected && !loading) {
-      // Builder-scoped URL with no selection — bounce to My homepage.
-      navigate('/ops', { replace: true })
+      // Builder-scoped URL with no pinned builder. Detail routes
+      // (/ops/quotes/:id, /ops/leads/:id, /ops/builds/:id) carry a
+      // record whose builder_id is the answer — resolve it and pin
+      // instead of bouncing. This covers:
+      //   • /ops row clicks where setSelectedId hasn't propagated in
+      //     the same tick as the navigation;
+      //   • bookmarks / shared links to a specific record.
+      // List pages (/ops/quotes, /ops/dashboard, ...) have no record,
+      // so they still bounce to My homepage.
+      const detail = parseScopedDetail(location.pathname)
+      if (!detail) {
+        navigate('/ops', { replace: true })
+      } else {
+        let cancelled = false
+        void (async () => {
+          const { data } = await supabase.from(detail.table)
+            .select('builder_id').eq('id', detail.id).maybeSingle()
+          if (cancelled) return
+          const bid = (data as { builder_id?: string } | null)?.builder_id ?? null
+          const b = bid ? allBuilders.find(x => x.id === bid) : null
+          if (b?.active) {
+            setSelectedId(bid)
+          } else {
+            // Record missing / belongs to an inactive builder → send
+            // the user back to a safe surface rather than render an
+            // orphan detail page.
+            navigate('/ops', { replace: true })
+          }
+        })()
+        return () => { cancelled = true }
+      }
     }
     // Intentionally omit setSelectedId/navigate from deps; they're
     // stable callback identities from React Router / providers.

@@ -129,63 +129,73 @@ export function BuilderQuoteSummary() {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-5">
-          <section className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
-            <h2 className="text-sm font-medium mb-3">Contract</h2>
-            {contract ? (
-              <div className="text-sm">
-                <div className="mb-1">Status: <span className="font-medium">{contract.status}</span></div>
-                {contract.signed_at && (
-                  <div className="text-xs text-[var(--color-muted)]">Signed {new Date(contract.signed_at).toLocaleDateString()}</div>
-                )}
-                {contract.document_url && (
-                  <a href={contract.document_url} target="_blank" rel="noreferrer"
-                     className="inline-flex items-center gap-1 text-xs text-[var(--color-accent)] hover:underline mt-2">
-                    Open document <ExternalLink size={11} />
-                  </a>
-                )}
-              </div>
-            ) : (
-              <p className="text-sm text-[var(--color-muted)]">No contract yet.</p>
-            )}
-          </section>
-
-          <section className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
-            <h2 className="text-sm font-medium mb-3">Payments received</h2>
-            {(payments ?? []).length === 0 ? (
-              <p className="text-sm text-[var(--color-muted)]">None yet.</p>
-            ) : (
+        {/*
+          Unified status timeline: sent → signed → payments → milestones,
+          chronological top-to-bottom with dates. Collapses the prior
+          Contract / Payments / Milestones blocks into one event log.
+        */}
+        <section className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
+          <h2 className="text-sm font-medium mb-4">Status timeline</h2>
+          <ol className="relative border-l border-[var(--color-border)] pl-5 space-y-5">
+            <TimelineEvent
+              when={quote.sent_at}
+              label="Quote sent"
+              detail={quote.external_url ? (
+                <a href={quote.external_url} target="_blank" rel="noreferrer"
+                   className="inline-flex items-center gap-1 text-xs text-[var(--color-accent)] hover:underline">
+                  Open in {quote.builder.name} <ExternalLink size={11} />
+                </a>
+              ) : null}
+            />
+            <TimelineEvent
+              when={quote.approved_at}
+              label="Quote approved"
+              muted={!quote.approved_at}
+              pending={quote.approved_at ? null : 'Awaiting approval'}
+            />
+            {contract && (
               <>
-                <table className="w-full text-sm">
-                  <tbody>
-                    {payments!.map(p => (
-                      <tr key={p.id} className="border-b border-[var(--color-border)] last:border-0">
-                        <td className="py-1.5">{p.stage ?? 'Payment'}</td>
-                        <td className="py-1.5 text-right">${(p.amount_cents / 100).toLocaleString()}</td>
-                        <td className="py-1.5 text-right text-xs text-[var(--color-muted)]">{new Date(p.received_at).toLocaleDateString()}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <div className="text-right text-sm mt-2 font-medium">Total ${(totalPaid / 100).toLocaleString()}</div>
+                <TimelineEvent
+                  when={contract.signed_at ? null : quote.approved_at}
+                  label={`Contract ${contract.status}`}
+                  detail={contract.document_url ? (
+                    <a href={contract.document_url} target="_blank" rel="noreferrer"
+                       className="inline-flex items-center gap-1 text-xs text-[var(--color-accent)] hover:underline">
+                      Open document <ExternalLink size={11} />
+                    </a>
+                  ) : null}
+                />
+                {contract.signed_at && (
+                  <TimelineEvent
+                    when={contract.signed_at}
+                    label="Contract signed"
+                  />
+                )}
               </>
             )}
-          </section>
-        </div>
-
-        <section className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-5 mt-5">
-          <h2 className="text-sm font-medium mb-3">Milestones</h2>
-          {(milestones ?? []).length === 0 ? (
-            <p className="text-sm text-[var(--color-muted)]">None recorded yet.</p>
-          ) : (
-            <ol className="relative border-l border-[var(--color-border)] pl-4 space-y-3">
-              {milestones!.map(m => (
-                <li key={m.id} className="text-sm">
-                  <div className="font-medium">{m.name}</div>
-                  <div className="text-xs text-[var(--color-muted)]">{new Date(m.reached_at).toLocaleString()}</div>
-                </li>
-              ))}
-            </ol>
+            {(payments ?? []).map(p => (
+              <TimelineEvent
+                key={p.id}
+                when={p.received_at}
+                label={`Payment${p.stage ? ` · ${p.stage}` : ''} — $${(p.amount_cents / 100).toLocaleString()}`}
+                detail={p.reference ? <span className="text-xs text-[var(--color-muted)] font-mono">{p.reference}</span> : null}
+              />
+            ))}
+            {(milestones ?? []).map(m => (
+              <TimelineEvent
+                key={m.id}
+                when={m.reached_at}
+                label={`Milestone · ${m.name}`}
+              />
+            ))}
+            {!quote.sent_at && (payments ?? []).length === 0 && (milestones ?? []).length === 0 && !contract && (
+              <li className="text-sm text-[var(--color-muted)]">No events yet.</li>
+            )}
+          </ol>
+          {(payments ?? []).length > 0 && (
+            <div className="text-right text-sm mt-4 pt-3 border-t border-[var(--color-border)] font-medium">
+              Total paid ${(totalPaid / 100).toLocaleString()}
+            </div>
           )}
         </section>
 
@@ -194,5 +204,25 @@ export function BuilderQuoteSummary() {
         </p>
       </div>
     </div>
+  )
+}
+
+function TimelineEvent({ when, label, detail, muted, pending }: {
+  when: string | null
+  label: string
+  detail?: React.ReactNode
+  muted?: boolean
+  pending?: string | null
+}) {
+  return (
+    <li className={`text-sm ${muted ? 'opacity-60' : ''}`}>
+      {/* Dot on the vertical rail */}
+      <span className={`absolute -left-[5px] w-2.5 h-2.5 rounded-full mt-1.5 ${muted ? 'bg-[var(--color-border)]' : 'bg-[var(--color-accent)]'}`} />
+      <div className="font-medium">{label}</div>
+      <div className="text-xs text-[var(--color-muted)]">
+        {when ? new Date(when).toLocaleString() : (pending ?? '—')}
+      </div>
+      {detail && <div className="mt-1">{detail}</div>}
+    </li>
   )
 }

@@ -7,6 +7,7 @@ import { Spinner } from '@/components/ui/Spinner'
 import { ErrorState } from '@/components/ui/ErrorState'
 import type { Builder, BuilderTerms, PaymentSchedule } from '@/types/database'
 import { SyncPanel } from './SyncPanel'
+import { ScheduledJobsPanel } from './ScheduledJobsPanel'
 
 export function TermsEdit() {
   const { id } = useParams<{ id: string }>()
@@ -119,6 +120,7 @@ export function TermsEdit() {
         <h1 className="text-2xl mb-6" style={{ fontFamily: 'var(--font-display)' }}>Terms</h1>
 
         {builder && <SyncPanel builder={builder} />}
+        {builder && <ScheduledJobsPanel builder={builder} />}
 
         <fieldset disabled={synced} className={synced ? 'opacity-70' : ''}>
         <div className="space-y-3 mb-8">

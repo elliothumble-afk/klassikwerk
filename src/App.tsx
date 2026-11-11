@@ -12,6 +12,7 @@ import { ResetPasswordPage } from '@/pages/auth/ResetPasswordPage'
 import { PortalShell } from '@/pages/portal/PortalShell'
 import { OpsShell } from '@/pages/ops/OpsShell'
 import { OpsDashboard } from '@/pages/ops/OpsDashboard'
+import { OpsHome } from '@/pages/ops/OpsHome'
 import { CatalogPage } from '@/pages/ops/catalog/CatalogPage'
 import { BuildersList } from '@/pages/ops/builders/BuildersList'
 import { BuilderWizard } from '@/pages/ops/builders/BuilderWizard'
@@ -95,7 +96,8 @@ export function App() {
               {
                 element: <OpsShell />,
                 children: [
-                  { index: true, element: <OpsDashboard /> },
+                  { index: true, element: <OpsHome /> },
+                  { path: 'dashboard', element: <OpsDashboard /> },
                   { path: 'catalog', element: <CatalogPage /> },
                   { path: 'leads', element: <LeadsBoard /> },
                   { path: 'leads/:id', element: <LeadDetail /> },

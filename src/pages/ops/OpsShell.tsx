@@ -57,7 +57,8 @@ function OpsShellInner() {
         </div>
 
         <div className="flex-1 py-4 px-3 space-y-0.5">
-          <NavItem to="/ops" icon={<Home size={15} />}>Dashboard</NavItem>
+          <NavItem to="/ops" icon={<Home size={15} />}>Home</NavItem>
+          <NavItem to="/ops/dashboard" icon={<LayoutGrid size={15} />}>Builder dashboard</NavItem>
           <NavItem to="/ops/leads" icon={<Users size={15} />}>Leads</NavItem>
           <NavItem to="/ops/quotes" icon={<Receipt size={15} />}>Quotes</NavItem>
           <NavItem to="/ops/builds" icon={<Wrench size={15} />}>Builds</NavItem>

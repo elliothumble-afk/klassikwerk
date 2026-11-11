@@ -273,7 +273,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 // ─── Webhook panel: secret + Rotate + Pull everything ────────────────
 // Secrets + service URLs live on builder_secrets (operator-only RLS).
 // Previously they sat on builders, which is public-read.
-function WebhookPanel({ builderId }: { builderId: string }) {
+export function WebhookPanel({ builderId }: { builderId: string }) {
   const qc = useQueryClient()
   const { data } = useQuery({
     queryKey: ['builder-webhook', builderId],

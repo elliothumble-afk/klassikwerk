@@ -109,6 +109,7 @@ export type Database = {
           zoho_product_id: string | null
           catalog_source: 'manual' | 'connect' | 'shopify'
           lead_intake_url: string | null
+          managed_externally: boolean
           last_synced_at: string | null
           last_sync_status: 'success' | 'error' | null
           last_sync_error: string | null
@@ -127,6 +128,7 @@ export type Database = {
           zoho_product_id?: string | null
           catalog_source?: 'manual' | 'connect' | 'shopify'
           lead_intake_url?: string | null
+          managed_externally?: boolean
           last_synced_at?: string | null
           last_sync_status?: 'success' | 'error' | null
           last_sync_error?: string | null
@@ -144,6 +146,7 @@ export type Database = {
           zoho_product_id?: string | null
           catalog_source?: 'manual' | 'connect' | 'shopify'
           lead_intake_url?: string | null
+          managed_externally?: boolean
           last_synced_at?: string | null
           last_sync_status?: 'success' | 'error' | null
           last_sync_error?: string | null
@@ -709,7 +712,7 @@ export type Database = {
           version: number
           platform_id: string | null
           external_platform_name: string | null
-          tier_id: string
+          tier_id: string | null
           price_cents: number
           tax_cents: number
           total_cents: number
@@ -742,7 +745,7 @@ export type Database = {
           version: number
           platform_id?: string | null
           external_platform_name?: string | null
-          tier_id: string
+          tier_id?: string | null
           price_cents?: number
           tax_cents?: number
           total_cents?: number
@@ -773,7 +776,7 @@ export type Database = {
           version?: number
           platform_id?: string | null
           external_platform_name?: string | null
-          tier_id?: string
+          tier_id?: string | null
           price_cents?: number
           tax_cents?: number
           total_cents?: number

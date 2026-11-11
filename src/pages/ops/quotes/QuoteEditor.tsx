@@ -195,7 +195,7 @@ export function QuoteEditor() {
       // quotes (which may have platform_id=null) are routed to the
       // read-only summary in QuoteRouter, never here.
       setPlatformId(existing.platform_id ?? '')
-      setTierId(existing.tier_id)
+      setTierId(existing.tier_id ?? '')
       setNotes(existing.notes ?? '')
       const sel: Selection = {}
       const qty: Record<string, number> = {}
@@ -1084,6 +1084,9 @@ export function QuoteEditor() {
           `Close it before starting another.`
         )
       }
+      // Native quote → tier_id is always set here (externally-managed
+      // builders don't reach this flow).
+      if (!existing.tier_id) throw new Error('native quote has no tier_id — refusing to create build')
       const buildIns = await supabase.from('builds').insert({
         builder_id: existing.builder_id,
         customer_id: customerId,

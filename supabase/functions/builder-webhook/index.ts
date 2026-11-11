@@ -261,9 +261,15 @@ async function handleQuoteUpserted(admin: any, builderId: string, p: any) {
   const repId = await resolveRep(admin, p.rep_email ?? null)
   const incomingPlatformName = typeof p.platform_name === 'string' ? p.platform_name.trim() : null
   const platformId = await resolvePlatform(admin, builderId, incomingPlatformName)
-  const tierId = await resolveTier(admin, builderId)
+  // Externally-managed builders (e.g. ECD) don't keep tiers in HH —
+  // the Connect-side quote owns the pricing stack. tier_id stays null
+  // and the DB schema allows it.
+  const bMeta = await admin.from('builders')
+    .select('managed_externally').eq('id', builderId).single()
+  const managedExternally = Boolean((bMeta.data as { managed_externally?: boolean } | null)?.managed_externally)
+  const tierId = managedExternally ? null : await resolveTier(admin, builderId)
   if (!leadId) throw new Error('quote.upserted could not resolve lead')
-  if (!tierId) throw new Error('quote.upserted could not resolve tier')
+  if (!managedExternally && !tierId) throw new Error('quote.upserted could not resolve tier')
   // Identity for source=builder quotes is (builder_id, external_id).
   // The Connect-side `version` is per-Connect-lead and is nearly
   // always 1 when the Connect quote has no parent lead — so two

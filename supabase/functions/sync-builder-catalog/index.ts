@@ -12,7 +12,7 @@ import { z } from 'https://esm.sh/zod@3.24.1'
 import { corsHeaders } from '../_shared/cors.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
-const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+const SERVICE_ROLE = (Deno.env.get('HH_SERVICE_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'))!
 
 // ──────────────────────────────────────────────────────────────────
 // Feed schema (zod)

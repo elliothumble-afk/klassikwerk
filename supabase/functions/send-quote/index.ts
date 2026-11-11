@@ -10,7 +10,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.50.3'
 import { corsHeaders } from '../_shared/cors.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
-const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+const SERVICE_ROLE = (Deno.env.get('HH_SERVICE_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'))!
 const RESEND_KEY = Deno.env.get('RESEND_API_KEY')
 const FROM_ADDRESS = Deno.env.get('RESEND_FROM') ?? 'quotes@humblehouse.dev'
 const PUBLIC_SITE = Deno.env.get('PUBLIC_SITE_URL') ?? 'https://klassikwerk.netlify.app'

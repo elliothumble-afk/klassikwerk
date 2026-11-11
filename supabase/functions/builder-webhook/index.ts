@@ -31,7 +31,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.50.3'
 import { corsHeaders } from '../_shared/cors.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
-const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+const SERVICE_ROLE = (Deno.env.get('HH_SERVICE_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'))!
 
 async function hmacSha256Hex(secret: string, body: string): Promise<string> {
   const key = await crypto.subtle.importKey(

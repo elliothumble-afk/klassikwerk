@@ -21,6 +21,7 @@ interface Quote {
   external_id: string | null
   lead: { id: string; customer_id: string | null; customer: { id: string; full_name: string | null; email: string | null } | null } | null
   platform: { name: string } | null
+  builder: { name: string } | null
   quote_options: QoRow[]
 }
 
@@ -39,9 +40,14 @@ interface Group {
   all: Quote[]      // sorted newest-first, includes top
 }
 
+// A Connect/builder quote is "closed" when its status is one of the
+// deal-is-over values. Those collapse under "Show closed (n)".
+const CLOSED_STATUSES = new Set(['void', 'superseded', 'expired', 'declined'])
+
 export function QuotesList() {
   const { selected } = useOpsBuilderSelection()
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [showClosed, setShowClosed] = useState(false)
 
   const { data, isLoading } = useQuery({
     queryKey: ['quotes', selected?.id],
@@ -53,6 +59,7 @@ export function QuotesList() {
           id, lead_id, version, price_cents, status, source, created_at, sent_at, platform_id, external_platform_name, external_id,
           lead:leads(id, customer_id, customer:customers(id, full_name, email)),
           platform:catalog_platforms(name),
+          builder:builders(name),
           quote_options(option_id, catalog_options(name))
         `)
         .eq('builder_id', selected!.id)
@@ -88,8 +95,11 @@ export function QuotesList() {
     const groups: Group[] = []
     for (const [key, arr] of map) {
       const sorted = arr.slice().sort((a, b) => b.version - a.version)
-      const top = sorted.find(q => q.status !== 'superseded')
-      if (!top) continue  // never surface a group whose latest is superseded
+      // "live" top = newest non-superseded; builder quotes with every
+      // version closed still get a top row (we need to be able to show
+      // them under "Show closed").
+      const top = sorted.find(q => q.status !== 'superseded') ?? sorted[0]
+      if (!top) continue
       const earlier = sorted.filter(q => q.id !== top.id)
       groups.push({ key, top, earlier, all: sorted })
     }
@@ -97,6 +107,17 @@ export function QuotesList() {
     groups.sort((a, b) => new Date(b.top.created_at).getTime() - new Date(a.top.created_at).getTime())
     return groups
   }, [data])
+
+  // Split live vs closed so "Show closed (n)" can gate the fold.
+  const { liveGroups, closedGroups } = useMemo(() => {
+    const live: Group[] = []
+    const closed: Group[] = []
+    for (const g of groups) {
+      if (CLOSED_STATUSES.has(g.top.status)) closed.push(g)
+      else live.push(g)
+    }
+    return { liveGroups: live, closedGroups: closed }
+  }, [groups])
 
   function toggle(key: string) {
     setExpanded(prev => {
@@ -106,6 +127,8 @@ export function QuotesList() {
       return next
     })
   }
+
+  const visibleGroups = showClosed ? [...liveGroups, ...closedGroups] : liveGroups
 
   return (
     <div className="p-8">
@@ -128,9 +151,10 @@ export function QuotesList() {
                 </tr>
               </thead>
               <tbody>
-                {groups.map(g => {
+                {visibleGroups.map(g => {
                   const isOpen = expanded.has(g.key)
                   const customerName = g.top.lead?.customer?.full_name ?? g.top.lead?.customer?.email ?? '—'
+                  const isBuilder = g.top.source === 'builder'
                   return (
                     <>
                       <tr key={g.key} className="border-b border-[var(--color-border)] last:border-0 hover:bg-[var(--color-surface-raised)]">
@@ -138,14 +162,12 @@ export function QuotesList() {
                           <Link to={`/ops/quotes/${g.top.id}`} className="text-[var(--color-accent)] hover:underline">
                             {customerName}
                           </Link>
-                          {g.top.source === 'builder' && (
-                            <span className="ml-2 inline-block px-1.5 py-0.5 text-[10px] uppercase tracking-wide rounded bg-[var(--color-accent)]/10 text-[var(--color-accent)]">
-                              builder
-                            </span>
-                          )}
-                          {g.top.source === 'builder' && g.top.external_id && (
-                            <span className="ml-2 text-xs font-mono text-[var(--color-muted)]" title="Connect reference">
-                              {g.top.external_id}
+                          {isBuilder && (
+                            <span
+                              className="ml-2 inline-block px-1.5 py-0.5 text-[10px] uppercase tracking-wide rounded bg-[var(--color-accent)]/10 text-[var(--color-accent)]"
+                              title={g.top.builder?.name ?? undefined}
+                            >
+                              Connect
                             </span>
                           )}
                         </td>
@@ -155,7 +177,17 @@ export function QuotesList() {
                             : '—')}
                         </td>
                         <td className="px-5 py-3">
-                          v{g.top.version}
+                          {/*
+                            Builder quotes: show the Connect reference
+                            (QV2-…). HH's counter only shows on the
+                            builder-summary page. Native quotes keep
+                            the "v{n}" counter here.
+                          */}
+                          {isBuilder && g.top.external_id ? (
+                            <span className="font-mono text-xs">{g.top.external_id}</span>
+                          ) : (
+                            <>v{g.top.version}</>
+                          )}
                           {g.earlier.length > 0 && (
                             <button
                               onClick={() => toggle(g.key)}
@@ -197,6 +229,24 @@ export function QuotesList() {
                     </>
                   )
                 })}
+                {closedGroups.length > 0 && (
+                  <tr>
+                    <td colSpan={5} className="px-5 py-3 border-t border-[var(--color-border)]">
+                      <button
+                        onClick={() => setShowClosed(s => !s)}
+                        className="text-xs text-[var(--color-muted)] hover:text-[var(--color-ink)] inline-flex items-center gap-1"
+                        aria-expanded={showClosed}
+                      >
+                        <ChevronRight
+                          size={11}
+                          className="transition-transform"
+                          style={{ transform: showClosed ? 'rotate(90deg)' : 'rotate(0)' }}
+                        />
+                        {showClosed ? 'Hide' : 'Show'} closed ({closedGroups.length})
+                      </button>
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -211,6 +261,9 @@ function StatusBadge({ status }: { status: Quote['status'] }) {
     status === 'draft' ? '#E6E1D4' :
     status === 'sent' ? '#D7E4D9' :
     status === 'approved' ? '#B5CBB2' :
+    status === 'void' ? '#E8D7D7' :
+    status === 'declined' ? '#E8D7D7' :
+    status === 'expired' ? '#DBD4C3' :
     '#CFC9BC'  // superseded
   return (
     <span className="inline-block px-1.5 py-0.5 text-[10px] uppercase tracking-wide rounded" style={{ backgroundColor: bg }}>

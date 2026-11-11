@@ -1,25 +1,45 @@
 @import "tailwindcss";
 
+/*
+ * HH brand tokens — scraped from humblehouseauto.com 2026-11-11.
+ * Source doc: docs/design/humble-house-tokens.md
+ *
+ * These values apply to every HH-branded surface: sign-in, OpsShell,
+ * My homepage, commissions, ops tables and dialogs. Builder-branded
+ * public pages (BuilderShell / QuoteView / lookbook / PO / build
+ * sheet) override --color-accent, --color-background and the font
+ * variables at runtime from builder_brand — they ignore these.
+ */
 @theme {
-  --color-background: #FAF8F4;
-  --color-foreground: #1C1C1A;
-  --color-muted: #6B6B67;
-  --color-border: #E4E0DA;
-  --color-accent: #2E3B2B;
-  --color-accent-hover: #3D4E39;
-  --color-accent-light: #EDF2EC;
-  --color-surface: #FFFFFF;
-  --color-surface-raised: #F5F1EB;
-  --color-danger: #C0392B;
-  --color-danger-light: #FDECEA;
-  --color-success: #27AE60;
+  /* Surface palette */
+  --color-background: #f8f5ee;      /* HH cream */
+  --color-surface: #ffffff;
+  --color-surface-raised: #f2eee3;  /* cream-tinted raised panel */
+  --color-foreground: #1a1a18;      /* HH text */
+  --color-muted: #444444;           /* HH muted */
+  --color-border: #ddd6c8;          /* HH border hairline */
 
-  --font-display: 'Fraunces', Georgia, serif;
-  --font-body: 'Inter', system-ui, sans-serif;
+  /* Accent — the deep green ink is the primary action colour.
+     Gold is reserved for pills, hover states and focus. */
+  --color-accent: #29473b;          /* HH green */
+  --color-accent-hover: #0e1a10;    /* HH green-dark */
+  --color-accent-light: #eae3cf;    /* soft gold-cream for active nav */
+  --color-gold: #c49e4b;            /* HH gold */
+  --color-gold-accent: #dbb04f;     /* HH lighter gold */
 
-  --radius-sm: 4px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
+  /* Feedback */
+  --color-danger: #a53a2a;          /* dialled to work on cream */
+  --color-danger-light: #f4e1dd;
+  --color-success: #2d6a3f;
+
+  /* Typography — see humblehouseauto.com link in index.html */
+  --font-display: 'Playfair Display', Georgia, serif;
+  --font-body: 'Jost', 'Inter', system-ui, sans-serif;
+
+  /* Radii — HH is a sharp 2px on actions, 6px on cards */
+  --radius-sm: 2px;
+  --radius-md: 6px;
+  --radius-lg: 6px;
 }
 
 @layer base {
@@ -27,15 +47,36 @@
     font-family: var(--font-body);
     background-color: var(--color-background);
     color: var(--color-foreground);
+    font-size: 16px;
+    line-height: 1.6;
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
-  h1, h2, h3 {
-    font-family: var(--font-display);
+  body {
     font-weight: 400;
   }
 
-  * {
-    box-sizing: border-box;
+  /* Headings run in Playfair Display at 400 — the HH site never
+     uses bold weights on display text. */
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+    font-weight: 400;
+    color: var(--color-foreground);
+    letter-spacing: -0.005em;
+  }
+
+  * { box-sizing: border-box; }
+
+  /* Small-caps nav rhythm used across HH links and uppercase
+     labels. The marketing site runs .nav-links a at 600 weight,
+     0.08em letter-spacing. We don't force this on every <a>
+     globally — opt in with the `.hh-eyebrow` class so inline
+     prose stays normal. */
+  .hh-eyebrow {
+    font-family: var(--font-body);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
 }

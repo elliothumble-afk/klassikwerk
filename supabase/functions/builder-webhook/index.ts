@@ -409,12 +409,43 @@ async function handlePaymentReceived(admin: any, builderId: string, p: any) {
 async function handleCommissionUpserted(admin: any, builderId: string, p: any) {
   if (!p.external_id) throw new Error('commission.upserted missing external_id')
   const repId = await resolveRep(admin, p.rep_email ?? null)
-  // Link to a builder-quote if linked_quote_external_id matches.
+  // Link to a builder-quote if linked_quote_external_id matches, and
+  // grab the fields needed to compose a human description when Connect
+  // didn't send one on the payload.
   let quoteId: string | null = null
+  let composed: string | null = null
   if (p.quote_external_id) {
-    const q = await admin.from('quotes').select('id')
-      .eq('builder_id', builderId).eq('external_id', p.quote_external_id).maybeSingle()
-    quoteId = q.data?.id ?? null
+    const q = await admin.from('quotes').select(`
+      id, external_id, price_cents, total_cents, external_platform_name,
+      platform:catalog_platforms(name),
+      lead:leads(customer:customers(full_name))
+    `).eq('builder_id', builderId).eq('external_id', p.quote_external_id).maybeSingle()
+    quoteId = (q.data as { id?: string } | null)?.id ?? null
+    if (quoteId) {
+      const qd = q.data as {
+        external_id: string | null
+        price_cents: number
+        total_cents: number | null
+        external_platform_name: string | null
+        platform: { name: string } | null
+        lead: { customer: { full_name: string | null } | null } | null
+      }
+      const customer = qd.lead?.customer?.full_name?.trim() || null
+      const platform = qd.platform?.name?.trim() || qd.external_platform_name?.trim() || null
+      const ref = qd.external_id?.trim() || null
+      const totalCents = qd.total_cents ?? qd.price_cents ?? null
+      const money = totalCents != null
+        ? `$${(totalCents / 100).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+        : null
+      const leftParts: string[] = []
+      if (customer) leftParts.push(customer)
+      const rightSegments: string[] = []
+      if (platform && ref) rightSegments.push(`${platform} · ${ref}`)
+      else if (platform)   rightSegments.push(platform)
+      else if (ref)        rightSegments.push(ref)
+      const body = [leftParts.join(' '), rightSegments.join('')].filter(Boolean).join(' — ')
+      composed = (money ? (body ? `${body} — ${money}` : money) : body) || null
+    }
   }
   const existing = await admin.from('commissions').select('id, status')
     .eq('builder_id', builderId).eq('external_id', p.external_id).maybeSingle()
@@ -425,7 +456,10 @@ async function handleCommissionUpserted(admin: any, builderId: string, p: any) {
     quote_id: quoteId,
     external_id: p.external_id,
     source: 'builder',
-    description: p.description ?? null,
+    // Prefer Connect's own description. When absent (current spec
+    // doesn't include one), fall back to the composed form so the
+    // Commissions admin + /ops/me tables aren't a column of "—".
+    description: p.description ?? composed ?? null,
     amount_cents: Number(p.amount_cents ?? 0),
     earned_at: p.earned_at ?? null,
     updated_at: new Date().toISOString(),

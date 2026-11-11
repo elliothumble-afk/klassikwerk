@@ -8,9 +8,9 @@
 //   • My commissions   — unpaid + paid YTD; link to /ops/me.
 //   • Recent activity  — last 20 events across builders.
 
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Link } from 'react-router'
+import { Link, useNavigate } from 'react-router'
 import { Settings } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
@@ -57,6 +57,7 @@ export function OpsHome() {
   const isAdmin = profile?.role === 'operator'
   const profileId = profile?.id ?? null
   const { setSelectedId } = useOpsBuilderSelection()
+  const navigate = useNavigate()
   const [customising, setCustomising] = useState(false)
 
   // Per-user section visibility: profiles.home_prefs. Missing keys
@@ -83,10 +84,21 @@ export function OpsHome() {
     savePrefs.mutate(next)
   }
 
-  // Jump into a builder's context when the user follows an in-row link.
-  // Writing selected id before the navigation triggers useOpsBuilderSelection
-  // to pin the sidebar to the right builder.
-  const openInBuilder = (builderId: string) => () => setSelectedId(builderId)
+  // Jump into a builder's context when the user clicks an in-row link.
+  // Pin the sidebar and navigate in a single callback so the shell's
+  // scope guard never sees the "scoped URL with no builder" state —
+  // even one tick of that would bounce the user back here.
+  // (The shell also resolves a builder from the record itself as a
+  // belt-and-braces fallback for bookmarks and shared links.)
+  const openRow = useCallback((builderId: string, to: string) => {
+    setSelectedId(builderId)
+    navigate(to)
+  }, [setSelectedId, navigate])
+  // Dropdown pin only — used for the Pipeline table's builder name,
+  // which keeps the current URL (/ops) since Pipeline is already a
+  // cross-builder view.
+  const openInBuilder = useCallback((builderId: string) => () => setSelectedId(builderId),
+    [setSelectedId])
 
   // ─── Builders (for pipeline + joins) ───────────────────────────────
   const { data: builders } = useQuery({
@@ -357,19 +369,19 @@ export function OpsHome() {
                 <LeadsTable
                   leads={myWork?.leads ?? []}
                   builderById={builderById}
-                  openInBuilder={openInBuilder}
+                  openRow={openRow}
                 />
                 <QuotesTable
                   quotes={myWork?.quotes ?? []}
                   commissions={awaitingCommissions}
                   commissionTotal={awaitingCommissionTotal}
                   builderById={builderById}
-                  openInBuilder={openInBuilder}
+                  openRow={openRow}
                 />
                 <BuildsTable
                   builds={myWork?.builds ?? []}
                   builderById={builderById}
-                  openInBuilder={openInBuilder}
+                  openRow={openRow}
                 />
               </div>
             )}
@@ -451,9 +463,12 @@ export function OpsHome() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="text-sm">
-                      <Link to={`/ops/quotes/${e.quote_id}`} onClick={openInBuilder(e.builder_id)} className="text-[var(--color-accent)] hover:underline">
+                      <button
+                        onClick={() => openRow(e.builder_id, `/ops/quotes/${e.quote_id}`)}
+                        className="text-[var(--color-accent)] hover:underline bg-transparent border-0 p-0 cursor-pointer"
+                      >
                         {e.customer_name ?? 'Quote'}
-                      </Link>
+                      </button>
                       {' — '}{e.label}
                     </div>
                     {e.builder_name && (
@@ -503,10 +518,10 @@ function Th({ children, align = 'left' }: { children: React.ReactNode; align?: '
   )
 }
 
-function LeadsTable({ leads, builderById, openInBuilder }: {
+function LeadsTable({ leads, builderById, openRow }: {
   leads: Array<{ id: string; builder_id: string; stage: string; updated_at: string; customer: { full_name: string | null; email: string | null } | null }>
   builderById: Map<string, Builder>
-  openInBuilder: (id: string) => () => void
+  openRow: (builderId: string, to: string) => void
 }) {
   return (
     <MyWorkSection
@@ -526,10 +541,9 @@ function LeadsTable({ leads, builderById, openInBuilder }: {
         {leads.map(l => (
           <tr key={l.id} className="border-b border-[var(--color-border)] last:border-0">
             <td className="py-1.5">
-              <Link to={`/ops/leads/${l.id}`} onClick={openInBuilder(l.builder_id)}
-                    className="text-[var(--color-accent)] hover:underline">
+              <RowLink onClick={() => openRow(l.builder_id, `/ops/leads/${l.id}`)}>
                 {l.customer?.full_name ?? l.customer?.email ?? '—'}
-              </Link>
+              </RowLink>
             </td>
             <td className="py-1.5 text-[var(--color-muted)]">{builderById.get(l.builder_id)?.name ?? '—'}</td>
             <td className="py-1.5 text-xs uppercase tracking-wide text-[var(--color-muted)]">{l.stage}</td>
@@ -540,12 +554,23 @@ function LeadsTable({ leads, builderById, openInBuilder }: {
   )
 }
 
-function QuotesTable({ quotes, commissions, commissionTotal, builderById, openInBuilder }: {
+function RowLink({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className="text-[var(--color-accent)] hover:underline bg-transparent border-0 p-0 cursor-pointer text-left"
+    >
+      {children}
+    </button>
+  )
+}
+
+function QuotesTable({ quotes, commissions, commissionTotal, builderById, openRow }: {
   quotes: Array<{ id: string; builder_id: string; version: number; price_cents: number; commission_cents: number | null; sent_at: string | null; status: string; external_id: string | null; source: 'native' | 'builder'; lead: { customer: { full_name: string | null; email: string | null } | null } | null }>
   commissions: Array<{ quote_id: string | null; amount_cents: number; status: CommissionStatus }> | undefined
   commissionTotal: number
   builderById: Map<string, Builder>
-  openInBuilder: (id: string) => () => void
+  openRow: (builderId: string, to: string) => void
 }) {
   return (
     <MyWorkSection
@@ -573,10 +598,9 @@ function QuotesTable({ quotes, commissions, commissionTotal, builderById, openIn
           return (
             <tr key={q.id} className="border-b border-[var(--color-border)] last:border-0">
               <td className="py-1.5">
-                <Link to={`/ops/quotes/${q.id}`} onClick={openInBuilder(q.builder_id)}
-                      className="text-[var(--color-accent)] hover:underline">
+                <RowLink onClick={() => openRow(q.builder_id, `/ops/quotes/${q.id}`)}>
                   {title}
-                </Link>
+                </RowLink>
               </td>
               <td className="py-1.5 font-mono text-xs text-[var(--color-muted)]">{ref}</td>
               <td className="py-1.5 text-[var(--color-muted)]">{builderById.get(q.builder_id)?.name ?? '—'}</td>
@@ -606,10 +630,10 @@ function QuotesTable({ quotes, commissions, commissionTotal, builderById, openIn
   )
 }
 
-function BuildsTable({ builds, builderById, openInBuilder }: {
+function BuildsTable({ builds, builderById, openRow }: {
   builds: Array<{ id: string; builder_id: string; stage: string; price_cents: number; customer: { full_name: string | null } | null }>
   builderById: Map<string, Builder>
-  openInBuilder: (id: string) => () => void
+  openRow: (builderId: string, to: string) => void
 }) {
   return (
     <MyWorkSection
@@ -630,10 +654,9 @@ function BuildsTable({ builds, builderById, openInBuilder }: {
         {builds.map(b => (
           <tr key={b.id} className="border-b border-[var(--color-border)] last:border-0">
             <td className="py-1.5">
-              <Link to={`/ops/builds/${b.id}`} onClick={openInBuilder(b.builder_id)}
-                    className="text-[var(--color-accent)] hover:underline">
+              <RowLink onClick={() => openRow(b.builder_id, `/ops/builds/${b.id}`)}>
                 {b.customer?.full_name ?? '—'}
-              </Link>
+              </RowLink>
             </td>
             <td className="py-1.5 text-[var(--color-muted)]">{builderById.get(b.builder_id)?.name ?? '—'}</td>
             <td className="py-1.5 text-xs uppercase tracking-wide text-[var(--color-muted)]">{b.stage}</td>

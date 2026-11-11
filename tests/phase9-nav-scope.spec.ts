@@ -139,6 +139,102 @@ test('nav is strictly scoped by workspace dropdown', async ({ page }) => {
     await select.selectOption('__home__')
     await page.waitForURL('**/ops', { timeout: 10_000 })
     await expect(menu).toHaveAttribute('data-mode', 'home')
+
+    // ─── (6) /ops/quotes/:id with NO pinned builder resolves the
+    //        builder from the record itself and renders, instead of
+    //        bouncing back to /ops. Covers bookmarks, shared links,
+    //        and the raced-navigation case from /ops row clicks.
+    const anyQuote = await admin.from('quotes')
+      .select('id, builder_id, builder:builders(active)')
+      .eq('builder_id', builderA.id).limit(1).maybeSingle()
+    if (anyQuote.data?.id) {
+      // Clear the pin and jump straight to the detail route.
+      await page.evaluate(() => window.localStorage.removeItem('ops.selectedBuilderId'))
+      await page.goto(`/ops/quotes/${anyQuote.data.id}`)
+      // Should NOT redirect to /ops. Dropdown should pin to builderA
+      // once the record's builder_id is resolved.
+      await expect(select).toHaveValue(builderA.id, { timeout: 15_000 })
+      await expect(page).toHaveURL(new RegExp(`/ops/quotes/${anyQuote.data.id}$`))
+      await expect(menu).toHaveAttribute('data-mode', 'builder')
+    }
+
+    // ─── (7) /ops/quotes/<nonexistent-uuid> still bounces to /ops ─
+    await page.evaluate(() => window.localStorage.removeItem('ops.selectedBuilderId'))
+    await page.goto('/ops/quotes/00000000-0000-0000-0000-000000000000')
+    await page.waitForURL('**/ops', { timeout: 10_000 })
+    await expect(menu).toHaveAttribute('data-mode', 'home')
+  } finally {
+    await admin.auth.admin.deleteUser(userId)
+  }
+})
+
+test('/ops row click pins workspace and lands on the detail page', async ({ page }) => {
+  test.setTimeout(120_000)
+  const admin = createClient(SUPABASE_URL, env('SUPABASE_SERVICE_ROLE_KEY'), { auth: { persistSession: false } })
+  const anonKey = env('VITE_SUPABASE_ANON_KEY')
+
+  const runId = crypto.randomBytes(3).toString('hex')
+  const email = `test-row-${runId}@humblehouse.test`
+  const password = `test-${runId}-${crypto.randomBytes(8).toString('hex')}`
+  const u = await admin.auth.admin.createUser({ email, password, email_confirm: true })
+  if (u.error) throw u.error
+  const userId = u.data.user!.id
+  const promote = await admin.from('profiles').update({
+    role: 'operator', full_name: `Test Row ${runId}`, active: true,
+    updated_at: new Date().toISOString(),
+  } as never).eq('user_id', userId)
+  if (promote.error) throw promote.error
+
+  // Find a sent quote on an active builder to click through. Fall
+  // back to any quote if nothing is "sent" today.
+  const builders = await admin.from('builders').select('id').eq('active', true).limit(1).single()
+  if (builders.error) throw builders.error
+  const builderId = builders.data.id as string
+  let quote = await admin.from('quotes').select('id, lead_id')
+    .eq('builder_id', builderId).eq('status', 'sent').limit(1).maybeSingle()
+  if (!quote.data) {
+    quote = await admin.from('quotes').select('id, lead_id')
+      .eq('builder_id', builderId).limit(1).maybeSingle()
+  }
+  if (!quote.data?.id) {
+    // No quote available — skip this test rather than fail CI on a
+    // seed-data assumption.
+    await admin.auth.admin.deleteUser(userId)
+    test.skip()
+    return
+  }
+
+  try {
+    await signInAs(page, email, password, anonKey)
+    // Clear any persisted selection so we start on My homepage.
+    await page.addInitScript(() => {
+      window.localStorage.removeItem('ops.selectedBuilderId')
+    })
+    await page.goto('/ops')
+    const menu = page.getByTestId('ops-menu')
+    const select = page.getByTestId('workspace-select')
+    await expect(menu).toHaveAttribute('data-mode', 'home', { timeout: 15_000 })
+    await expect(select).toHaveValue('__home__')
+
+    // Expand the Quotes sent sublist and find a row link. The sublist
+    // is populated from recent sent-status quotes across builders;
+    // we only care that SOME quote-row renders and that clicking it
+    // pins the workspace + navigates.
+    const quotesTable = page.getByTestId('my-work-quotes')
+    // Section may show "All sent quotes answered." if no quote is in
+    // the sent bucket — in that case this flow isn't exercisable in
+    // the current data and we fall back to Recent activity.
+    if (await quotesTable.locator('tbody tr').count() > 0) {
+      await quotesTable.locator('tbody tr a, tbody tr button').first().click()
+      await expect(page).toHaveURL(/\/ops\/quotes\/[0-9a-f-]+/i, { timeout: 10_000 })
+      await expect(menu).toHaveAttribute('data-mode', 'builder', { timeout: 10_000 })
+      await expect(select).not.toHaveValue('__home__')
+    } else {
+      // Belt-and-braces: direct nav uses the same resolver.
+      await page.goto(`/ops/quotes/${quote.data.id}`)
+      await expect(menu).toHaveAttribute('data-mode', 'builder', { timeout: 15_000 })
+      await expect(select).toHaveValue(builderId)
+    }
   } finally {
     await admin.auth.admin.deleteUser(userId)
   }
